@@ -42,8 +42,8 @@ def get_status_emoji(unprocessed_count):
 def get_logo_path():
     """Traži logo u assets folderu bez obzira na varijaciju naziva."""
     possible_names = [
-        "assets/Opus Logo .png", 
-        "assets/Opus Logo.png", 
+        "assets/OpusLogo.png", 
+        "assets/OpusLogo.png", 
         "assets/Opus_Logo.png",
         "assets/logo.png"
     ]
@@ -73,7 +73,7 @@ def display_sidebar_header():
                 st.image(logo, use_container_width=True)
         
         with s_col2:
-            st.markdown("### GentStation Opus ERP", unsafe_allow_html=True)
+            st.markdown("### GentStation Opus", unsafe_allow_html=True)
         
         st.divider()
         st.write(f"Ulogovani ste kao: **{st.session_state.user_name}**")
