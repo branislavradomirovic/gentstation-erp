@@ -268,93 +268,117 @@ else:
         with tabs[1]:
             st.subheader("🌍 Upravljanje Regionima")
             
-            # CREATE
+            # --- CREATE SECTION ---
             with st.expander("➕ Dodaj novi region"):
                 with st.form("reg_add"):
                     r_name = st.text_input("Naziv regiona")
                     r_mail = st.text_input("Email regiona")
-                    if st.form_submit_button("Sačuvaj Region", key="btn_add_region_final"):
+                    if st.form_submit_button("Sačuvaj Region"):
                         conn.execute("INSERT INTO regions (name, email) VALUES (?,?)", (r_name, r_mail))
                         conn.commit()
                         log_activity("CREATE_REGION", f"Dodat region: {r_name}")
                         st.rerun()
 
-            # READ
+            # --- VIEW SECTION ---
             df_reg = pd.read_sql_query("SELECT * FROM regions", conn)
             st.dataframe(df_reg, use_container_width=True, hide_index=True)
 
-            # UPDATE & DELETE
+            # --- EDIT / DELETE SECTION (Employee Logic Style) ---
             if not df_reg.empty:
                 st.divider()
-                target_r = st.selectbox("Izaberi region za izmenu/brisanje", df_reg['id'], 
-                                    format_func=lambda x: df_reg[df_reg['id']==x]['name'].values[0])
-                curr_r = df_reg[df_reg['id']==target_r].iloc[0]
+                st.write("### ✏️ Upravljanje Postojećim Regionima")
                 
-                with st.form(f"edit_reg_{target_r}"):
-                    u_name = st.text_input("Novi naziv", value=curr_r['name'])
-                    u_mail = st.text_input("Novi email", value=curr_r['email'])
-                    c1, c2 = st.columns(2)
-                    if c1.form_submit_button("💾 Sačuvaj izmene"):
-                        conn.execute("UPDATE regions SET name=?, email=? WHERE id=?", (u_name, u_mail, target_r))
-                        conn.commit()
-                        log_activity("UPDATE_REGION", f"Izmenjen region ID {target_r}: {u_name}")
-                        st.rerun()
-                    if c2.form_submit_button("🗑️ Obriši region"):
-                        delete_item("regions", target_r)
+                target_r = st.selectbox(
+                    "Izaberi Region za izmenu", 
+                    df_reg['id'], 
+                    format_func=lambda x: f"ID {x}: {df_reg[df_reg['id']==x]['name'].values[0]}"
+                )
+                
+                curr_r = df_reg[df_reg['id']==target_r].iloc[0]
 
+                if st.button("🗑️ Obriši Region", use_container_width=True, key=f"del_reg_{target_r}"):
+                    delete_item("regions", target_r)
+
+                with st.expander("📝 Izmeni detalje regiona", expanded=True):
+                    with st.form(f"edit_reg_form_{target_r}"):
+                        u_name = st.text_input("Naziv", value=curr_r['name'])
+                        u_mail = st.text_input("Email", value=curr_r['email'])
+                        if st.form_submit_button("💾 Sačuvaj izmene"):
+                            conn.execute("UPDATE regions SET name=?, email=? WHERE id=?", (u_name, u_mail, target_r))
+                            conn.commit()
+                            log_activity("UPDATE_REGION", f"Izmenjen region ID {target_r}")
+                            st.rerun()
+    
     # --- 3. STATIONS ---
     if role in ["General Manager", "Region Director", "Region Manager"]:
         idx = 2 if role == "General Manager" else 1
         with tabs[idx]:
             st.subheader("⛽ Upravljanje Stanicama")
             
-            # CREATE
+            # --- CREATE SECTION ---
             with st.expander("➕ Registruj novu stanicu"):
-                regs = {r[1]: r[0] for r in conn.execute("SELECT id, name FROM regions").fetchall()}
-                with st.form("stat_add"):
-                    s_name = st.text_input("Naziv stanice")
-                    s_reg = st.selectbox("Region", list(regs.keys()))
-                    s_addr = st.text_input("Fizička adresa")
-                    col1, col2 = st.columns(2)
-                    s_lat = col1.number_input("Latituda", format="%.6f")
-                    s_lon = col2.number_input("Longituda", format="%.6f")
-                    if st.form_submit_button("Sačuvaj Stanicu", key="btn_add_station_final"):
-                        conn.execute("""INSERT INTO stations (name, region_id, physical_address, lat, lon, category) 
-                                        VALUES (?,?,?,?,?,'Retail')""", (s_name, regs[s_reg], s_addr, s_lat, s_lon))
-                        conn.commit()
-                        log_activity("CREATE_STATION", f"Registrovana nova stanica: {s_name}")
-                        st.rerun()
-
-            # READ
-            df_stat = pd.read_sql_query("""
-                SELECT s.id, s.name, r.name as region, s.physical_address, s.lat, s.lon 
-                FROM stations s JOIN regions r ON s.region_id = r.id
-            """, conn)
-            st.dataframe(df_stat, use_container_width=True, hide_index=True)
-
-            # UPDATE & DELETE
-            if not df_stat.empty:
-                st.divider()
-                target_s = st.selectbox("Izaberi stanicu za izmenu/brisanje", df_stat['id'], 
-                                       format_func=lambda x: df_stat[df_stat['id']==x]['name'].values[0])
-                curr_s = pd.read_sql_query(f"SELECT * FROM stations WHERE id={target_s}", conn).iloc[0]
+                st.write("📍 Kliknite na mapu za lokaciju:")
+                m_c = folium.Map(location=[44.7866, 20.4489], zoom_start=7)
+                out_c = st_folium(m_c, width="100%", height=250, key="map_create_stat")
                 
-                with st.form(f"edit_stat_{target_s}"):
-                    u_name = st.text_input("Naziv", value=curr_s['name'])
-                    u_addr = st.text_input("Adresa", value=curr_s['physical_address'])
-                    c1, c2 = st.columns(2)
-                    u_lat = c1.number_input("Lat", value=curr_s['lat'], format="%.6f")
-                    u_lon = c2.number_input("Lon", value=curr_s['lon'], format="%.6f")
+                c_lat = out_c["last_clicked"]["lat"] if out_c and out_c.get("last_clicked") else 0.0
+                c_lon = out_c["last_clicked"]["lng"] if out_c and out_c.get("last_clicked") else 0.0
+
+                with st.form("stat_add_form"):
+                    s_name = st.text_input("Naziv stanice")
+                    regs = {r[1]: r[0] for r in conn.execute("SELECT id, name FROM regions").fetchall()}
+                    s_reg = st.selectbox("Region", list(regs.keys()))
+                    s_addr = st.text_input("Adresa")
+                    col1, col2 = st.columns(2)
+                    lat_in = col1.number_input("Lat", value=float(c_lat), format="%.6f")
+                    lon_in = col2.number_input("Lon", value=float(c_lon), format="%.6f")
                     
-                    btn1, btn2 = st.columns(2)
-                    if btn1.form_submit_button("💾 Sačuvaj izmene", key=f"edit_stat_save_{target_s}"):
-                        conn.execute("UPDATE stations SET name=?, physical_address=?, lat=?, lon=? WHERE id=?", 
-                                     (u_name, u_addr, u_lat, u_lon, target_s))
+                    if st.form_submit_button("Sačuvaj Stanicu"):
+                        conn.execute("INSERT INTO stations (name, region_id, physical_address, lat, lon, category) VALUES (?,?,?,?,?,'Retail')",
+                                     (s_name, regs[s_reg], s_addr, lat_in, lon_in))
                         conn.commit()
-                        log_activity("UPDATE_STATION", f"Izmenjeni podaci za stanicu ID {target_s}")
+                        log_activity("CREATE_STATION", f"Nova stanica: {s_name}")
                         st.rerun()
-                    if btn2.form_submit_button("🗑️ Obriši stanicu", key=f"edit_stat_del_{target_s}"):
-                        delete_item("stations", target_s)
+
+            # --- VIEW SECTION ---
+            df_s = pd.read_sql_query("SELECT s.*, r.name as region_name FROM stations s JOIN regions r ON s.region_id = r.id", conn)
+            st.dataframe(df_s[['id', 'name', 'region_name', 'physical_address']], use_container_width=True, hide_index=True)
+
+            # --- EDIT / DELETE SECTION ---
+            if not df_s.empty:
+                st.divider()
+                st.write("### ✏️ Upravljanje Postojećim Stanicama")
+                target_s = st.selectbox("Izaberi Stanicu za izmenu", df_s['id'], 
+                                       format_func=lambda x: f"ID {x}: {df_s[df_s['id']==x]['name'].values[0]}")
+                
+                curr_s = df_s[df_s['id']==target_s].iloc[0]
+
+                if st.button("🗑️ Obriši Stanicu", use_container_width=True, key=f"del_stat_{target_s}"):
+                    delete_item("stations", target_s)
+
+                with st.expander("📝 Izmeni detalje i lokaciju", expanded=True):
+                    st.write("📍 Kliknite na mapu da promenite poziciju:")
+                    m_e = folium.Map(location=[curr_s['lat'], curr_s['lon']], zoom_start=12)
+                    folium.Marker([curr_s['lat'], curr_s['lon']]).add_to(m_e)
+                    out_e = st_folium(m_e, width="100%", height=250, key=f"map_edit_{target_s}")
+
+                    u_lat = out_e["last_clicked"]["lat"] if out_e and out_e.get("last_clicked") else curr_s['lat']
+                    u_lon = out_e["last_clicked"]["lng"] if out_e and out_e.get("last_clicked") else curr_s['lon']
+
+                    with st.form(f"edit_stat_form_{target_s}"):
+                        un = st.text_input("Naziv", value=curr_s['name'])
+                        ua = st.text_input("Adresa", value=curr_s['physical_address'])
+                        c1, c2 = st.columns(2)
+                        ulat_in = c1.number_input("Lat", value=float(u_lat), format="%.6f")
+                        ulon_in = c2.number_input("Lon", value=float(u_lon), format="%.6f")
+                        
+                        if st.form_submit_button("💾 Sačuvaj izmene"):
+                            conn.execute("UPDATE stations SET name=?, physical_address=?, lat=?, lon=? WHERE id=?", 
+                                         (un, ua, ulat_in, ulon_in, target_s))
+                            conn.commit()
+                            log_activity("UPDATE_STATION", f"Izmenjena stanica ID {target_s}")
+                            st.rerun()
+
 
     # --- 4. EMPLOYEES ---
     if role in ["General Manager", "Region Director", "Region Manager"]:
