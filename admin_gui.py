@@ -18,7 +18,46 @@ st.set_page_config(page_title="GentStation ERP", layout="wide")
 conn = sqlite3.connect('company.db', check_same_thread=False)
 conn.execute("PRAGMA foreign_keys = ON;")
 
+# --- UI HELPERS ---
+
+def get_status_emoji(unprocessed_count):
+    """Određuje vizuelni status stanice na osnovu broja neobrađenih snimaka."""
+    if unprocessed_count == 0:
+        return "🟢 😊" # Sve pod kontrolom
+    elif unprocessed_count < 3:
+        return "🟡 😐" # Potrebna pažnja
+    else:
+        return "🔴 ⚠️" # Kritično - zastoj u obradi
+
+def display_sidebar_header():
+    """Prikazuje logo i informacije o korisniku u sidebaru (vidljivo na svim tabovima)."""
+    with st.sidebar:
+        logo_path = "assets/Opus Logo .png"
+        if os.path.exists(logo_path):
+            st.image(logo_path, use_container_width=True)
+        else:
+            st.title("🛡️ GentStation App")
+        
+        st.divider()
+        st.write(f"Korisnik: **{st.session_state.user_name}**")
+        st.caption(f"Uloga: {st.session_state.user_role}")
+        
+        if st.button("🚪 Odjavi se", use_container_width=True):
+            for key in list(st.session_state.keys()): del st.session_state[key]
+            st.rerun()
+        st.divider()
+    # --- POMOĆNA FUNKCIJA ZA BRISANJE ---
+    def delete_item(table, item_id):
+        try:
+            conn.execute(f"DELETE FROM {table} WHERE id = ?", (item_id,))
+            conn.commit()
+            st.success("Uspešno obrisano!")
+            st.rerun()
+        except Exception as e:
+            st.error("Greška: Stavka je verovatno povezana sa drugim podacima.")
+
 # --- AUTHENTICATION & SECURITY ---
+
 if 'auth_status' not in st.session_state:
     st.session_state.auth_status = False
     st.session_state.user_email = None
@@ -29,90 +68,14 @@ if 'auth_status' not in st.session_state:
 def hash_password(password):
     return hashlib.sha256(str.encode(password)).hexdigest()
 
-def generate_temp_password():
-    return ''.join(secrets.choice(string.ascii_letters + string.digits) for i in range(10))
-
-# --- MAILER LOGIC ---
-def send_invitation_email(recipient_email, name, temp_pw, role, station_id=None):
-    sender = os.getenv("SENDER_EMAIL")
-    password = os.getenv("SENDER_PASSWORD")
-    app_url = os.getenv("APP_URL", "http://localhost:8501")
-    telegram_url = os.getenv("TELEGRAM_BOT_URL", "https://t.me/YourGentStationBot") # Add to .env
-
-    if not sender or not password:
-        st.error("Environment variables SENDER_EMAIL or SENDER_PASSWORD missing.")
-        return False
-    
-    if station_id:
-        telegram_link = f"{os.getenv('TELEGRAM_BOT_URL')}?start={station_id}"
-    else:
-        telegram_link = os.getenv('TELEGRAM_BOT_URL')
-
-    msg = MIMEMultipart()
-    msg['From'] = f"GentStation Administration <{sender}>"
-    msg['To'] = recipient_email
-    msg['Subject'] = f"Welcome to GentStation, {name}! | Credentials"
-# Role-based Telegram instructions
-    telegram_section = ""
-    if role in ["Employee", "Gas Station Supervisor"]:
-        telegram_section = f"""
-        <div style="margin-top: 20px; padding: 15px; border: 2px dashed #0088cc; border-radius: 10px; background-color: #f0f9ff;">
-            <h3 style="color: #0088cc; margin-top: 0;">📹 Video Reporting Active</h3>
-            <p>To register this device for reporting, click the button below and then press <b>START</b> in Telegram:</p>
-            <p style="text-align: center;">
-                <a href="{telegram_link}" style="display: inline-block; padding: 10px 25px; background-color: #0088cc; color: white; text-decoration: none; border-radius: 5px; font-weight: bold;">🚀 Register Device on Telegram</a>
-            </p>
-        </div>
-        """
-
-    body = f"""
-    <html>
-    <body style="font-family: Arial, sans-serif; color: #333;">
-        <div style="max-width: 600px; margin: auto; border: 1px solid #eee; padding: 20px;">
-            <h2 style="color: #1f77b4;">Account Created</h2>
-            <p>Hello <b>{name}</b>, you have been registered as <b>{role}</b>.</p>
-            <p><b>Login:</b> {recipient_email}<br>
-            <b>Password:</b> <code>{temp_pw}</code></p>
-            <p style="text-align: center; margin: 20px 0;">
-                <a href="{app_url}" style="padding: 10px 20px; background-color: #1f77b4; color: white; text-decoration: none; border-radius: 5px;">Access Portal</a>
-            </p>
-            {telegram_section}
-        </div>
-    </body>
-    </html>
-    """
-
-    msg.attach(MIMEText(body, 'html'))
-    try:
-        server = smtplib.SMTP("smtp.gmail.com", 587)
-        server.starttls() 
-        server.login(sender, password)
-        server.send_message(msg)
-        server.quit()
-        return True
-    except Exception as e:
-        st.error(f"Gmail Error: {e}")
-        return False
-
-# --- CRUD HELPERS ---
-def delete_item(table, item_id):
-    try:
-        conn.execute(f"DELETE FROM {table} WHERE id = ?", (item_id,))
-        conn.commit()
-        st.success(f"Item {item_id} deleted.")
-        st.rerun()
-    except Exception as e:
-        st.error(f"Cannot delete: Item is linked to other records.")
-
-# --- LOGIN SCREEN ---
 def login_screen():
     col1, col2, col3 = st.columns([1,2,1])
     with col2:
         st.title("⛽ GentStation Portal")
         with st.container(border=True):
             email = st.text_input("Email / Username")
-            pw = st.text_input("Password", type="password")
-            if st.button("Log In", use_container_width=True):
+            pw = st.text_input("Lozinka", type="password")
+            if st.button("Prijavi se", use_container_width=True):
                 user = conn.execute(
                     "SELECT id, name, role FROM employees WHERE email = ? AND password = ?", 
                     (email, hash_password(pw))
@@ -122,67 +85,186 @@ def login_screen():
                     st.session_state.user_id, st.session_state.user_name, st.session_state.user_role = user
                     st.rerun()
                 else:
-                    st.error("Invalid credentials.")
+                    st.error("Neispravni podaci za pristup.")
 
-# --- MAIN APP GATE ---
+# --- MAIN APP LOGIC ---
+
 if not st.session_state.auth_status:
     login_screen()
 else:
-    # Sidebar
-    with st.sidebar:
-        st.title("🛡️ GentStation ERP")
-        st.write(f"Logged in as: **{st.session_state.user_name}**")
-        st.caption(f"Role: {st.session_state.user_role}")
-        if st.button("🚪 Logout"):
-            for key in list(st.session_state.keys()): del st.session_state[key]
-            st.rerun()
+    # Pozivamo sidebar header koji sadrži logo i user info
+    display_sidebar_header()
 
-    # RBAC Tab Filtering
     role = st.session_state.user_role
+    
+    # Definisanje tabova na osnovu uloge
     if role == "General Manager":
-        tab_list = ["📊 Dashboard", "🌍 Regions", "⛽ Stations", "👥 Employees"]
+        tab_list = ["📊 Network Oversight", "🌍 Regions", "⛽ Stations", "👥 Employees"]
     elif role in ["Region Director", "Region Manager"]:
-        tab_list = ["📊 Dashboard", "⛽ Stations", "👥 Employees"]
+        tab_list = ["📊 Network Oversight", "⛽ Stations", "👥 Employees"]
     else:
         tab_list = ["📊 My Dashboard"]
     
     tabs = st.tabs(tab_list)
 
-    # --- 1. DASHBOARD ---
+    # --- 1. NETWORK OVERSIGHT ---
     with tabs[0]:
-        st.subheader("📊 Network Oversight")
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Regions", conn.execute("SELECT COUNT(*) FROM regions").fetchone()[0])
-        c2.metric("Stations", conn.execute("SELECT COUNT(*) FROM stations").fetchone()[0])
-        c3.metric("Total Staff", conn.execute("SELECT COUNT(*) FROM employees").fetchone()[0])
-        
-        m = folium.Map(location=[44.7866, 20.4489], zoom_start=6)
-        stations_df = pd.read_sql_query("SELECT name, lat, lon, category FROM stations", conn)
-        for _, s in stations_df.iterrows():
-            folium.Marker([s['lat'], s['lon']], tooltip=s['name']).add_to(m)
-        st_folium(m, width="100%", height=400)
+        if role == "Gas Station Manager":
+            # Specijalni prikaz za menadžere stanica - Arhiva izveštaja
+            st.subheader("📋 Arhiva AI Revizija (Srpski)")
+            reports_df = pd.read_sql_query(f"""
+                SELECT created_at as Datum, ai_content as Izveštaj 
+                FROM report_logs 
+                WHERE station_id = (SELECT station_id FROM employees WHERE id = {st.session_state.user_id}) 
+                ORDER BY created_at DESC LIMIT 10
+            """, conn)
+            
+            if not reports_df.empty:
+                for _, row in reports_df.iterrows():
+                    with st.expander(f"Izveštaj - {row['Datum']}"):
+                        st.markdown(row['Izveštaj'])
+            else:
+                st.info("Još uvek nema generisanih izveštaja za vašu stanicu.")
+        else:
+            # Pregled za GM i Regionalne menadžere
+            st.subheader("📊 Monitoring Prodajne Mreže")
+            
+            # KPI Kartice
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Regioni", conn.execute("SELECT COUNT(*) FROM regions").fetchone()[0])
+            c2.metric("Stanice", conn.execute("SELECT COUNT(*) FROM stations").fetchone()[0])
+            c3.metric("Ukupno Zaposlenih", conn.execute("SELECT COUNT(*) FROM employees").fetchone()[0])
+            
+            # SQL upit za listu stanica sa stanjem izveštaja
+            query = """
+                SELECT 
+                    s.id, 
+                    s.name as 'Naziv Stanice', 
+                    s.physical_address as 'Adresa',
+                    s.lat, s.lon,
+                    (SELECT COUNT(*) FROM submissions WHERE station_id = s.id AND processed = 0) as 'Neobrađeno'
+                FROM stations s
+            """
+            df_stats = pd.read_sql_query(query, conn)
+            df_stats['Status'] = df_stats['Neobrađeno'].apply(get_status_emoji)
+            
+            # Generisanje linka za Google Maps
+            df_stats['Mapa'] = df_stats.apply(lambda x: f"https://www.google.com/maps/search/?api=1&query={x['lat']},{x['lon']}", axis=1)
+
+            # Glavna tabela sa statusima
+            st.dataframe(
+                df_stats[['Status', 'Naziv Stanice', 'Adresa', 'Neobrađeno', 'Mapa']],
+                column_config={
+                    "Mapa": st.column_config.LinkColumn("📍 Lokacija", display_text="Pogledaj Pin"),
+                    "Neobrađeno": st.column_config.NumberColumn("Čeka na AI", format="%d 📹"),
+                },
+                use_container_width=True,
+                hide_index=True
+            )
+
+            st.divider()
+            
+            # Vizuelni prikaz na mapi
+            st.write("### 🌍 Geografski prikaz")
+            m = folium.Map(location=[44.7866, 20.4489], zoom_start=6)
+            for _, s in df_stats.iterrows():
+                # Boja markera može da prati status
+                icon_color = "green" if s['Neobrađeno'] == 0 else "orange" if s['Neobrađeno'] < 3 else "red"
+                folium.Marker(
+                    [s['lat'], s['lon']], 
+                    tooltip=s['Naziv Stanice'],
+                    icon=folium.Icon(color=icon_color, icon='info-sign')
+                ).add_to(m)
+            st_folium(m, width="100%", height=400)
 
     # --- 2. REGIONS (GM ONLY) ---
     if role == "General Manager":
         with tabs[1]:
-            st.subheader("🌍 Region Management")
-            with st.expander("➕ Add New Region"):
+            st.subheader("🌍 Upravljanje Regionima")
+            
+            # CREATE
+            with st.expander("➕ Dodaj novi region"):
                 with st.form("reg_add"):
-                    r_name, r_mail = st.text_input("Region Name"), st.text_input("Group Email")
-                    if st.form_submit_button("Save Region"):
+                    r_name = st.text_input("Naziv regiona")
+                    r_mail = st.text_input("Email regiona")
+                    if st.form_submit_button("Sačuvaj Region"):
                         conn.execute("INSERT INTO regions (name, email) VALUES (?,?)", (r_name, r_mail))
                         conn.commit()
                         st.rerun()
+
+            # READ
             df_reg = pd.read_sql_query("SELECT * FROM regions", conn)
-            st.dataframe(df_reg, use_container_width=True)
+            st.dataframe(df_reg, use_container_width=True, hide_index=True)
+
+            # UPDATE & DELETE
+            if not df_reg.empty:
+                st.divider()
+                target_r = st.selectbox("Izaberi region za izmenu/brisanje", df_reg['id'], 
+                                    format_func=lambda x: df_reg[df_reg['id']==x]['name'].values[0])
+                curr_r = df_reg[df_reg['id']==target_r].iloc[0]
+                
+                with st.form(f"edit_reg_{target_r}"):
+                    u_name = st.text_input("Novi naziv", value=curr_r['name'])
+                    u_mail = st.text_input("Novi email", value=curr_r['email'])
+                    c1, c2 = st.columns(2)
+                    if c1.form_submit_button("💾 Sačuvaj izmene"):
+                        conn.execute("UPDATE regions SET name=?, email=? WHERE id=?", (u_name, u_mail, target_r))
+                        conn.commit()
+                        st.rerun()
+                    if c2.form_submit_button("🗑️ Obriši region"):
+                        delete_item("regions", target_r)
 
     # --- 3. STATIONS ---
     if role in ["General Manager", "Region Director", "Region Manager"]:
         idx = 2 if role == "General Manager" else 1
-        with tabs[idx]:
-            st.subheader("⛽ Gas Station Management")
-            df_stat = pd.read_sql_query("SELECT s.*, r.name as region FROM stations s JOIN regions r ON s.region_id = r.id", conn)
-            st.dataframe(df_stat, use_container_width=True)
+    with tabs[idx]:
+        st.subheader("⛽ Upravljanje Stanicama")
+        
+        # CREATE
+        with st.expander("➕ Registruj novu stanicu"):
+            regs = {r[1]: r[0] for r in conn.execute("SELECT id, name FROM regions").fetchall()}
+            with st.form("stat_add"):
+                s_name = st.text_input("Naziv stanice")
+                s_reg = st.selectbox("Region", list(regs.keys()))
+                s_addr = st.text_input("Fizička adresa")
+                col1, col2 = st.columns(2)
+                s_lat = col1.number_input("Latituda", format="%.6f")
+                s_lon = col2.number_input("Longituda", format="%.6f")
+                if st.form_submit_button("Sačuvaj Stanicu"):
+                    conn.execute("""INSERT INTO stations (name, region_id, physical_address, lat, lon, category) 
+                                    VALUES (?,?,?,?,?,'Retail')""", (s_name, regs[s_reg], s_addr, s_lat, s_lon))
+                    conn.commit()
+                    st.rerun()
+
+        # READ
+        df_stat = pd.read_sql_query("""
+            SELECT s.id, s.name, r.name as region, s.physical_address, s.lat, s.lon 
+            FROM stations s JOIN regions r ON s.region_id = r.id
+        """, conn)
+        st.dataframe(df_stat, use_container_width=True, hide_index=True)
+
+        # UPDATE & DELETE
+        if not df_stat.empty:
+            st.divider()
+            target_s = st.selectbox("Izaberi stanicu za izmenu/brisanje", df_stat['id'], 
+                                   format_func=lambda x: df_stat[df_stat['id']==x]['name'].values[0])
+            curr_s = pd.read_sql_query(f"SELECT * FROM stations WHERE id={target_s}", conn).iloc[0]
+            
+            with st.form(f"edit_stat_{target_s}"):
+                u_name = st.text_input("Naziv", value=curr_s['name'])
+                u_addr = st.text_input("Adresa", value=curr_s['physical_address'])
+                c1, c2 = st.columns(2)
+                u_lat = c1.number_input("Lat", value=curr_s['lat'], format="%.6f")
+                u_lon = c2.number_input("Lon", value=curr_s['lon'], format="%.6f")
+                
+                btn1, btn2 = st.columns(2)
+                if btn1.form_submit_button("💾 Sačuvaj izmene"):
+                    conn.execute("UPDATE stations SET name=?, physical_address=?, lat=?, lon=? WHERE id=?", 
+                                 (u_name, u_addr, u_lat, u_lon, target_s))
+                    conn.commit()
+                    st.rerun()
+                if btn2.form_submit_button("🗑️ Obriši stanicu"):
+                    delete_item("stations", target_s)
 
     # --- 4. EMPLOYEES ---
     if role in ["General Manager", "Region Director", "Region Manager"]:

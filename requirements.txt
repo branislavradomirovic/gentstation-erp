@@ -4,3 +4,4 @@ folium
 streamlit-folium
 google-generativeai
 python-dotenv
+python-telegram-bot
