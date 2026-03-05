@@ -4,8 +4,7 @@ def update_db_schema():
     conn = sqlite3.connect('company.db')
     cursor = conn.cursor()
     try:
-        # 1. Ensure the submissions table exists (or rename report_logs if necessary)
-        # Here we assume 'submissions' is our primary collection table
+        # 1. Kreiranje / Provera tabele submissions
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS submissions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -14,11 +13,23 @@ def update_db_schema():
                 video_path TEXT,
                 role TEXT,
                 timestamp DATETIME,
-                processed INTEGER DEFAULT 0
+                processed INTEGER DEFAULT 0,
+                FOREIGN KEY (station_id) REFERENCES stations(id)
             )
         """)
         
-        # 2. Add the processed column if the table already existed but lacked it
+        # 2. Kreiranje tabele za Activity Logs (NOVO)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS activity_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_name TEXT,
+                action TEXT,
+                details TEXT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # 3. Provera i dodavanje 'processed' kolone u submissions
         try:
             cursor.execute("ALTER TABLE submissions ADD COLUMN processed INTEGER DEFAULT 0")
             print("✅ Column 'processed' added to submissions.")
@@ -26,6 +37,8 @@ def update_db_schema():
             print("ℹ️ Column 'processed' already exists.")
             
         conn.commit()
+        print("🚀 Database schema is up to date.")
+        
     except Exception as e:
         print(f"❌ Database update failed: {e}")
     finally:
