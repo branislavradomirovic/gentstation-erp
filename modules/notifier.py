@@ -29,11 +29,14 @@ def get_hierarchy_emails(station_id):
     staff = cursor.execute("""
         SELECT email, role FROM employees 
         WHERE station_id = ? AND role IN ('Gas Station Supervisor', 'Gas Station Manager')
+        ORDER BY role DESC
     """, (clean_s_id,)).fetchall()
     
     for email, role in staff:
-        if role == 'Gas Station Supervisor': emails["supervisor"] = email
-        if role == 'Gas Station Manager': emails["station_mgr"] = email
+        if role == 'Gas Station Supervisor' and not emails["supervisor"]: 
+            emails["supervisor"] = email
+        if role == 'Gas Station Manager' and not emails["station_mgr"]: 
+            emails["station_mgr"] = email
 
     # DEBUG PRINT: This will show in your terminal when you run hourly_summarizer.py
     print(f"🔍 SQL Match Result for Station {clean_s_id}: Manager={emails['station_mgr']}, Supervisor={emails['supervisor']}")

@@ -6,28 +6,23 @@ def update_db_schema():
     try:
         # Kreiranje tabele za Activity Logs
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS activity_logs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_name TEXT,
-                action TEXT,
-                details TEXT,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
+            CREATE TABLE IF NOT EXISTS ai_reports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT,
+    report_role TEXT,
+    station_id INTEGER,
+    region_id INTEGER,
+    report_text TEXT,
+    sentiment REAL,
+    safety_score INTEGER,
+    cleanliness_score INTEGER,
+    staff_score INTEGER,
+    efficiency_score INTEGER,
+    customer_score INTEGER,
+    incidents_json TEXT,
+    trend TEXT
+)
         """)
-        
-        # Osiguraj da submissions tabela ima 'processed' kolonu
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS submissions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                station_id INTEGER,
-                processed INTEGER DEFAULT 0
-            )
-        """)
-        
-        try:
-            cursor.execute("ALTER TABLE submissions ADD COLUMN processed INTEGER DEFAULT 0")
-        except sqlite3.OperationalError:
-            pass # Kolona već postoji
             
         conn.commit()
         print("✅ Baza je uspešno ažurirana. Tabela 'activity_logs' je spremna.")
