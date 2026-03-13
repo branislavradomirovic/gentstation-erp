@@ -12,7 +12,7 @@ except Exception as e:
     print("genai client not available, using fallback:", e)
     HAS_GEMINI = False
 
-MODEL_NAME = "models/gemini-2.5-flash"
+MODEL_NAME = "models/gemini-pro"
 
 def generate_from_prompt(prompt: str, file_objs: list = None, timeout: int = 120) -> str:
     """

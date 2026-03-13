@@ -2,6 +2,21 @@ import os
 import streamlit as st
 from pathlib import Path
 
+import subprocess
+import sys
+
+
+# Start the bot as a background process if not already running
+if "bot_started" not in st.session_state:
+    subprocess.Popen([sys.executable, "bot_worker.py"])
+    st.session_state["bot_started"] = True
+
+# Start the AI worker as a background process if not already running
+if "ai_worker_started" not in st.session_state:
+    subprocess.Popen([sys.executable, "core/ai_worker.py"])
+    st.session_state["ai_worker_started"] = True
+
+
 # --- 1. PAGE CONFIGURATION (MUST BE FIRST) ---
 st.set_page_config(
     page_title="GentStation Opus ERP",

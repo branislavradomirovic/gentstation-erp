@@ -82,8 +82,8 @@ def render(conn):
     ranking_df = pd.DataFrame(ranking_rows).sort_values("risk_score", ascending=False)
     if ranking_df.empty:
         st.info("No station KPIs yet.")
-    else:
-        st.dataframe(ranking_df[['station_id','name','region_id','safety','risk_score']], use_container_width=True)
+    else:       
+        st.dataframe(ranking_df[['station_id','station_name','region_id','safety','risk_score']], use_container_width=True)
 
     st.divider()
 
@@ -112,7 +112,7 @@ def render(conn):
                 color=color,
                 fill=True,
                 fill_opacity=0.7,
-                popup=f"{row['name']} (Risk {row['risk_score']})"
+                popup=f"{row['station_name']} (Risk {row['risk_score']})"
             ).add_to(m)
         st_folium(m, width="100%", height=450)
 

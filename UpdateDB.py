@@ -1,2 +1,3 @@
-from core.auth import create_user
-create_user("admin","admin123!", "admin@example.com", role="General Manager")
+import sqlite3
+conn = sqlite3.connect("company.db")
+print(conn.execute("SELECT name FROM sqlite_master WHERE type='table';").fetchall())
