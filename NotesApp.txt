@@ -1,0 +1,51 @@
+Gen AI Gas Station Supervisor - SaaS Product Description
+========================================================
+Developed by Opus Labs d.o.o. Novi Sad
+
+1. Executive Summary
+--------------------
+The Gen AI Gas Station Supervisor is an advanced Enterprise Resource Planning (ERP) and operational auditing tool designed for fuel retail chains. By integrating Generative AI (Google Gemini 1.5 Flash) with standard messaging platforms (Telegram), it transforms standard CCTV and inspection footage into actionable business intelligence, safety compliance metrics, and operational risk assessments.
+
+2. Core Modules & Functionality
+-------------------------------
+
+A. Automated Video Analysis Pipeline
+   - **Ingestion**: Frontline employees submit video reports via a secure, deep-linked Telegram Bot.
+   - **AI Processing**: The system analyzes video and audio for:
+     * **Cleanliness**: Assessment of forecourt, pumps, and waste bins.
+     * **Safety**: Detection of fire risks, traffic hazards, and protocol violations.
+     * **Staff Performance**: Uniform compliance, customer interaction quality, and availability.
+   - **Output**: Generates structured JSON data with scores (1-10), sentiment analysis (-1 to 1), and executive summaries.
+
+B. Dynamic Risk Engine
+   - **Real-time Scoring**: Calculates a "Risk Score" (0-100) for every station based on weighted factors (Safety 50%, Incidents 60%, Cleanliness 20%, etc.).
+   - **Anomaly Detection**: Compares current metrics against historical averages (Z-score analysis) to flag significant deviations.
+   - **Alerting**: Automatically generates High/Medium severity alerts for immediate management attention.
+
+C. Executive Command Center (Dashboards)
+   - **GM Dashboard**: Top-level KPIs, "Worst-to-Best" Station Risk Ranking, and Risk Heatmaps.
+   - **Interactive Map View**: Fullscreen geospatial view of the network.
+     * **Live Status**: Color-coded markers (Green/Orange/Red) indicating pending submission volume.
+     * **Pulse Layer**: Real-time visualization of active submissions within the last hour.
+     * **High Risk Layer**: Overlay of AI-detected safety alerts.
+   - **Regional Management**: Drill-down views for Region Directors and Managers to monitor specific territories.
+
+D. Administrative & Security Features
+   - **Role-Based Access Control (RBAC)**: distinct privileges for General Managers, Directors, Station Managers, and Employees.
+   - **Audit Log**: Full traceability of user actions (logins, updates, deletions) with IP tracking.
+   - **Maintenance Mode**: System-wide lockout capability for updates.
+   - **Security**: BCrypt password hashing, session token management, and lockout policies for failed login attempts.
+
+3. Technical Architecture
+-------------------------
+- **Frontend**: Streamlit (Python) for responsive, data-centric web UI.
+- **Backend/Database**: SQLite with optimized schema for relational data and JSON storage.
+- **AI Core**: Google Gemini 1.5 Flash (Vision & LLM) integration.
+- **Messaging**: Python-Telegram-Bot for edge data collection.
+
+4. Legal Disclaimer
+-------------------
+This application utilizes Generative AI to provide management suggestions and data analysis. These insights are for informational purposes only and do not constitute professional or safety advice.
+No Guarantee: AI outputs are probabilistic and may be incorrect or biased.
+Human Oversight: This tool is an assistant, not a replacement for human supervision.
+Liability: Use of this application is at the user's sole risk. Opus Labs d.o.o. disclaims all liability for operational errors or financial losses resulting from its use.
