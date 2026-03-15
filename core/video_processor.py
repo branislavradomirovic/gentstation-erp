@@ -1,5 +1,6 @@
 import os
 import json
+import time
 import google.generativeai as genai
 from dotenv import load_dotenv
 
@@ -8,20 +9,37 @@ genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
 def parse_station_video(video_path):
     """Sends video to Gemini and returns structured JSON."""
-    model = genai.GenerativeModel('models/gemini-pro')
+    # Use Gemini 1.5 Flash for efficient video processing
+    model = genai.GenerativeModel('gemini-1.5-flash')
     
     # Upload the file to Google's temporary storage
     sample_file = genai.upload_file(path=video_path)
     
+    # Wait for the file to be processed
+    while sample_file.state.name == "PROCESSING":
+        time.sleep(2)
+        sample_file = genai.get_file(sample_file.name)
+        
+    if sample_file.state.name == "FAILED":
+        raise ValueError("Video processing failed.")
+    
     prompt = """
-    Analyze this gas station footage. 
-    Return ONLY a JSON object (no extra text) with:
+    You are an expert Fuel Retail Operations Auditor. 
+    Analyze this CCTV footage from a gas station.
+    
+    Assess the following KPIs (1-10 scale, 10 is best):
+    - Cleanliness: Status of forecourt, pumps, and bins.
+    - Safety: adherence to protocols, fire risks, traffic safety.
+    - Staff: Presence, uniform compliance, activity level.
+
+    Return ONLY a raw JSON object (no markdown formatting) with these keys:
     {
-      "pumps_count": int,
       "cleanliness_score": int(1-10),
-      "safety_hazards": list,
+      "safety_score": int(1-10),
+      "staff_score": int(1-10),
+      "hazards": ["list", "of", "issues"],
       "customer_activity": "low|medium|high",
-      "summary": "short description"
+      "summary": "Brief executive summary of the footage"
     }
     """
     

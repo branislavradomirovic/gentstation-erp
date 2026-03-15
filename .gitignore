@@ -1,4 +1,10 @@
-.env
 __pycache__/
-downloads/
-# company.db  <-- Razmisli o ovome (vidi ispod)
+*.py[cod]
+*.db
+.env
+.DS_Store
+uploads/
+.vscode/
+.idea/
+venv/
+*.log

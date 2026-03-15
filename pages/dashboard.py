@@ -81,12 +81,39 @@ def render(conn):
 
         if not df_stats.empty:
             m = folium.Map(location=[44.2108, 20.9224], zoom_start=7)
+            
+            # Layer 1: Stations (Blue Markers)
+            fg_stations = folium.FeatureGroup(name="Stations")
             for _, s in df_stats.iterrows():
                 folium.Marker(
                     [s['lat'], s['lon']], 
                     popup=f"<b>{s['name']}</b><br>{s['physical_address']}",
-                    tooltip=s['name']
-                ).add_to(m)
+                    tooltip=s['name'],
+                    icon=folium.Icon(color='blue', icon='gas-pump', prefix='fa')
+                ).add_to(fg_stations)
+            fg_stations.add_to(m)
+
+            # Layer 2: Recent Activity (Red Circles)
+            fg_activity = folium.FeatureGroup(name="Recent Activity (24h)")
+            query_activity = """
+                SELECT s.lat, s.lon, e.name || ' ' || e.surname as emp_name, sub.timestamp, s.name as station
+                FROM submissions sub
+                JOIN stations s ON sub.station_id = s.id
+                JOIN employees e ON sub.employee_id = e.id
+                WHERE sub.timestamp >= datetime('now', '-1 day') AND s.lat IS NOT NULL
+                ORDER BY sub.timestamp DESC LIMIT 50
+            """
+            df_act = pd.read_sql_query(query_activity, conn)
+            for _, row in df_act.iterrows():
+                folium.CircleMarker(
+                    location=[row['lat'], row['lon']],
+                    radius=6, color="red", fill=True, fill_opacity=0.6,
+                    popup=f"{row['emp_name']} @ {row['station']}<br>{row['timestamp']}",
+                    tooltip="Recent Submission"
+                ).add_to(fg_activity)
+            fg_activity.add_to(m)
+
+            folium.LayerControl().add_to(m)
             st_folium(m, width="100%", height=450, key="dashboard_map")
         else:
             st.info("Add coordinates to stations to see them on the map.")
@@ -99,7 +126,7 @@ def render(conn):
     try:
         # NOTE: Updated 'timestamp' to match standard SQL or your log schema
         audit_query = """
-            SELECT timestamp as 'Time', user_name as 'User', action as 'Action' 
+            SELECT timestamp as 'Time', user_name as 'User', action as 'Action', ip_address as 'IP' 
             FROM activity_logs 
             ORDER BY timestamp DESC LIMIT 5
         """

@@ -22,7 +22,8 @@ def ensure_schema(conn):
         audio_path TEXT,
         role TEXT,
         timestamp TEXT DEFAULT (datetime('now')),
-        processed INTEGER DEFAULT 0
+        processed INTEGER DEFAULT 0,
+        FOREIGN KEY(employee_id) REFERENCES employees(id) ON DELETE RESTRICT
     );
     """)
 
@@ -65,7 +66,7 @@ def ensure_schema(conn):
         lat REAL,
         lon REAL,
         category TEXT,
-        FOREIGN KEY(region_id) REFERENCES regions(id)
+        FOREIGN KEY(region_id) REFERENCES regions(id) ON DELETE SET NULL
     );
     """)
     cursor.execute("""
@@ -85,7 +86,9 @@ def ensure_schema(conn):
     CREATE TABLE IF NOT EXISTS director_regions (
         employee_id INTEGER,
         region_id INTEGER,
-        PRIMARY KEY(employee_id, region_id)
+        PRIMARY KEY(employee_id, region_id),
+        FOREIGN KEY(employee_id) REFERENCES employees(id) ON DELETE CASCADE,
+        FOREIGN KEY(region_id) REFERENCES regions(id) ON DELETE CASCADE
     );
     """)
     cursor.execute("""
@@ -94,7 +97,8 @@ def ensure_schema(conn):
         timestamp TEXT DEFAULT (datetime('now')),
         user_name TEXT,
         action TEXT,
-        details TEXT
+        details TEXT,
+        ip_address TEXT
     );
     """)
 

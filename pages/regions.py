@@ -1,5 +1,6 @@
 # gentstation_opus/pages/regions.py
 import streamlit as st
+import sqlite3
 import pandas as pd
 from core.activity_logger import log_activity
 
@@ -60,8 +61,10 @@ def render(conn):
             log_activity(conn, "DELETE_REGION", f"Deleted region ID {selected}")
             st.success("Region deleted.")
             st.rerun()
+        except sqlite3.IntegrityError:
+            st.error("Cannot delete region: Stations are currently assigned to this region. Please reassign them first.")
         except Exception as e:
-            st.error("Could not delete region. It might be referenced by stations or other records.")
+            st.error(f"An error occurred: {e}")
 
     st.divider()
     st.subheader("🔗 Stations in the selected Region")

@@ -1,5 +1,6 @@
 # gentstation_opus/pages/stations.py
 import streamlit as st
+import sqlite3
 import pandas as pd
 import folium
 from streamlit_folium import st_folium
@@ -37,9 +38,12 @@ def render(conn):
 
         # Update session state with coordinates on click
         if map_create_data.get("last_clicked"):
-            st.session_state.create_lat = map_create_data["last_clicked"]["lat"]
-            st.session_state.create_lon = map_create_data["last_clicked"]["lng"]
-            st.rerun()
+            clicked_lat = map_create_data["last_clicked"]["lat"]
+            clicked_lon = map_create_data["last_clicked"]["lng"]
+            if st.session_state.get("create_lat") != clicked_lat or st.session_state.get("create_lon") != clicked_lon:
+                st.session_state.create_lat = clicked_lat
+                st.session_state.create_lon = clicked_lon
+                st.rerun()
 
         st.write("📝 **Step 2: Station Details**")
         with st.form("add_station_form"):
@@ -81,7 +85,6 @@ def render(conn):
                     # Cleanup session and refresh
                     st.session_state.pop("create_lat", None)
                     st.session_state.pop("create_lon", None)
-                    st.rerun()
                     st.rerun()
 
     # --- 2. STATIONS TABLE ---
@@ -130,9 +133,12 @@ def render(conn):
 
         # Update if user clicks a new location
         if map_edit_data.get("last_clicked"):
-            st.session_state[f"edit_lat_{sel}"] = map_edit_data["last_clicked"]["lat"]
-            st.session_state[f"edit_lon_{sel}"] = map_edit_data["last_clicked"]["lng"]
-            st.rerun()
+            e_lat = map_edit_data["last_clicked"]["lat"]
+            e_lon = map_edit_data["last_clicked"]["lng"]
+            if st.session_state.get(f"edit_lat_{sel}") != e_lat or st.session_state.get(f"edit_lon_{sel}") != e_lon:
+                st.session_state[f"edit_lat_{sel}"] = e_lat
+                st.session_state[f"edit_lon_{sel}"] = e_lon
+                st.rerun()
 
         with st.form(f"edit_station_{sel}"):
             name = st.text_input("Station Name", value=curr['name'])
@@ -159,30 +165,33 @@ def render(conn):
             u_lon = c4.number_input("Lon", value=float(display_lon), format="%.6f")
 
             if st.form_submit_button("Save Station Changes"):
-                # Update Database
-                region_id = regions_map.get(sel_region) if sel_region != "-- None --" else None
-                conn.execute("""
-                    UPDATE stations SET name=?, physical_address=?, email=?, region_id=?, lat=?, lon=? 
-                    WHERE id=?
-                """, (name.strip(), addr.strip() or None, email.strip() or None, region_id, u_lat, u_lon, sel))
-                
-                # Update Manager link
-                conn.execute("UPDATE employees SET station_id = NULL WHERE station_id = ? AND role = 'Gas Station Manager'", (sel,))
-                if sel_mgr != "-- None --":
-                    mgr_id = mgr_map.get(sel_mgr)
-                    conn.execute("UPDATE employees SET station_id = ? WHERE id = ?", (sel, mgr_id))
-                
-                conn.commit()
-                
-                # LOGGING AND FEEDBACK
-                log_activity(conn, "UPDATE_STATION", f"Updated station ID {sel} ({name})")
-                st.success(f"💾 Changes for '{name}' have been saved.")
-                st.toast("Update successful!", icon="📝")
+                if not name.strip():
+                    st.error("Station name cannot be empty.")
+                else:
+                    # Update Database
+                    region_id = regions_map.get(sel_region) if sel_region != "-- None --" else None
+                    conn.execute("""
+                        UPDATE stations SET name=?, physical_address=?, email=?, region_id=?, lat=?, lon=? 
+                        WHERE id=?
+                    """, (name.strip(), addr.strip() or None, email.strip() or None, region_id, u_lat, u_lon, sel))
+                    
+                    # Update Manager link
+                    conn.execute("UPDATE employees SET station_id = NULL WHERE station_id = ? AND role = 'Gas Station Manager'", (sel,))
+                    if sel_mgr != "-- None --":
+                        mgr_id = mgr_map.get(sel_mgr)
+                        conn.execute("UPDATE employees SET station_id = ? WHERE id = ?", (sel, mgr_id))
+                    
+                    conn.commit()
+                    
+                    # LOGGING AND FEEDBACK
+                    log_activity(conn, "UPDATE_STATION", f"Updated station ID {sel} ({name})")
+                    st.success(f"💾 Changes for '{name}' have been saved.")
+                    st.toast("Update successful!", icon="📝")
 
-                # Clear session state and refresh
-                st.session_state.pop(f"edit_lat_{sel}", None)
-                st.session_state.pop(f"edit_lon_{sel}", None)
-                st.rerun()
+                    # Clear session state and refresh
+                    st.session_state.pop(f"edit_lat_{sel}", None)
+                    st.session_state.pop(f"edit_lon_{sel}", None)
+                    st.rerun()
 
         # Separate delete button outside the form for safety
         if st.button("🗑️ Delete Station", type="secondary"):
@@ -193,5 +202,7 @@ def render(conn):
                 st.success(f"Station ID {sel} removed.")
                 st.toast("Station deleted.", icon="🗑️")
                 st.rerun()
-            except Exception:
-                st.error("Cannot delete station: It has linked records (employees or logs).")
+            except sqlite3.IntegrityError:
+                st.error("Cannot delete station: It contains linked records (e.g., employees, history).")
+            except Exception as e:
+                st.error(f"Error deleting station: {e}")

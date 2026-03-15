@@ -39,38 +39,62 @@ def create_user(username: str, password: str, email: Optional[str], role: str = 
     uid = cur.lastrowid
     return {"id": uid, "username": username, "email": email, "role": role}
 
-def authenticate_user(username_or_email: str, password: str) -> Optional[Dict[str, Any]]:
+def authenticate_user(username_or_email: str, password: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """
-    Verify credentials. Returns user dict on success; otherwise None.
+    Verify credentials with lockout logic. 
+    Returns (user_dict, error_message).
     """
     conn = get_connection()
     cur = conn.cursor()
     # Try username, then email
-    cur.execute("SELECT id, username, email, password_hash, role, is_active FROM users WHERE username = ? OR email = ?", (username_or_email, username_or_email))
+    cur.execute("""
+        SELECT id, username, email, password_hash, role, is_active, failed_attempts, locked_until 
+        FROM users WHERE username = ? OR email = ?
+    """, (username_or_email, username_or_email))
+    
     row = cur.fetchone()
     if not row:
-        return None
-    user = {
-        "id": row[0],
-        "username": row[1],
-        "email": row[2],
-        "password_hash": row[3],
-        "role": row[4],
-        "is_active": bool(row[5])
-    }
-    if not user["is_active"]:
-        return None
-    if verify_password(password, user["password_hash"]):
-        # Remove password_hash before returning
-        user.pop("password_hash", None)
-        return user
-    return None
+        return None, "Invalid credentials"
+
+    uid, uname, uemail, phash, role, active, attempts, locked_until = row
+
+    # 1. Check if locked
+    if locked_until:
+        lock_time = datetime.fromisoformat(locked_until)
+        if lock_time > datetime.utcnow():
+            remaining_mins = int((lock_time - datetime.utcnow()).total_seconds() / 60) + 1
+            return None, f"Account locked. Try again in {remaining_mins} minutes."
+
+    if not active:
+        return None, "Account deactivated."
+
+    # 2. Verify Password
+    if verify_password(password, phash):
+        # Success: Reset counters
+        cur.execute("UPDATE users SET failed_attempts = 0, locked_until = NULL WHERE id = ?", (uid,))
+        conn.commit()
+        
+        user = {"id": uid, "username": uname, "email": uemail, "role": role, "is_active": bool(active)}
+        return user, None
+    else:
+        # Failure: Increment counters
+        attempts = (attempts or 0) + 1
+        new_lock = None
+        msg = "Invalid credentials"
+        
+        if attempts >= 3:
+            new_lock = (datetime.utcnow() + timedelta(minutes=15)).isoformat()
+            msg = "Account locked due to too many failed attempts (15 min)."
+            
+        cur.execute("UPDATE users SET failed_attempts = ?, locked_until = ? WHERE id = ?", (attempts, new_lock, uid))
+        conn.commit()
+        return None, msg
 
 def login_user_streamlit(st, username_or_email: str, password: str):
-    user = authenticate_user(username_or_email, password)
+    user, error_msg = authenticate_user(username_or_email, password)
 
     if not user:
-        return False, "Invalid credentials"
+        return False, error_msg
 
     token, expires_at = create_session_token(user["id"])
 
