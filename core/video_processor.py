@@ -10,7 +10,7 @@ genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 def parse_station_video(video_path):
     """Sends video to Gemini and returns structured JSON."""
     # Use Gemini 1.5 Flash for efficient video processing
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    model = genai.GenerativeModel('gemini-1.5-flash-001')
     
     # Upload the file to Google's temporary storage
     sample_file = genai.upload_file(path=video_path)

@@ -69,39 +69,63 @@ def display_sidebar(conn):
     username = st.session_state.get("username", "User")
     
     with st.sidebar:
-        # 1. BRANDING & USER (Wrapped in container to stay tight together)
-        with st.container():
+        # 1. BRANDING & USER (Updated for horizontal alignment)
+        logo_col, title_col = st.columns([1, 2], vertical_alignment="center")
+        with logo_col:
             logo = get_logo_path()
             if logo:
-                st.image(logo, width=100) 
-            
+                st.image(logo, width=70)
+        with title_col:
             st.markdown(f"**Gas Station Manager**")
             st.caption(f"👤 `{username}` | {user_role}")
         
-        # Spacer to separate branding from navigation
         st.write("") 
 
-        # 2. DYNAMIC NAVIGATION MENU
-        # Filter pages from PAGE_CONFIG based on the current user's role
-        visible_pages = {
-            f"{page['icon']} {label}": page['id']
+        # 2. DYNAMIC NAVIGATION MENU (New Structure)
+        MENU_STRUCTURE = {
+            "main": ["Dashboard", "Help"],
+            "expanders": {
+                "📊 Dashboard": ["GM Dashboard", "Map View"],
+                "🏢 Organization": ["Regions", "Stations", "Employees"],
+                "🤖 AI Control": ["AI Reports", "AI Alerts"],
+                "⚙️ Settings": ["Admin Users", "Settings", "Audit Log"]
+            }
+        }
+
+        # Get all pages visible to the current user
+        visible_pages_details = {
+            page['id']: {"label": label, "icon": page['icon']}
             for label, page in PAGE_CONFIG.items()
             if user_role in page['roles']
         }
+        visible_page_ids = set(visible_pages_details.keys())
 
         # Default to dashboard if active page is not set or not accessible
-        if "active_page" not in st.session_state or st.session_state.active_page not in visible_pages.values():
+        if "active_page" not in st.session_state or st.session_state.active_page not in visible_page_ids:
             st.session_state.active_page = "Dashboard"
 
-        # 3. RENDER MENU BUTTONS
-        for label, page_id in visible_pages.items():
-            is_active = st.session_state.active_page == page_id
-            
-            if st.button(label, key=f"btn_{page_id}", 
-                         use_container_width=True, 
-                         type="primary" if is_active else "secondary"):
-                st.session_state.active_page = page_id
-                st.rerun()
+        # 3. RENDER MENU
+        for page_id in MENU_STRUCTURE["main"]:
+            if page_id in visible_page_ids:
+                details = visible_pages_details[page_id]
+                is_active = st.session_state.active_page == page_id
+                if st.button(f"{details['icon']} {details['label']}", key=f"btn_{page_id}", use_container_width=True, type="primary" if is_active else "secondary"):
+                    st.session_state.active_page = page_id
+                    st.rerun()
+
+        for expander_label, page_ids in MENU_STRUCTURE["expanders"].items():
+            visible_submenu_pages = [pid for pid in page_ids if pid in visible_page_ids]
+            if not visible_submenu_pages:
+                continue
+
+            is_expander_active = st.session_state.active_page in visible_submenu_pages
+            with st.expander(expander_label, expanded=is_expander_active):
+                for page_id in visible_submenu_pages:
+                    details = visible_pages_details[page_id]
+                    is_active = st.session_state.active_page == page_id
+                    if st.button(f"{details['icon']} {details['label']}", key=f"btn_{page_id}", use_container_width=True, type="primary" if is_active else "secondary"):
+                        st.session_state.active_page = page_id
+                        st.rerun()
 
         # 4. SYSTEM ACTIONS
         st.write("")

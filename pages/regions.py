@@ -24,27 +24,46 @@ def render(conn):
                     st.rerun()
 
     # Region list
-    df_regions = pd.read_sql_query("SELECT * FROM regions ORDER BY id", conn)
+    regions_query = """
+        SELECT
+            r.id AS "ID",
+            r.name AS "Name",
+            r.email AS "Email",
+            (SELECT COUNT(*) FROM stations s WHERE s.region_id = r.id) AS "Stations",
+            COALESCE((SELECT e.name || ' ' || e.surname FROM employees e WHERE e.region_id = r.id AND e.role = 'Region Manager' LIMIT 1), '-') AS "Region Manager",
+            (
+                SELECT COUNT(DISTINCT e.id)
+                FROM employees e
+                LEFT JOIN stations s ON e.station_id = s.id
+                WHERE
+                    e.region_id = r.id OR
+                    s.region_id = r.id OR
+                    e.id IN (SELECT dr.employee_id FROM director_regions dr WHERE dr.region_id = r.id)
+            ) AS "Employees"
+        FROM regions r
+        ORDER BY r.id
+    """
+    df_regions = pd.read_sql_query(regions_query, conn)
     if df_regions.empty:
         st.info("No regions yet. Add one using the form above.")
         return
 
     st.subheader("Existing Regions")
-    st.dataframe(df_regions, use_container_width=True, hide_index=True)
+    st.dataframe(df_regions[['Name', 'Region Manager', 'Stations', 'Employees', 'Email']], use_container_width=True, hide_index=True)
 
     st.divider()
 
     # Edit / delete region
     st.subheader("✏️ Edit or Delete a Region")
-    region_ids = df_regions['id'].tolist()
-    selected = st.selectbox("Choose region", region_ids, format_func=lambda x: f"ID {x}: {df_regions[df_regions['id']==x]['name'].values[0]}")
+    region_ids = df_regions['ID'].tolist()
+    selected = st.selectbox("Choose region", region_ids, format_func=lambda x: f"ID {x}: {df_regions[df_regions['ID']==x]['Name'].values[0]}")
 
-    curr = df_regions[df_regions['id'] == selected].iloc[0]
+    curr = df_regions[df_regions['ID'] == selected].iloc[0]
 
     with st.expander("📝 Edit Region Details", expanded=False):
         with st.form(f"edit_region_{selected}"):
-            new_name = st.text_input("Region Name", value=curr['name'])
-            new_email = st.text_input("Region Email", value=curr['email'] if curr['email'] else "")
+            new_name = st.text_input("Region Name", value=curr['Name'])
+            new_email = st.text_input("Region Email", value=curr['Email'] if curr['Email'] else "")
             if st.form_submit_button("Save Changes"):
                 if not new_name.strip():
                     st.error("Region name cannot be empty.")
@@ -89,6 +108,6 @@ def render(conn):
             # For simplicity we set employee.region_id = region
             conn.execute("UPDATE employees SET region_id = ? WHERE id = ?", (selected, mgr_id))
             conn.commit()
-            log_activity(conn, "ASSIGN_REGION_MANAGER", f"Assigned employee {mgr_id} to region {selected}")
-            st.success(f"Assigned {selected_mgr} to region {curr['name']}")
+            log_activity(conn, "ASSIGN_REGION_MANAGER", f"Assigned employee {mgr_id} to region {curr['Name']}")
+            st.success(f"Assigned {selected_mgr} to region {curr['Name']}")
             st.rerun()
