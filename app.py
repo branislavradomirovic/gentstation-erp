@@ -19,7 +19,7 @@ if "ai_worker_started" not in st.session_state:
 
 # --- 1. PAGE CONFIGURATION (MUST BE FIRST) ---
 st.set_page_config(
-    page_title="GenAI Gas Station Manager",
+    page_title="Gas Station Manager",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -168,7 +168,7 @@ if "user_id" not in st.session_state:
             
     with text_col:
         # Removing the 'text-align: center' since it is now left-aligned to the logo
-        st.markdown("<h2 style='margin: 0; padding: 0;'>GenAI Gas Station Manager</h2>", unsafe_allow_html=True)
+        st.markdown("<h2 style='margin: 0; padding: 0;'>Gas Station Manager</h2>", unsafe_allow_html=True)
 
     # Add a bit of space before the form
     st.markdown("<br>", unsafe_allow_html=True)    

@@ -70,7 +70,7 @@ def display_sidebar(conn):
             if logo:
                 st.image(logo, width=100) 
             
-            st.markdown(f"**GenAI Gas Station Manager**")
+            st.markdown(f"**Gas Station Manager**")
             st.caption(f"👤 `{username}` | {user_role}")
         
         # Spacer to separate branding from navigation
