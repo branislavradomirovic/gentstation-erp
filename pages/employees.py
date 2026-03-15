@@ -206,8 +206,15 @@ def render(conn):
     st.subheader("✏️ Edit / Delete Employee")
     emp_ids = df['id'].tolist() if not df.empty else []
     
+    # Handle navigation from other pages (persisting selection)
+    sb_key = "emp_selector_main"
+    if "target_employee_id" in st.session_state:
+        tgt = st.session_state.pop("target_employee_id")
+        if tgt in emp_ids:
+            st.session_state[sb_key] = tgt
+
     if emp_ids:
-        sel = st.selectbox("Select employee", emp_ids, 
+        sel = st.selectbox("Select employee", emp_ids, key=sb_key,
                            format_func=lambda x: f"ID {x}: {df[df['id']==x]['fullname'].values[0]}")
         rec = pd.read_sql_query("SELECT * FROM employees WHERE id = ?", conn, params=(sel,)).iloc[0]
         

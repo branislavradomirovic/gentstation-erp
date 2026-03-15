@@ -31,6 +31,7 @@ def render(conn):
             r.email AS "Email",
             (SELECT COUNT(*) FROM stations s WHERE s.region_id = r.id) AS "Stations",
             COALESCE((SELECT e.name || ' ' || e.surname FROM employees e WHERE e.region_id = r.id AND e.role = 'Region Manager' LIMIT 1), '-') AS "Region Manager",
+            (SELECT e.id FROM employees e WHERE e.region_id = r.id AND e.role = 'Region Manager' LIMIT 1) AS "Region Manager ID",
             (
                 SELECT COUNT(DISTINCT e.id)
                 FROM employees e
@@ -49,9 +50,36 @@ def render(conn):
         return
 
     st.subheader("Existing Regions")
-    st.dataframe(df_regions[['Name', 'Region Manager', 'Stations', 'Employees', 'Email']], use_container_width=True, hide_index=True)
-
+    
+    # Custom Table Header
+    cols = st.columns([1.5, 2, 1, 1, 2])
+    cols[0].markdown("**Name**")
+    cols[1].markdown("**Region Manager**")
+    cols[2].markdown("**Stations**")
+    cols[3].markdown("**Employees**")
+    cols[4].markdown("**Email**")
     st.divider()
+    
+    for _, row in df_regions.iterrows():
+        c = st.columns([1.5, 2, 1, 1, 2], vertical_alignment="center")
+        c[0].write(row['Name'])
+        
+        # Clickable Manager Name
+        mgr_name = row['Region Manager']
+        mgr_id = row['Region Manager ID']
+        
+        if pd.notna(mgr_id) and mgr_name != '-':
+             if c[1].button(f"👤 {mgr_name}", key=f"nav_mgr_{row['ID']}", help="Go to Employee Details"):
+                 st.session_state["active_page"] = "Employees"
+                 st.session_state["target_employee_id"] = int(mgr_id)
+                 st.rerun()
+        else:
+             c[1].write(mgr_name)
+
+        c[2].write(str(row['Stations']))
+        c[3].write(str(row['Employees']))
+        c[4].write(row['Email'] if row['Email'] else "-")
+        st.divider()
 
     # Edit / delete region
     st.subheader("✏️ Edit or Delete a Region")
