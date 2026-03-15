@@ -50,7 +50,7 @@ def authenticate_user(username_or_email: str, password: str) -> Tuple[Optional[D
     cur = conn.cursor()
     # Try username, then email
     cur.execute("""
-        SELECT id, username, email, password_hash, role, is_active, failed_attempts, locked_until 
+        SELECT id, username, email, password_hash, role, is_active, failed_attempts, locked_until, dark_mode_enabled
         FROM users WHERE username = ? OR email = ?
     """, (username_or_email, username_or_email))
     
@@ -58,7 +58,7 @@ def authenticate_user(username_or_email: str, password: str) -> Tuple[Optional[D
     if not row:
         return None, "Invalid credentials"
 
-    uid, uname, uemail, phash, role, active, attempts, locked_until = row
+    uid, uname, uemail, phash, role, active, attempts, locked_until, dark_mode = row
 
     # Check Maintenance Mode
     try:
@@ -85,7 +85,7 @@ def authenticate_user(username_or_email: str, password: str) -> Tuple[Optional[D
         cur.execute("UPDATE users SET failed_attempts = 0, locked_until = NULL WHERE id = ?", (uid,))
         conn.commit()
         
-        user = {"id": uid, "username": uname, "email": uemail, "role": role, "is_active": bool(active)}
+        user = {"id": uid, "username": uname, "email": uemail, "role": role, "is_active": bool(active), "dark_mode": bool(dark_mode)}
         return user, None
     else:
         # Failure: Increment counters
@@ -113,6 +113,7 @@ def login_user_streamlit(st, username_or_email: str, password: str):
     st.session_state["user_id"] = user["id"]
     st.session_state["username"] = user["username"]
     st.session_state["user_role"] = user["role"]
+    st.session_state["dark_mode"] = user.get("dark_mode", False)
 
     return True, "Login successful"
 

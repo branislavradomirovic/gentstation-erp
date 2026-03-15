@@ -124,9 +124,16 @@ def ensure_schema(conn):
         created_at TEXT DEFAULT (datetime('now')),
         updated_at TEXT,
         failed_attempts INTEGER DEFAULT 0,
-        locked_until TEXT
+        locked_until TEXT,
+        dark_mode_enabled INTEGER DEFAULT 0
     );
     """)
+
+    # Migration: Add dark_mode_enabled if it doesn't exist (for existing databases)
+    cursor.execute("PRAGMA table_info(users)")
+    columns = [info[1] for info in cursor.fetchall()]
+    if "dark_mode_enabled" not in columns:
+        cursor.execute("ALTER TABLE users ADD COLUMN dark_mode_enabled INTEGER DEFAULT 0")
 
     # Sessions table to store session tokens
     cursor.execute("""

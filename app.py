@@ -19,7 +19,7 @@ if "ai_worker_started" not in st.session_state:
 
 # --- 1. PAGE CONFIGURATION (MUST BE FIRST) ---
 st.set_page_config(
-    page_title="GentStation Opus ERP",
+    page_title="GenAI Gas Station Manager",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -65,14 +65,53 @@ st.markdown("""
         }
         
         footer { visibility: hidden; }
+
+        .login-disclaimer {
+            position: fixed;
+            bottom: 1rem;
+            left: 0;
+            right: 0;
+            width: 90%;
+            max-width: 800px;
+            margin: auto;
+            padding: 0.75rem;
+            text-align: center;
+            font-size: 0.75rem;
+            color: #4a4a4a;
+            background-color: rgba(240, 242, 246, 0.75);
+            border-radius: 10px;
+            backdrop-filter: blur(5px);
+        }
     </style>
 """, unsafe_allow_html=True)
+
+# --- DARK MODE INJECTION ---
+if st.session_state.get("dark_mode"):
+    st.markdown("""
+        <style>
+            [data-testid="stAppViewContainer"] {
+                background-color: #0E1117;
+                color: #FAFAFA;
+            }
+            [data-testid="stSidebar"] {
+                background-color: #262730;
+            }
+            [data-testid="stHeader"] {
+                background-color: rgba(0,0,0,0);
+            }
+            .login-disclaimer {
+                background-color: rgba(38, 39, 48, 0.9) !important;
+                color: #FAFAFA !important;
+            }
+        </style>
+    """, unsafe_allow_html=True)
 
 # Core imports
 from core.database import get_connection, ensure_schema
 from core.auth import login_user_streamlit, logout_user_streamlit
 from core.session import validate_session_token
 from core.activity_logger import log_activity
+from core.config import LOGIN_DISCLAIMER_HTML, FOOTER_DISCLAIMER_TEXT
 
 # Page imports
 import pages.dashboard as dashboard
@@ -101,12 +140,13 @@ def restore_session():
         uid = validate_session_token(token)
         if uid:
             row = conn.execute(
-                "SELECT id, username, email, role FROM users WHERE id = ?", (uid,)
+                "SELECT id, username, email, role, dark_mode_enabled FROM users WHERE id = ?", (uid,)
             ).fetchone()
             if row:
                 st.session_state["user_id"] = row[0]
                 st.session_state["username"] = row[1]
                 st.session_state["user_role"] = row[3]
+                st.session_state["dark_mode"] = bool(row[4])
             else:
                 if "session_token" in st.session_state:
                     del st.session_state["session_token"]
@@ -128,7 +168,7 @@ if "user_id" not in st.session_state:
             
     with text_col:
         # Removing the 'text-align: center' since it is now left-aligned to the logo
-        st.markdown("<h2 style='margin: 0; padding: 0;'>GentStation Opus ERP</h2>", unsafe_allow_html=True)
+        st.markdown("<h2 style='margin: 0; padding: 0;'>GenAI Gas Station Manager</h2>", unsafe_allow_html=True)
 
     # Add a bit of space before the form
     st.markdown("<br>", unsafe_allow_html=True)    
@@ -146,21 +186,19 @@ if "user_id" not in st.session_state:
     with st.form("login_form"):
         cred = st.text_input("Username or Email")
         pw = st.text_input("Password", type="password")
+        ack = st.checkbox("I acknowledge the disclaimer below")
         if st.form_submit_button("Login", use_container_width=True):
-            ok, msg = login_user_streamlit(st, cred, pw)
-            if ok:
-                st.rerun()
+            if not ack:
+                st.error("You must acknowledge the disclaimer to log in.")
             else:
-                st.error(msg)
+                ok, msg = login_user_streamlit(st, cred, pw)
+                if ok:
+                    st.rerun()
+                else:
+                    st.error(msg)
 
-    st.markdown("---")
-    st.caption("""
-    **Disclaimer**  
-    This application, developed by Opus Labs d.o.o. Novi Sad, utilizes Generative AI to provide management suggestions and data analysis. These insights are for informational purposes only and do not constitute professional or safety advice.  
-    **No Guarantee:** AI outputs are probabilistic and may be incorrect or biased.  
-    **Human Oversight:** This tool is an assistant, not a replacement for human supervision.  
-    **Liability:** Use of this application is at the user's sole risk. Opus Labs d.o.o. disclaims all liability for operational errors or financial losses resulting from its use.
-    """)
+    st.markdown(LOGIN_DISCLAIMER_HTML, unsafe_allow_html=True)
+
     st.stop()
 
 # --- 5. AUTHENTICATED APP SHELL ---
@@ -204,7 +242,8 @@ try:
             PAGE_HANDLERS[selected_page](conn)
             
             st.divider()
-            st.caption("AI-generated insights from Opus Labs d.o.o. Novi Sad are for informational use only and require human oversight, as users assume all risk and liability for any inaccuracies or outcomes.")
+            # Centered footer disclaimer
+            st.markdown(f"<div style='text-align: center; opacity: 0.7;'>{FOOTER_DISCLAIMER_TEXT}</div>", unsafe_allow_html=True)
         else:
             st.error("Access Denied. You do not have permission to view this page.")
             st.warning("Please select a page from the sidebar.")
