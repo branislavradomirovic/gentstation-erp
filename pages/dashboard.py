@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import folium
 from streamlit_folium import st_folium
+from ui.header import render_page_header
 
 def get_status_emoji(unprocessed_count):
     """Visual status based on unprocessed submissions."""
@@ -23,14 +24,14 @@ def render(conn):
             }
             /* Remove margin from the title to keep it flush */
             h1 {
-                margin-top: 0.8rem !important;
+                margin-top: 1.4rem !important;
                 padding-top: 0rem !important;
             }
         </style>
     """, unsafe_allow_html=True)
 
     # Use a more compact layout for the title and metrics
-    st.title("📊 Network Overview")
+    render_page_header("📊 Network Overview")
 
     # --- 1. METRICS ROW ---
     st.markdown("#### Key Performance Indicators")
@@ -43,10 +44,26 @@ def render(conn):
         # Wrap in COALESCE/IFNULL to prevent NoneType errors
         pending_tasks = conn.execute("SELECT COUNT(id) FROM submissions WHERE processed = 0").fetchone()[0] or 0
 
-        col1.metric("Total Regions", total_regions)
-        col2.metric("Total Stations", total_stations)
-        col3.metric("Total Employees", total_employees)
-        col4.metric("Pending Tasks", pending_tasks)
+        with col1:
+            st.metric("Total Regions", total_regions)
+            if st.button("📂 Manage Regions", key="nav_regions", use_container_width=True):
+                st.session_state.active_page = "Regions"
+                st.rerun()
+        with col2:
+            st.metric("Total Stations", total_stations)
+            if st.button("⛽ Manage Stations", key="nav_stations", use_container_width=True):
+                st.session_state.active_page = "Stations"
+                st.rerun()
+        with col3:
+            st.metric("Total Employees", total_employees)
+            if st.button("👥 Manage Employees", key="nav_employees", use_container_width=True):
+                st.session_state.active_page = "Employees"
+                st.rerun()
+        with col4:
+            st.metric("Pending Tasks", pending_tasks)
+            if st.button("🗺️ View on Map", key="nav_map", use_container_width=True):
+                st.session_state.active_page = "Map View"
+                st.rerun()
     except Exception as e:
         st.warning(f"Metrics partially unavailable: {e}")
 

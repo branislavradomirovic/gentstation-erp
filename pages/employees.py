@@ -4,6 +4,8 @@ import hashlib
 import sqlite3
 import secrets
 from core.activity_logger import log_activity
+from core.auth import create_user, hash_password as hash_password_bcrypt
+from ui.header import render_page_header
 # Import the communication service logic
 try:
     from core.comm_service import send_welcome_comms
@@ -19,7 +21,7 @@ def generate_temp_password(n: int = 10) -> str:
     return ''.join(secrets.choice(alphabet) for _ in range(n))
 
 def render(conn):
-    st.title("👥 Employees")
+    render_page_header("👥 Employees")
 
     # --- PRE-FETCH DATA FOR DROPDOWNS ---
     stations_df = pd.read_sql_query("SELECT id, name FROM stations ORDER BY name", conn)
@@ -61,6 +63,16 @@ def render(conn):
                     hashed = hash_password(temp_pw)
                     
                     try:
+                        # 1. Create System User (for Login)
+                        try:
+                            # Use email as username to ensure uniqueness and simplicity
+                            create_user(username=email.strip(), password=temp_pw, email=email.strip(), role=role)
+                        except sqlite3.IntegrityError:
+                            st.warning(f"Note: A user account for '{email.strip()}' already exists. Linking to new employee record.")
+                        except Exception as e:
+                            st.error(f"Failed to create login account: {e}")
+                            st.stop()
+
                         cursor = conn.execute(
                             "INSERT INTO employees (name, surname, email, password, role, station_id, region_id) VALUES (?,?,?,?,?,?,?)",
                             (first.strip(), last.strip(), email.strip(), hashed, role, assign_station[1], assign_region[1])
@@ -154,6 +166,11 @@ def render(conn):
                     """, (e_name.strip(), e_surname.strip(), e_email.strip(), e_role, 
                           e_stat[1], e_reg[1], 
                           e_tg.strip() if e_tg.strip() else None, sel))
+                    
+                    # Sync changes to users table (permissions & login username)
+                    conn.execute("UPDATE users SET role=?, email=?, username=? WHERE email=?", 
+                                 (e_role, e_email.strip(), e_email.strip(), rec['email']))
+
                     st.success("Changes saved.")
                     st.rerun()
                 except Exception as e:
@@ -166,6 +183,11 @@ def render(conn):
                 try:
                     new_pw = generate_temp_password()
                     conn.execute("UPDATE employees SET password = ? WHERE id = ?", (hash_password(new_pw), sel))
+                    
+                    # Also update the system user password (users table)
+                    new_bcrypt = hash_password_bcrypt(new_pw)
+                    conn.execute("UPDATE users SET password_hash = ? WHERE email = ?", (new_bcrypt, rec['email']))
+                    
                     conn.commit()
                     
                     # Resend the welcome cycle

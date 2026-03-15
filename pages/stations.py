@@ -5,9 +5,10 @@ import pandas as pd
 import folium
 from streamlit_folium import st_folium
 from core.activity_logger import log_activity
+from ui.header import render_page_header
 
 def render(conn):
-    st.title("⛽ Stations Management")
+    render_page_header("⛽ Stations Management")
 
     # --- DATA PREPARATION ---
     regions = pd.read_sql_query("SELECT id, name FROM regions ORDER BY name", conn)
@@ -103,13 +104,61 @@ def render(conn):
     else:
         st.dataframe(df, use_container_width=True, hide_index=True)
 
+    # --- 2.1 TRENDS CHART ---
+    st.markdown("### 📊 Daily Submission Trends")
+    
+    col_trend_filter, _ = st.columns([1, 3])
+    with col_trend_filter:
+        trend_date = st.date_input("Select Month (pick any day in month)", value=pd.Timestamp.now())
+    
+    selected_month = trend_date.strftime('%Y-%m')
+
+    try:
+        trend_df = pd.read_sql_query("""
+            SELECT strftime('%Y-%m-%d', timestamp) as day, COUNT(*) as count
+            FROM submissions
+            WHERE timestamp IS NOT NULL
+              AND strftime('%Y-%m', timestamp) = ?
+            GROUP BY day
+            ORDER BY day
+        """, conn, params=(selected_month,))
+        if not trend_df.empty:
+            st.bar_chart(trend_df.set_index("day"))
+        else:
+            st.info(f"No submission data available for {selected_month}.")
+    except Exception as e:
+        st.error(f"Could not load trends: {e}")
+
+    # --- 2.2 MONTHLY TRENDS CHART ---
+    st.markdown("### 📅 Monthly Submission Trends (Last 12 Months)")
+    try:
+        monthly_df = pd.read_sql_query("""
+            SELECT strftime('%Y-%m', timestamp) as month, COUNT(*) as count
+            FROM submissions
+            WHERE timestamp >= date('now', '-12 months')
+            GROUP BY month
+            ORDER BY month
+        """, conn)
+        if not monthly_df.empty:
+            st.line_chart(monthly_df.set_index("month"))
+        else:
+            st.info("No submission data available for the last 12 months.")
+    except Exception as e:
+        st.error(f"Could not load monthly trends: {e}")
+
     # --- 3. EDIT / DELETE STATION ---
     st.divider()
     st.subheader("✏️ Edit / Delete Station")
     station_ids = df['id'].tolist() if not df.empty else []
     
+    default_index = 0
+    if "target_station_id" in st.session_state:
+        tgt = st.session_state.pop("target_station_id")
+        if tgt in station_ids:
+            default_index = station_ids.index(tgt)
+
     if station_ids:
-        sel = st.selectbox("Select Station to Modify", station_ids, 
+        sel = st.selectbox("Select Station to Modify", station_ids, index=default_index,
                            format_func=lambda x: f"ID {x}: {df[df['id']==x]['name'].values[0]}")
         
         # Load existing data for selected station

@@ -15,10 +15,11 @@ import folium
 from streamlit_folium import st_folium
 import json
 from core.database import get_connection
+from ui.header import render_page_header
 from ai_engine.risk_engine import run_risk_cycle
 
 def render(conn):
-    st.title("🧭 Executive Dashboard — General Manager")
+    render_page_header("🧭 Executive Dashboard — General Manager")
 
     # Top KPI row
     st.subheader("Top-level KPIs")
@@ -92,10 +93,8 @@ def render(conn):
     if ranking_df.empty:
         st.info("No station locations available.")
     else:
-        # Default map center
-        center_lat = ranking_df['lat'].dropna().mean()
-        center_lon = ranking_df['lon'].dropna().mean()
-        m = folium.Map(location=[center_lat or 44.8, center_lon or 20.4], zoom_start=6)
+        # Create map instance (auto-centered later via fit_bounds)
+        m = folium.Map(tiles="CartoDB positron")
         for _, row in ranking_df.iterrows():
             lat = row['lat'] or 44.8
             lon = row['lon'] or 20.4
@@ -114,6 +113,14 @@ def render(conn):
                 fill_opacity=0.7,
                 popup=f"{row['station_name']} (Risk {row['risk_score']})"
             ).add_to(m)
+            
+        # Auto-focus map on all markers
+        lats = ranking_df['lat'].dropna()
+        lons = ranking_df['lon'].dropna()
+        if not lats.empty and not lons.empty:
+            bounds = [[lats.min(), lons.min()], [lats.max(), lons.max()]]
+            m.fit_bounds(bounds, padding=(30, 30))
+            
         st_folium(m, width="100%", height=450)
 
     st.divider()

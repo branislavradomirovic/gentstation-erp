@@ -103,6 +103,17 @@ def ensure_schema(conn):
     """)
 
     cursor.execute("""
+    CREATE TABLE IF NOT EXISTS ai_alerts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        station_id INTEGER,
+        severity TEXT,
+        message TEXT,
+        created_at TEXT,
+        FOREIGN KEY(station_id) REFERENCES stations(id) ON DELETE CASCADE
+    );
+    """)
+
+    cursor.execute("""
     CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         username TEXT UNIQUE NOT NULL,
@@ -111,7 +122,9 @@ def ensure_schema(conn):
         role TEXT NOT NULL,
         is_active INTEGER DEFAULT 1,
         created_at TEXT DEFAULT (datetime('now')),
-        updated_at TEXT
+        updated_at TEXT,
+        failed_attempts INTEGER DEFAULT 0,
+        locked_until TEXT
     );
     """)
 
@@ -123,6 +136,13 @@ def ensure_schema(conn):
         created_at TEXT,
         expires_at TEXT,
         FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS system_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT
     );
     """)
     conn.commit()

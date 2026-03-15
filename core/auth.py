@@ -10,6 +10,8 @@ from core.session import create_session_token, destroy_session_token
 
 # Configuration
 SESSION_TTL_HOURS = 8
+MAX_LOGIN_ATTEMPTS = 3
+LOCKOUT_DURATION_MINUTES = 15
 
 def hash_password(plain_password: str) -> str:
     """Return bcrypt hash (utf-8 string)."""
@@ -58,6 +60,15 @@ def authenticate_user(username_or_email: str, password: str) -> Tuple[Optional[D
 
     uid, uname, uemail, phash, role, active, attempts, locked_until = row
 
+    # Check Maintenance Mode
+    try:
+        m_row = cur.execute("SELECT value FROM system_settings WHERE key='maintenance_mode'").fetchone()
+        if m_row and m_row[0] == '1':
+            if role != "General Manager":
+                return None, "⚠️ System is in Maintenance Mode. Admin login only."
+    except Exception:
+        pass # Fail open if settings table issue (schema not updated yet)
+
     # 1. Check if locked
     if locked_until:
         lock_time = datetime.fromisoformat(locked_until)
@@ -82,9 +93,9 @@ def authenticate_user(username_or_email: str, password: str) -> Tuple[Optional[D
         new_lock = None
         msg = "Invalid credentials"
         
-        if attempts >= 3:
-            new_lock = (datetime.utcnow() + timedelta(minutes=15)).isoformat()
-            msg = "Account locked due to too many failed attempts (15 min)."
+        if attempts >= MAX_LOGIN_ATTEMPTS:
+            new_lock = (datetime.utcnow() + timedelta(minutes=LOCKOUT_DURATION_MINUTES)).isoformat()
+            msg = f"Account locked due to too many failed attempts ({LOCKOUT_DURATION_MINUTES} min)."
             
         cur.execute("UPDATE users SET failed_attempts = ?, locked_until = ? WHERE id = ?", (attempts, new_lock, uid))
         conn.commit()

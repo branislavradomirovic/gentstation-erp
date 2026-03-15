@@ -1,9 +1,10 @@
 # gentstation_opus/pages/audit_log.py
 import streamlit as st
 import pandas as pd
+from ui.header import render_page_header
 
 def render(conn):
-    st.title("🛡 System Audit Log")
+    render_page_header("🛡 System Audit Log")
     col1, col2, col3 = st.columns(3)
     user_filter = col1.text_input("User name")
     action_filter = col2.text_input("Action")

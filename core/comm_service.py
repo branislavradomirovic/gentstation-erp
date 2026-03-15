@@ -8,6 +8,53 @@ from dotenv import load_dotenv
 # Load variables from .env
 load_dotenv()
 
+def send_support_email(from_user: str, subject: str, message: str) -> bool:
+    """
+    Sends a support request email to the admin address.
+    Returns True on success, False on failure.
+    """
+    # 1. Credentials from .env
+    SMTP_SERVER = "smtp.gmail.com"
+    SMTP_PORT = 587
+    SENDER_EMAIL = os.getenv("SMTP_USER")
+    SENDER_PASSWORD = os.getenv("SMTP_PASS")
+    SUPPORT_RECIPIENT = "support@opus.rs"  # Admin/Support email address
+
+    if not SENDER_EMAIL or not SENDER_PASSWORD:
+        st.error("System email is not configured. Please contact support directly at support@opus.rs.")
+        return False
+
+    # 2. Prepare Email Content
+    msg = MIMEMultipart()
+    msg['From'] = f"GentStation Support Form <{SENDER_EMAIL}>"
+    msg['To'] = SUPPORT_RECIPIENT
+    msg['Subject'] = f"[Support Request] {subject}"
+
+    body = f"""
+    A new support request has been submitted from the GentStation Opus ERP.
+
+    --- DETAILS ---
+    From User: {from_user}
+    Subject: {subject}
+    
+    Message:
+    {message}
+    ----------------
+    """
+    msg.attach(MIMEText(body, 'plain'))
+
+    # 3. Actual Transmission
+    try:
+        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
+        server.starttls()
+        server.login(SENDER_EMAIL, SENDER_PASSWORD)
+        server.send_message(msg)
+        server.quit()
+        return True
+    except Exception as e:
+        st.error(f"❌ SMTP Error: Could not send email. {str(e)}")
+        return False
+
 def send_welcome_comms(user_data):
     """
     Handles real SMTP email delivery and returns Telegram link if applicable.

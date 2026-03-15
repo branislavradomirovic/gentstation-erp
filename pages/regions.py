@@ -3,9 +3,10 @@ import streamlit as st
 import sqlite3
 import pandas as pd
 from core.activity_logger import log_activity
+from ui.header import render_page_header
 
 def render(conn):
-    st.title("🌍 Regions Management")
+    render_page_header("🌍 Regions Management")
 
     # Top: create new region
     with st.expander("➕ Add New Region"):

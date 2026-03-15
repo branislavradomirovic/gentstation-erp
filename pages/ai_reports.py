@@ -1,9 +1,11 @@
 # gentstation_opus/pages/ai_reports.py
 import streamlit as st
 import pandas as pd
+import json
+from ui.header import render_page_header
 
 def render(conn):
-    st.title("📈 AI Reports")
+    render_page_header("📈 AI Reports")
     role = st.session_state.user_role
     uid = st.session_state.user_id
     if role == "General Manager":

@@ -78,14 +78,17 @@ from core.activity_logger import log_activity
 import pages.dashboard as dashboard
 import pages.regions as regions
 import pages.stations as stations
+import pages.map_view as map_view
 import pages.employees as employees
 import pages.admin_users as admin_users
 import pages.gm_dashboard as gm_dashboard
 import pages.ai_reports as ai_reports
 import pages.audit_log as audit_log
+import pages.settings as settings
+import pages.help as page_help
 
 # UI imports
-from ui.sidebar import display_sidebar
+from ui.sidebar import display_sidebar, PAGE_CONFIG
 
 # Initialize Database
 conn = get_connection()
@@ -130,6 +133,16 @@ if "user_id" not in st.session_state:
     # Add a bit of space before the form
     st.markdown("<br>", unsafe_allow_html=True)    
 
+    # --- SYSTEM STATUS WIDGET ---
+    try:
+        sys_row = conn.execute("SELECT value FROM system_settings WHERE key='maintenance_mode'").fetchone()
+        if sys_row and sys_row[0] == '1':
+            st.warning("🛠️ **MAINTENANCE MODE**\n\nLogin restricted to Administrators.", icon="⚠️")
+        else:
+            st.caption("🟢 System Status: **Operational**")
+    except Exception:
+        pass
+
     with st.form("login_form"):
         cred = st.text_input("Username or Email")
         pw = st.text_input("Password", type="password")
@@ -139,10 +152,28 @@ if "user_id" not in st.session_state:
                 st.rerun()
             else:
                 st.error(msg)
+
+    st.markdown("---")
+    st.caption("""
+    **Disclaimer**  
+    This application, developed by Opus Labs d.o.o. Novi Sad, utilizes Generative AI to provide management suggestions and data analysis. These insights are for informational purposes only and do not constitute professional or safety advice.  
+    **No Guarantee:** AI outputs are probabilistic and may be incorrect or biased.  
+    **Human Oversight:** This tool is an assistant, not a replacement for human supervision.  
+    **Liability:** Use of this application is at the user's sole risk. Opus Labs d.o.o. disclaims all liability for operational errors or financial losses resulting from its use.
+    """)
     st.stop()
 
 # --- 5. AUTHENTICATED APP SHELL ---
 selected_page = display_sidebar(conn)
+
+# --- Maintenance Mode Banner ---
+try:
+    m_row = conn.execute("SELECT value FROM system_settings WHERE key='maintenance_mode'").fetchone()
+    if m_row and m_row[0] == '1':
+        st.warning("🚨 **MAINTENANCE MODE ACTIVE** - System access is restricted to General Managers. Some features may be unavailable.", icon="⚠️")
+except Exception:
+    # Fail silently if the table/column doesn't exist yet
+    pass
 
 # Fallback: If for some reason selected_page is None or empty, default to Dashboard
 if not selected_page:
@@ -150,26 +181,36 @@ if not selected_page:
 
 # --- 6. ROUTING LOGIC ---
 try:
-    if selected_page == "Dashboard":
-        dashboard.render(conn)
-    elif selected_page == "Regions":
-        regions.render(conn)
-    elif selected_page == "Stations":
-        stations.render(conn)
-    elif selected_page == "Employees":
-        employees.render(conn)
-    elif selected_page == "AI Reports":
-        ai_reports.render(conn)
-    elif selected_page == "Audit Log":
-        audit_log.render(conn)
-    elif selected_page == "GM Dashboard":
-        gm_dashboard.render(conn)
-    elif selected_page == "Admin Users":
-        if st.session_state.get("user_role") == "General Manager":
-            admin_users.render(conn)
-        else:
-            st.error("Access Denied.")
+    # Dictionary mapping page IDs to their render functions
+    PAGE_HANDLERS = {
+        "Dashboard": dashboard.render,
+        "Regions": regions.render,
+        "Stations": stations.render,
+        "Map View": map_view.render,
+        "Employees": employees.render,
+        "AI Reports": ai_reports.render,
+        "Audit Log": audit_log.render,
+        "GM Dashboard": gm_dashboard.render,
+        "Admin Users": admin_users.render,
+        "Settings": settings.render,
+        "Help": page_help.render
+    }
+
+    if selected_page in PAGE_HANDLERS:
+        # Verify permissions using the centralized PAGE_CONFIG from sidebar
+        required_roles = PAGE_CONFIG.get(selected_page, {}).get("roles", [])
+        
+        if st.session_state.get("user_role") in required_roles:
+            PAGE_HANDLERS[selected_page](conn)
             
+            st.divider()
+            st.caption("AI-generated insights from Opus Labs d.o.o. Novi Sad are for informational use only and require human oversight, as users assume all risk and liability for any inaccuracies or outcomes.")
+        else:
+            st.error("Access Denied. You do not have permission to view this page.")
+            st.warning("Please select a page from the sidebar.")
+    else:
+        st.error(f"Page '{selected_page}' not found.")
+
 except Exception as e:
     st.error(f"Error loading page: {e}")
     st.info("Check if the page module is correctly defined in the /pages folder.")
