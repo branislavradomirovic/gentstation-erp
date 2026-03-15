@@ -6,6 +6,14 @@ import folium
 from streamlit_folium import st_folium
 from core.activity_logger import log_activity
 from ui.header import render_page_header
+import urllib.parse
+import urllib.request
+
+# Import email service
+try:
+    from core.comm_service import send_station_qr_email
+except ImportError:
+    def send_station_qr_email(*args): st.error("Email service unavailable")
 
 def render(conn):
     render_page_header("⛽ Stations Management")
@@ -151,14 +159,15 @@ def render(conn):
     st.subheader("✏️ Edit / Delete Station")
     station_ids = df['id'].tolist() if not df.empty else []
     
-    default_index = 0
+    # Handle navigation from Employee Directory (persisting selection)
+    sb_key = "station_selector_main"
     if "target_station_id" in st.session_state:
         tgt = st.session_state.pop("target_station_id")
         if tgt in station_ids:
-            default_index = station_ids.index(tgt)
+            st.session_state[sb_key] = tgt
 
     if station_ids:
-        sel = st.selectbox("Select Station to Modify", station_ids, index=default_index,
+        sel = st.selectbox("Select Station to Modify", station_ids, key=sb_key,
                            format_func=lambda x: f"ID {x}: {df[df['id']==x]['name'].values[0]}")
         
         # Load existing data for selected station
@@ -175,7 +184,7 @@ def render(conn):
         display_lat = st.session_state.get(f"edit_lat_{sel}", start_lat)
         display_lon = st.session_state.get(f"edit_lon_{sel}", start_lon)
         folium.Marker([display_lat, display_lon], tooltip="Target Location", 
-                      icon=folium.Icon(color='orange')).add_to(m_edit)
+                      icon=folium.Icon(color='red', icon='star', prefix='fa')).add_to(m_edit)
 
         # Render edit map
         map_edit_data = st_folium(m_edit, width="100%", height=250, key=f"map_edit_{sel}")
@@ -241,6 +250,54 @@ def render(conn):
                     st.session_state.pop(f"edit_lat_{sel}", None)
                     st.session_state.pop(f"edit_lon_{sel}", None)
                     st.rerun()
+
+        st.markdown("---")
+        st.subheader("👥 Employees Assigned to this Station")
+        assigned_employees_df = pd.read_sql_query(
+            "SELECT name, surname, role, email FROM employees WHERE station_id = ?",
+            conn,
+            params=(sel,)
+        )
+        if assigned_employees_df.empty:
+            st.info("No employees are currently assigned to this station.")
+        else:
+            st.dataframe(assigned_employees_df, use_container_width=True, hide_index=True)
+
+        st.markdown("---")
+        st.subheader("📱 Mobile Access (QR Code)")
+        
+        # Bot handle (matches core/comm_service.py)
+        bot_handle = "BaneTest_Bot"
+        bot_link = f"https://t.me/{bot_handle}"
+        qr_api_url = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={urllib.parse.quote(bot_link)}"
+        
+        c_qr, c_desc = st.columns([1, 4])
+        with c_qr:
+            st.image(qr_api_url, width=150)
+        with c_desc:
+            st.markdown(f"**Bot Link:** [{bot_handle}]({bot_link})")
+            st.caption("Distribute this QR code to employees at this station. Scanning it will open the reporting bot in Telegram.")
+            
+            # Fetch manager email for this station
+            mgr_email_row = conn.execute("SELECT email FROM employees WHERE station_id = ? AND role = 'Gas Station Manager'", (sel,)).fetchone()
+            mgr_email = mgr_email_row[0] if mgr_email_row else None
+
+            col_dl, col_email = st.columns(2)
+            
+            try:
+                with urllib.request.urlopen(qr_api_url) as response:
+                    qr_bytes = response.read()
+                    with col_dl:
+                        st.download_button("⬇️ Download QR Code", qr_bytes, file_name=f"station_{sel}_qr.png", mime="image/png", use_container_width=True)
+            except Exception:
+                st.warning("Could not generate download (Internet required).")
+            
+            with col_email:
+                if st.button("📧 Share via Email", disabled=(not mgr_email), help="Send instructions to Station Manager", use_container_width=True):
+                    if mgr_email:
+                        send_station_qr_email(curr['name'], mgr_email, bot_link, qr_api_url)
+                    else:
+                        st.error("No manager email found.")
 
         # Separate delete button outside the form for safety
         if st.button("🗑️ Delete Station", type="secondary"):

@@ -31,13 +31,16 @@ def parse_station_video(video_path):
     - Cleanliness: Status of forecourt, pumps, and bins.
     - Safety: adherence to protocols, fire risks, traffic safety.
     - Staff: Presence, uniform compliance, activity level.
+    - Merchandising: Shelf stock levels, product availability, shelf organization.
 
     Return ONLY a raw JSON object (no markdown formatting) with these keys:
     {
       "cleanliness_score": int(1-10),
       "safety_score": int(1-10),
       "staff_score": int(1-10),
+      "merchandising_score": int(1-10),
       "hazards": ["list", "of", "issues"],
+      "stock_issues": ["list", "of", "empty shelves", "or products"],
       "customer_activity": "low|medium|high",
       "summary": "Brief executive summary of the footage"
     }

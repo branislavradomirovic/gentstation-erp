@@ -42,21 +42,45 @@ def render(conn):
                             "Region Manager", "Region Director", "General Manager"]
             role = st.selectbox("Role", role_options)
             
-            c3, c4 = st.columns(2)
-            assign_station = c3.selectbox(
-                "Assign station (optional)", 
-                options=[(None, None)] + station_options,
-                format_func=lambda x: x[0] if x[0] else "None"
-            )
-            assign_region = c4.selectbox(
-                "Assign region (optional)", 
-                options=[(None, None)] + region_options,
-                format_func=lambda x: x[0] if x[0] else "None"
-            )
+            # --- Conditional Assignment Widgets ---
+            assign_station_id = None
+            assign_region_id = None
+            assign_region_ids = [] # For Region Director
+
+            if role in ["Employee", "Gas Station Supervisor", "Gas Station Manager"]:
+                assign_station = st.selectbox(
+                    "Assign Station (Required)",
+                    options=[(None, None)] + station_options,
+                    format_func=lambda x: x[0] if x[0] else "Select a station..."
+                )
+                if assign_station:
+                    assign_station_id = assign_station[1]
+            
+            elif role == "Region Manager":
+                assign_region = st.selectbox(
+                    "Assign Region (Required)",
+                    options=[(None, None)] + region_options,
+                    format_func=lambda x: x[0] if x[0] else "Select a region..."
+                )
+                if assign_region:
+                    assign_region_id = assign_region[1]
+
+            elif role == "Region Director":
+                assign_region_ids = st.multiselect(
+                    "Assign Regions (Required)",
+                    options=[opt[1] for opt in region_options],
+                    format_func=lambda x: next((name for name, rid in region_options if rid == x), "Unknown")
+                )
             
             if st.form_submit_button("Create Employee & Send Invites"):
                 if not first.strip() or not email.strip():
                     st.error("Name and email are required.")
+                elif role in ["Employee", "Gas Station Supervisor", "Gas Station Manager"] and not assign_station_id:
+                    st.error("A station MUST be selected for this role.")
+                elif role == "Region Manager" and not assign_region_id:
+                    st.error("A region MUST be selected for this role.")
+                elif role == "Region Director" and not assign_region_ids:
+                    st.error("At least one region MUST be selected for this role.")
                 else:
                     # Generate Credentials
                     temp_pw = generate_temp_password()
@@ -75,10 +99,18 @@ def render(conn):
 
                         cursor = conn.execute(
                             "INSERT INTO employees (name, surname, email, password, role, station_id, region_id) VALUES (?,?,?,?,?,?,?)",
-                            (first.strip(), last.strip(), email.strip(), hashed, role, assign_station[1], assign_region[1])
+                            (first.strip(), last.strip(), email.strip(), hashed, role, assign_station_id, assign_region_id)
                         )
                         new_id = cursor.lastrowid
-                        conn.commit()
+
+                        # Handle Region Director M2M relationship
+                        if role == "Region Director" and assign_region_ids:
+                            for region_id in assign_region_ids:
+                                conn.execute(
+                                    "INSERT INTO director_regions (employee_id, region_id) VALUES (?, ?)",
+                                    (new_id, region_id)
+                                )
+                        conn.commit() # Commit after all inserts
                         
                         log_activity(conn, "CREATE_EMPLOYEE", f"Created {first} {last} ({role})")
 
@@ -106,23 +138,68 @@ def render(conn):
                         st.error(f"Database error: {e}")
 
     # --- 2. EMPLOYEE DIRECTORY ---
-    df = pd.read_sql_query("""
+    st.subheader("Employee Directory")
+
+    c_filter_1, c_filter_2 = st.columns([1, 2])
+    with c_filter_1:
+        # Filter by Region
+        sel_region_filter = st.selectbox("Filter by Region", ["All"] + [opt[0] for opt in region_options])
+    with c_filter_2:
+        search_text = st.text_input("Search (Name or Email)", placeholder="Type to filter...")
+
+    dir_query = """
         SELECT e.id, e.name || ' ' || e.surname as fullname, e.email, e.role, 
-               s.name as station_name, r.name as region_name, e.telegram_chat_id
+               s.name as station_name, e.station_id, COALESCE(r.name, rs.name) as region_name, e.telegram_chat_id
         FROM employees e
         LEFT JOIN stations s ON e.station_id = s.id
         LEFT JOIN regions r ON e.region_id = r.id
-        ORDER BY e.id
-    """, conn)
+        LEFT JOIN regions rs ON s.region_id = rs.id
+        WHERE 1=1
+    """
+    dir_params = []
 
-    st.subheader("Employee Directory")
+    if sel_region_filter != "All":
+        rid_filter = next((opt[1] for opt in region_options if opt[0] == sel_region_filter), None)
+        if rid_filter:
+            dir_query += " AND (e.region_id = ? OR s.region_id = ? OR e.id IN (SELECT employee_id FROM director_regions WHERE region_id = ?))"
+            dir_params.extend([rid_filter, rid_filter, rid_filter])
+
+    if search_text:
+        like_pattern = f"%{search_text}%"
+        dir_query += " AND (e.name || ' ' || e.surname LIKE ? OR e.email LIKE ?)"
+        dir_params.extend([like_pattern, like_pattern])
+
+    dir_query += " ORDER BY e.id"
+    df = pd.read_sql_query(dir_query, conn, params=dir_params)
+
     if df.empty:
         st.info("No employees found.")
     else:
         # Displaying Telegram status visually
         df['TG Status'] = df['telegram_chat_id'].apply(lambda x: "🔗 Linked" if x else "❌ Unlinked")
-        st.dataframe(df[['id', 'fullname', 'role', 'station_name', 'TG Status', 'email']], 
-                     use_container_width=True, hide_index=True)
+        
+        # Custom Grid Layout for Directory
+        cols = st.columns([0.5, 2, 2, 1.5, 1.5, 1, 0.8])
+        fields = ["ID", "Name", "Email", "Role", "Station", "TG", "Action"]
+        for col, field in zip(cols, fields):
+            col.markdown(f"**{field}**")
+            
+        for _, row in df.iterrows():
+            c1, c2, c3, c4, c5, c6, c7 = st.columns([0.5, 2, 2, 1.5, 1.5, 1, 0.8])
+            c1.write(str(row['id']))
+            c2.write(row['fullname'])
+            c3.write(row['email'])
+            c4.write(row['role'])
+            c5.write(row['station_name'] if row['station_name'] else "-")
+            c6.write(row['TG Status'])
+            
+            if row['station_id'] and not pd.isna(row['station_id']):
+                if c7.button("⛽", key=f"jump_st_{row['id']}", help=f"Go to {row['station_name']}"):
+                    st.session_state["active_page"] = "Stations"
+                    st.session_state["target_station_id"] = int(row['station_id'])
+                    st.rerun()
+            else:
+                c7.write("-")
 
     # --- 3. EDIT / DELETE SECTION ---
     st.divider()
@@ -139,42 +216,64 @@ def render(conn):
             e_surname = st.text_input("Surname", value=rec['surname'])
             e_email = st.text_input("Email", value=rec['email'])
             e_role = st.selectbox("Role", role_options, index=role_options.index(rec['role']) if rec['role'] in role_options else 0)
-            
-            # Helper to find index of current selection
-            curr_stat_idx = 0
-            if rec['station_id']:
-                for i, opt in enumerate(station_options):
-                    if opt[1] == rec['station_id']:
-                        curr_stat_idx = i + 1 # +1 because of None option
-            
-            curr_reg_idx = 0
-            if rec['region_id']:
-                for i, opt in enumerate(region_options):
-                    if opt[1] == rec['region_id']:
-                        curr_reg_idx = i + 1
 
-            e_stat = st.selectbox("Station", options=[(None, None)] + station_options, index=curr_stat_idx, format_func=lambda x: x[0] if x[0] else "None")
-            e_reg = st.selectbox("Region", options=[(None, None)] + region_options, index=curr_reg_idx, format_func=lambda x: x[0] if x[0] else "None")
+            # --- Conditional Assignment Widgets for Edit Form ---
+            e_station_id = None
+            e_region_id = None
+            e_region_ids = []
+
+            if e_role in ["Employee", "Gas Station Supervisor", "Gas Station Manager"]:
+                curr_stat_idx = next((i + 1 for i, opt in enumerate(station_options) if opt[1] == rec['station_id']), 0)
+                e_stat = st.selectbox("Station (Required)", options=[(None, None)] + station_options, index=curr_stat_idx, format_func=lambda x: x[0] if x[0] else "Select a station...")
+                if e_stat: e_station_id = e_stat[1]
+
+            elif e_role == "Region Manager":
+                curr_reg_idx = next((i + 1 for i, opt in enumerate(region_options) if opt[1] == rec['region_id']), 0)
+                e_reg = st.selectbox("Region (Required)", options=[(None, None)] + region_options, index=curr_reg_idx, format_func=lambda x: x[0] if x[0] else "Select a region...")
+                if e_reg: e_region_id = e_reg[1]
+
+            elif e_role == "Region Director":
+                current_director_regions = pd.read_sql_query(
+                    "SELECT region_id FROM director_regions WHERE employee_id = ?", conn, params=(sel,)
+                )['region_id'].tolist()
+                
+                e_region_ids = st.multiselect(
+                    "Regions (Required)",
+                    options=[opt[1] for opt in region_options],
+                    default=current_director_regions,
+                    format_func=lambda x: next((name for name, rid in region_options if rid == x), "Unknown")
+                )
             
             e_tg = st.text_input("Telegram Chat ID (Manual Edit)", value=rec['telegram_chat_id'] or "")
             
             if st.form_submit_button("Save Changes"):
-                try:
-                    conn.execute("""
-                        UPDATE employees SET name=?, surname=?, email=?, role=?, station_id=?, region_id=?, telegram_chat_id=? 
-                        WHERE id=?
-                    """, (e_name.strip(), e_surname.strip(), e_email.strip(), e_role, 
-                          e_stat[1], e_reg[1], 
-                          e_tg.strip() if e_tg.strip() else None, sel))
-                    
-                    # Sync changes to users table (permissions & login username)
-                    conn.execute("UPDATE users SET role=?, email=?, username=? WHERE email=?", 
-                                 (e_role, e_email.strip(), e_email.strip(), rec['email']))
+                # Validation
+                if e_role in ["Employee", "Gas Station Supervisor", "Gas Station Manager"] and not e_station_id:
+                    st.error("A station MUST be selected for this role.")
+                elif e_role == "Region Manager" and not e_region_id:
+                    st.error("A region MUST be selected for this role.")
+                elif e_role == "Region Director" and not e_region_ids:
+                    st.error("At least one region MUST be selected for this role.")
+                else:
+                    try:
+                        # For roles that don't use a field, set it to NULL
+                        final_station_id = e_station_id if e_role in ["Employee", "Gas Station Supervisor", "Gas Station Manager"] else None
+                        final_region_id = e_region_id if e_role == "Region Manager" else None
 
-                    st.success("Changes saved.")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Error: {e}")
+                        conn.execute("UPDATE employees SET name=?, surname=?, email=?, role=?, station_id=?, region_id=?, telegram_chat_id=? WHERE id=?", (e_name.strip(), e_surname.strip(), e_email.strip(), e_role, final_station_id, final_region_id, e_tg.strip() if e_tg.strip() else None, sel))
+                        
+                        # Handle Region Director M2M relationship by clearing and re-inserting
+                        conn.execute("DELETE FROM director_regions WHERE employee_id = ?", (sel,))
+                        if e_role == "Region Director" and e_region_ids:
+                            for region_id in e_region_ids:
+                                conn.execute("INSERT INTO director_regions (employee_id, region_id) VALUES (?, ?)", (sel, region_id))
+                        
+                        conn.execute("UPDATE users SET role=?, email=?, username=? WHERE email=?", (e_role, e_email.strip(), e_email.strip(), rec['email']))
+                        conn.commit()
+                        st.success("Changes saved.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error: {e}")
 
         # Resend credentials / Invite to Telegram
         col_resend, col_del = st.columns(2)

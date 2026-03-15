@@ -20,9 +20,10 @@ from core.database import get_connection
 
 # Tunable weights for the risk formula
 WEIGHTS = {
-    "safety": 0.5,
-    "cleanliness": 0.2,
+    "safety": 0.4,
+    "cleanliness": 0.15,
     "staff": 0.15,
+    "merchandising": 0.15,
     "efficiency": 0.1,
     "sentiment": 0.05,
     "incidents": 0.6,  # per incident multiplier
@@ -40,6 +41,7 @@ def compute_station_risk_from_metrics(metrics: Dict[str, Any]) -> float:
     safety = metrics.get("safety", metrics.get("safety_score", 7)) or 7
     cleanliness = metrics.get("cleanliness_score", metrics.get("cleanliness", 7)) or 7
     staff = metrics.get("staff", metrics.get("staff_score", 7)) or 7
+    merchandising = metrics.get("merchandising_score", metrics.get("merchandising", 7)) or 7
     efficiency = metrics.get("efficiency", 7) or 7
     sentiment = metrics.get("sentiment", 0.0) or 0.0
     incidents = metrics.get("safety_violations") or metrics.get("incidents") or []
@@ -49,6 +51,7 @@ def compute_station_risk_from_metrics(metrics: Dict[str, Any]) -> float:
     safety_risk = (10 - safety) / 10.0
     cleanliness_risk = (10 - cleanliness) / 10.0
     staff_risk = (10 - staff) / 10.0
+    merchandising_risk = (10 - merchandising) / 10.0
     efficiency_risk = (10 - efficiency) / 10.0
     sentiment_risk = max(0, -sentiment)  # negative sentiment increases risk
 
@@ -56,6 +59,7 @@ def compute_station_risk_from_metrics(metrics: Dict[str, Any]) -> float:
         safety_risk * WEIGHTS["safety"] +
         cleanliness_risk * WEIGHTS["cleanliness"] +
         staff_risk * WEIGHTS["staff"] +
+        merchandising_risk * WEIGHTS["merchandising"] +
         efficiency_risk * WEIGHTS["efficiency"] +
         sentiment_risk * WEIGHTS["sentiment"]
     )

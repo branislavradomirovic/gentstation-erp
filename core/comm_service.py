@@ -126,3 +126,110 @@ Please click the link below to register:
         st.error(f"❌ SMTP Error: {str(e)}")
         # We still return the link so the admin can give it to the user manually
         return tg_link
+
+def send_ai_report_email(conn, station_id: int, report_data: dict):
+    """
+    Sends an AI report summary to the relevant Gas Station Manager.
+    """
+    # 1. Find the manager for the station
+    cur = conn.cursor()
+    manager_query = cur.execute("""
+        SELECT u.email, s.name as station_name
+        FROM users u
+        JOIN employees e ON u.username = e.email
+        JOIN stations s ON e.station_id = s.id
+        WHERE e.role = 'Gas Station Manager' AND e.station_id = ? AND u.email IS NOT NULL
+    """, (station_id,)).fetchone()
+
+    if not manager_query:
+        print(f"📧 [comm_service] No manager found for station {station_id}. Skipping email.")
+        return
+
+    manager_email, station_name = manager_query
+
+    # 2. Credentials from .env
+    SMTP_SERVER = "smtp.gmail.com"
+    SMTP_PORT = 587
+    SENDER_EMAIL = os.getenv("SMTP_USER")
+    SENDER_PASSWORD = os.getenv("SMTP_PASS")
+
+    if not SENDER_EMAIL or not SENDER_PASSWORD:
+        print("📧 [comm_service] SMTP credentials missing. AI report email skipped.")
+        return
+
+    # 3. Prepare Email Content
+    msg = MIMEMultipart()
+    msg['From'] = f"GentStation AI Auditor <{SENDER_EMAIL}>"
+    msg['To'] = manager_email
+    msg['Subject'] = f"🚨 New AI Audit Report for {station_name}"
+
+    body = f"""
+    A new video submission for {station_name} has been analyzed by the AI Auditor.
+
+    --- EXECUTIVE SUMMARY ---
+    {report_data.get('summary', 'N/A')}
+
+    --- KEY METRICS ---
+    - Cleanliness Score: {report_data.get('cleanliness_score', 'N/A')} / 10
+    - Safety Score:      {report_data.get('safety_score', 'N/A')} / 10
+    - Staff Score:       {report_data.get('staff_score', 'N/A')} / 10
+
+    Detected Hazards: {', '.join(report_data.get('hazards', ['None']))}
+
+    You can view the full details in the GentStation Opus ERP dashboard.
+    """
+    msg.attach(MIMEText(body, 'plain'))
+
+    # 4. Actual Transmission
+    try:
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.starttls()
+            server.login(SENDER_EMAIL, SENDER_PASSWORD)
+            server.send_message(msg)
+            print(f"✅ [comm_service] AI report sent to {manager_email} for station {station_id}.")
+    except Exception as e:
+        print(f"❌ [comm_service] SMTP Error sending AI report: {e}")
+
+def send_station_qr_email(station_name: str, recipient_email: str, bot_link: str, qr_url: str):
+    """
+    Sends the QR code link and bot instructions to the station manager.
+    """
+    SMTP_SERVER = "smtp.gmail.com"
+    SMTP_PORT = 587
+    SENDER_EMAIL = os.getenv("SMTP_USER")
+    SENDER_PASSWORD = os.getenv("SMTP_PASS")
+
+    if not SENDER_EMAIL or not SENDER_PASSWORD:
+        st.error("SMTP credentials missing.")
+        return
+
+    msg = MIMEMultipart()
+    msg['From'] = f"GentStation Operations <{SENDER_EMAIL}>"
+    msg['To'] = recipient_email
+    msg['Subject'] = f"📲 Setup Instructions: {station_name}"
+
+    body = f"""
+    Hello,
+
+    Here are the mobile access instructions for {station_name}.
+
+    1. Employees must install Telegram.
+    2. Register using the invite link in their welcome email.
+    3. To submit reports, they can scan the station QR code or use this link:
+       {bot_link}
+
+    Direct QR Code Link:
+    {qr_url}
+
+    Please print the QR code and display it in a secure staff area.
+    """
+    msg.attach(MIMEText(body, 'plain'))
+
+    try:
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.starttls()
+            server.login(SENDER_EMAIL, SENDER_PASSWORD)
+            server.send_message(msg)
+            st.toast(f"Instructions sent to {recipient_email}", icon="📧")
+    except Exception as e:
+        st.error(f"Failed to send email: {e}")

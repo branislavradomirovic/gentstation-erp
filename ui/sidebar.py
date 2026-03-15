@@ -36,7 +36,12 @@ PAGE_CONFIG = {
     "AI Reports": {
         "id": "AI Reports",
         "icon": "📈",
-        "roles": ["General Manager", "Region Director", "Region Manager"]
+        "roles": ["General Manager", "Region Director", "Region Manager", "Gas Station Manager"]
+    },
+    "AI Alerts": {
+        "id": "AI Alerts",
+        "icon": "🚨",
+        "roles": ["General Manager", "Region Director", "Region Manager", "Gas Station Manager"]
     },
     "Audit Log": {
         "id": "Audit Log",

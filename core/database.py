@@ -108,8 +108,16 @@ def ensure_schema(conn):
         station_id INTEGER,
         severity TEXT,
         message TEXT,
-        created_at TEXT,
+        created_at TEXT DEFAULT (datetime('now')),
+        status TEXT DEFAULT 'new', -- new, acknowledged, resolved
         FOREIGN KEY(station_id) REFERENCES stations(id) ON DELETE CASCADE
+    );
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS system_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT
     );
     """)
 
@@ -129,11 +137,23 @@ def ensure_schema(conn):
     );
     """)
 
-    # Migration: Add dark_mode_enabled if it doesn't exist (for existing databases)
+    # --- SCHEMA MIGRATIONS ---
+    # Add dark_mode_enabled to users if it doesn't exist
     cursor.execute("PRAGMA table_info(users)")
     columns = [info[1] for info in cursor.fetchall()]
     if "dark_mode_enabled" not in columns:
         cursor.execute("ALTER TABLE users ADD COLUMN dark_mode_enabled INTEGER DEFAULT 0")
+    # Add status to ai_alerts if it doesn't exist
+    cursor.execute("PRAGMA table_info(ai_alerts)")
+    columns = [info[1] for info in cursor.fetchall()]
+    if "status" not in columns:
+        cursor.execute("ALTER TABLE ai_alerts ADD COLUMN status TEXT DEFAULT 'new'")
+
+    # Add data_json to submissions if it doesn't exist
+    cursor.execute("PRAGMA table_info(submissions)")
+    columns = [info[1] for info in cursor.fetchall()]
+    if "data_json" not in columns:
+        cursor.execute("ALTER TABLE submissions ADD COLUMN data_json TEXT")
 
     # Sessions table to store session tokens
     cursor.execute("""
@@ -146,10 +166,4 @@ def ensure_schema(conn):
     );
     """)
 
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS system_settings (
-        key TEXT PRIMARY KEY,
-        value TEXT
-    );
-    """)
     conn.commit()

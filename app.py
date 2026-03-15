@@ -6,23 +6,35 @@ import subprocess
 import sys
 
 
-# Start the bot as a background process if not already running
-if "bot_started" not in st.session_state:
-    subprocess.Popen([sys.executable, "bot_worker.py"])
-    st.session_state["bot_started"] = True
-
-# Start the AI worker as a background process if not already running
-if "ai_worker_started" not in st.session_state:
-    subprocess.Popen([sys.executable, "core/ai_worker.py"])
-    st.session_state["ai_worker_started"] = True
-
-
 # --- 1. PAGE CONFIGURATION (MUST BE FIRST) ---
 st.set_page_config(
     page_title="Gas Station Manager",
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+@st.cache_resource
+def start_background_workers():
+    """
+    Starts background processes (Telegram Bot, AI Worker) exactly once
+    per server session using Streamlit's cache mechanism.
+    """
+    project_root = Path(__file__).resolve().parent
+    
+    # 1. Start Telegram Bot
+    bot_script = project_root / "bot_worker.py"
+    if bot_script.exists():
+        subprocess.Popen([sys.executable, str(bot_script)], cwd=str(project_root))
+        print(f"🚀 [app.py] Started Bot Worker: {bot_script}")
+
+    # 2. Start AI Worker
+    ai_script = project_root / "core" / "ai_worker.py"
+    if ai_script.exists():
+        subprocess.Popen([sys.executable, str(ai_script)], cwd=str(project_root))
+        print(f"🧠 [app.py] Started AI Worker: {ai_script}")
+
+# Initialize workers
+start_background_workers()
 
 # --- 2. GLOBAL CSS INJECTION (Optimized for Spacing & Alignment) ---
 st.markdown("""
@@ -43,12 +55,12 @@ st.markdown("""
 
         /* Pull the logo to the absolute top edge */
         [data-testid="stSidebarContent"] > div:first-child {
-            margin-top: -1.5rem !important;
+            margin-top: 1.5rem !important;
         }
 
         /* INCREASED VERTICAL SPACING between sidebar components */
         [data-testid="stVerticalBlock"] { 
-            gap: 0.5rem !important; 
+            gap: 1.5rem !important; 
         }
         
         /* Ensure the logo image stays flush */
@@ -67,13 +79,7 @@ st.markdown("""
         footer { visibility: hidden; }
 
         .login-disclaimer {
-            position: fixed;
-            bottom: 1rem;
-            left: 0;
-            right: 0;
-            width: 90%;
-            max-width: 800px;
-            margin: auto;
+            margin-top: 1rem;
             padding: 0.75rem;
             text-align: center;
             font-size: 0.75rem;
@@ -122,6 +128,7 @@ import pages.employees as employees
 import pages.admin_users as admin_users
 import pages.gm_dashboard as gm_dashboard
 import pages.ai_reports as ai_reports
+import pages.ai_alerts as ai_alerts
 import pages.audit_log as audit_log
 import pages.settings as settings
 import pages.help as page_help
@@ -227,6 +234,7 @@ try:
         "Map View": map_view.render,
         "Employees": employees.render,
         "AI Reports": ai_reports.render,
+        "AI Alerts": ai_alerts.render,
         "Audit Log": audit_log.render,
         "GM Dashboard": gm_dashboard.render,
         "Admin Users": admin_users.render,

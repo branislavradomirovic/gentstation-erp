@@ -3,6 +3,7 @@ import pandas as pd
 import folium
 from streamlit_folium import st_folium
 from ui.header import render_page_header
+from core.activity_logger import log_activity
 
 def get_status_emoji(unprocessed_count):
     """Visual status based on unprocessed submissions."""
@@ -90,6 +91,29 @@ def render(conn):
     except Exception as e:
         st.info("Regional table data not yet available.")
 
+    # --- 2.5 MERCHANDISING INSIGHTS ---
+    st.subheader("🛒 Merchandising Performance")
+    try:
+        query_merch = """
+            SELECT 
+                st.name as Station, 
+                AVG(CAST(json_extract(s.data_json, '$.merchandising_score') AS FLOAT)) as Score
+            FROM submissions s
+            JOIN stations st ON s.station_id = st.id
+            WHERE s.processed = 1 AND s.data_json IS NOT NULL
+            GROUP BY st.id
+            ORDER BY Score DESC
+        """
+        df_merch = pd.read_sql_query(query_merch, conn)
+        if not df_merch.empty:
+            st.bar_chart(df_merch.set_index("Station"))
+        else:
+            st.info("No merchandising data available yet.")
+    except Exception as e:
+        st.warning(f"Merchandising analytics unavailable: {e}")
+
+    st.divider()
+
     # --- 3. INTERACTIVE MAP ---
     st.subheader("📍 Station Location Map")
     try:
@@ -136,6 +160,43 @@ def render(conn):
             st.info("Add coordinates to stations to see them on the map.")
     except Exception as e:
         st.error(f"Map Error: {e}")
+
+    # --- 3.5 RECENT UNRESOLVED ALERTS ---
+    st.divider()
+    st.subheader("🚨 Recent Unresolved Alerts")
+    try:
+        # Query for new or acknowledged alerts, limit to 5 for the dashboard view
+        alerts_query = """
+            SELECT a.id, a.created_at, s.name as station_name, a.severity, a.message
+            FROM ai_alerts a
+            JOIN stations s ON a.station_id = s.id
+            WHERE a.status IN ('new', 'acknowledged')
+            ORDER BY a.created_at DESC
+            LIMIT 5
+        """
+        alerts_df = pd.read_sql_query(alerts_query, conn)
+
+        if alerts_df.empty:
+            st.success("✅ No outstanding alerts to display.")
+        else:
+            for _, row in alerts_df.iterrows():
+                icon = {"HIGH": "🚨", "MEDIUM": "⚠️", "LOW": "ℹ️"}.get(row['severity'], "ℹ️")
+                
+                with st.container(border=True):
+                    col1, col2 = st.columns([4, 1])
+                    with col1:
+                        st.markdown(f"**{icon} {row['severity']}** at **{row['station_name']}** ({row['created_at']})")
+                        st.caption(row['message'])
+                    with col2:
+                        st.write("") # for vertical alignment
+                        if st.button("Resolve", key=f"dash_res_{row['id']}", use_container_width=True):
+                            conn.execute("UPDATE ai_alerts SET status = 'resolved' WHERE id = ?", (row['id'],))
+                            conn.commit()
+                            log_activity(conn, "RESOLVE_ALERT", f"Resolved alert ID {row['id']} from dashboard")
+                            st.toast(f"Alert {row['id']} resolved!", icon="✅")
+                            st.rerun()
+    except Exception as e:
+        st.caption(f"Could not load alerts: {e}")
 
     # --- 4. RECENT ACTIVITY PREVIEW ---
     st.divider()
