@@ -9,9 +9,6 @@ genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
 def parse_station_video(video_path):
     """Sends video to Gemini and returns structured JSON."""
-    # Use Gemini 1.5 Flash for efficient video processing
-    model = genai.GenerativeModel('gemini-1.5-flash-001')
-    
     # Upload the file to Google's temporary storage
     sample_file = genai.upload_file(path=video_path)
     
@@ -42,17 +39,27 @@ def parse_station_video(video_path):
       "hazards": ["list", "of", "issues"],
       "stock_issues": ["list", "of", "empty shelves", "or products"],
       "customer_activity": "low|medium|high",
+      "confidence": float(0.0-1.0),
       "summary": "Brief executive summary of the footage"
     }
     """
     
-    response = model.generate_content([sample_file, prompt])
-    
-    # Remove markdown formatting if Gemini adds it (```json ... ```)
-    raw_text = response.text.strip()
-    if raw_text.startswith("```"):
-        raw_text = raw_text.split("```")[1]
-        if raw_text.startswith("json"):
-            raw_text = raw_text[4:]
-            
-    return json.loads(raw_text)
+    model_name = "gemini-2.0-flash"
+    print(f"🤖 [video_processor] Attempting analysis with {model_name}...")
+
+    try:
+        model = genai.GenerativeModel(model_name)
+        response = model.generate_content([sample_file, prompt])
+        
+        # Remove markdown formatting if Gemini adds it (```json ... ```)
+        raw_text = response.text.strip()
+        if raw_text.startswith("```"):
+            raw_text = raw_text.split("```")[1]
+            if raw_text.startswith("json"):
+                raw_text = raw_text[4:]
+        
+        return json.loads(raw_text)
+    except Exception as e:
+        print(f"❌ [video_processor] {model_name} failed: {e}")
+        # Re-raise the exception to be handled by the worker
+        raise RuntimeError(f"Gemini model {model_name} failed to process video. Error: {e}") from e

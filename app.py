@@ -22,7 +22,7 @@ def start_background_workers():
     project_root = Path(__file__).resolve().parent
     
     # 1. Start Telegram Bot
-    bot_script = project_root / "bot_worker.py"
+    bot_script = project_root / "bot" / "bot_worker.py"
     if bot_script.exists():
         subprocess.Popen([sys.executable, str(bot_script)], cwd=str(project_root))
         print(f"🚀 [app.py] Started Bot Worker: {bot_script}")
@@ -114,7 +114,7 @@ if st.session_state.get("dark_mode"):
 
 # Core imports
 from core.database import get_connection, ensure_schema
-from core.auth import login_user_streamlit, logout_user_streamlit
+from core.auth import login_user_streamlit, logout_user_streamlit, hash_password as hash_password_bcrypt
 from core.session import validate_session_token
 from core.activity_logger import log_activity
 from core.config import LOGIN_DISCLAIMER_HTML, FOOTER_DISCLAIMER_TEXT
@@ -135,6 +135,12 @@ import pages.help as page_help
 
 # UI imports
 from ui.sidebar import display_sidebar, PAGE_CONFIG
+
+# Communication service for password reset
+try:
+    from core.comm_service import send_password_reset_email
+except ImportError:
+    def send_password_reset_email(*args, **kwargs): st.error("Email service unavailable.")
 
 # Initialize Database
 conn = get_connection()
@@ -194,7 +200,10 @@ if "user_id" not in st.session_state:
         cred = st.text_input("Username or Email")
         pw = st.text_input("Password", type="password")
         ack = st.checkbox("I acknowledge the disclaimer below")
-        if st.form_submit_button("Login", use_container_width=True):
+        
+        submitted = st.form_submit_button("Login", use_container_width=True)
+        
+        if submitted:
             if not ack:
                 st.error("You must acknowledge the disclaimer to log in.")
             else:
@@ -203,6 +212,20 @@ if "user_id" not in st.session_state:
                     st.rerun()
                 else:
                     st.error(msg)
+
+    # --- FORGOT PASSWORD ---
+    if st.button("Forgot Password?", type="link"):
+        st.session_state['show_forgot_pw'] = True
+
+    if st.session_state.get('show_forgot_pw'):
+        with st.form("forgot_pw_form"):
+            st.subheader("Reset Your Password")
+            email_to_reset = st.text_input("Enter your registered email address")
+            if st.form_submit_button("Send Reset Link", use_container_width=True):
+                if email_to_reset:
+                    send_password_reset_email(conn, email_to_reset)
+                else:
+                    st.error("Please enter an email address.")
 
     st.markdown(LOGIN_DISCLAIMER_HTML, unsafe_allow_html=True)
 

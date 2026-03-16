@@ -2,8 +2,13 @@ import os
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from email.mime.image import MIMEImage
+from pathlib import Path
+import secrets
+import hashlib
 import streamlit as st
 from dotenv import load_dotenv
+from core.auth import hash_password as hash_password_bcrypt
 
 # Load variables from .env
 load_dotenv()
@@ -233,3 +238,93 @@ def send_station_qr_email(station_name: str, recipient_email: str, bot_link: str
             st.toast(f"Instructions sent to {recipient_email}", icon="📧")
     except Exception as e:
         st.error(f"Failed to send email: {e}")
+
+def send_password_reset_email(conn, email: str):
+    """
+    Finds a user by email, generates a new password, updates the DB, and sends it.
+    """
+    # 1. Verify user exists
+    user_row = conn.execute("SELECT id, username FROM users WHERE email = ?", (email,)).fetchone()
+    if not user_row:
+        st.error("No account found with that email address.")
+        return
+
+    user_id, username = user_row
+
+    # 2. Generate new password
+    alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    new_pw = ''.join(secrets.choice(alphabet) for _ in range(10))
+
+    # 3. Hash and update databases
+    try:
+        # Update users table (bcrypt)
+        new_bcrypt_hash = hash_password_bcrypt(new_pw)
+        conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (new_bcrypt_hash, user_id))
+
+        # Update employees table (legacy SHA256)
+        new_sha_hash = hashlib.sha256(new_pw.encode()).hexdigest()
+        conn.execute("UPDATE employees SET password = ? WHERE email = ?", (new_sha_hash, email))
+        
+        conn.commit()
+    except Exception as e:
+        st.error(f"Database error during password reset: {e}")
+        return
+
+    # 4. Send the email
+    SMTP_SERVER = "smtp.gmail.com"
+    SMTP_PORT = 587
+    SENDER_EMAIL = os.getenv("SMTP_USER")
+    SENDER_PASSWORD = os.getenv("SMTP_PASS")
+
+    if not SENDER_EMAIL or not SENDER_PASSWORD:
+        st.error("SMTP service not configured. Cannot send reset email.")
+        return
+
+    msg = MIMEMultipart('related')
+    msg['From'] = f"GentStation System <{SENDER_EMAIL}>"
+    msg['To'] = email
+    msg['Subject'] = "Your Password Has Been Reset"
+
+    html_body = f"""
+    <html>
+        <body style="font-family: Arial, sans-serif; color: #333;">
+            <div style="text-align: center; padding: 20px;">
+                <img src="cid:company_logo" alt="GentStation Logo" width="150" style="margin-bottom: 10px;">
+                <h2 style="color: #2c3e50;">Password Reset</h2>
+            </div>
+            <p>Hello <strong>{username}</strong>,</p>
+            <p>A password reset was requested for your account.</p>
+            
+            <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                <p><strong>Login URL:</strong> <a href="https://gentstation-erp.streamlit.app">https://gentstation-erp.streamlit.app</a></p>
+                <p><strong>Username:</strong> {email}</p>
+                <p><strong>New Temporary Password:</strong> <code style="background: #e0e0e0; padding: 4px 8px; border-radius: 4px; font-size: 1.1em;">{new_pw}</code></p>
+            </div>
+
+            <p>Please log in and change this password immediately from the Settings page.</p>
+            <p style="font-size: 0.9em; color: #777;">If you did not request this reset, please contact support.</p>
+        </body>
+    </html>
+    """
+    msg.attach(MIMEText(html_body, 'html'))
+
+    # Attach Logo
+    logo_path = Path(__file__).resolve().parents[1] / "assets" / "OpusLogo.png"
+    if logo_path.exists():
+        try:
+            with open(logo_path, 'rb') as f:
+                img = MIMEImage(f.read())
+                img.add_header('Content-ID', '<company_logo>')
+                img.add_header('Content-Disposition', 'inline')
+                msg.attach(img)
+        except Exception as e:
+            print(f"Error attaching logo to email: {e}")
+
+    try:
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.starttls()
+            server.login(SENDER_EMAIL, SENDER_PASSWORD)
+            server.send_message(msg)
+        st.success("Password reset successful. Please check your email for a new temporary password.")
+    except Exception as e:
+        st.error(f"Failed to send reset email: {e}")

@@ -27,27 +27,6 @@ def ensure_schema(conn):
     );
     """)
 
-    # AI reports table (structured output)
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS ai_reports (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        created_at TEXT,
-        report_role TEXT,
-        station_id INTEGER,
-        region_id INTEGER,
-        report_text TEXT,
-        sentiment REAL,
-        safety_score INTEGER,
-        cleanliness_score INTEGER,
-        staff_score INTEGER,
-        efficiency_score INTEGER,
-        customer_score INTEGER,
-        incidents_json TEXT,
-        kpi_json TEXT,
-        trend TEXT
-    );
-    """)
-
     # employees, regions, stations minimal schema (if missing)
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS regions (

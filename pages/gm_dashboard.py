@@ -14,7 +14,6 @@ import pandas as pd
 import folium
 from streamlit_folium import st_folium
 import json
-from core.database import get_connection
 from ui.header import render_page_header
 from ai_engine.risk_engine import run_risk_cycle
 
@@ -24,67 +23,52 @@ def render(conn):
     # Top KPI row
     st.subheader("Top-level KPIs")
     total_stations = conn.execute("SELECT COUNT(*) FROM stations").fetchone()[0]
-    total_alerts = conn.execute("SELECT COUNT(*) FROM ai_alerts WHERE severity='HIGH'").fetchone()[0]
-    avg_risk_query = conn.execute("SELECT AVG(json_extract(kpi_json, '$.safety') ) FROM ai_reports WHERE kpi_json IS NOT NULL").fetchone()[0]
+    total_alerts = conn.execute("SELECT COUNT(*) FROM ai_alerts WHERE severity='HIGH' AND status != 'resolved'").fetchone()[0]
+    avg_safety_query = conn.execute("SELECT AVG(CAST(json_extract(data_json, '$.safety_score') AS REAL)) FROM submissions WHERE processed = 1 AND data_json IS NOT NULL").fetchone()[0]
     col1, col2, col3 = st.columns(3)
     col1.metric("Stations", total_stations)
-    col2.metric("High Alerts (last)", total_alerts)
-    col3.metric("Avg Safety (approx)", round(avg_risk_query or 0, 2))
+    col2.metric("High-Severity Alerts", total_alerts)
+    col3.metric("Avg Safety Score", round(avg_safety_query or 0, 2))
 
     st.divider()
 
     # Run risk engine to refresh alerts (careful: this may write ai_alerts)
-    if st.button("🔄 Recompute risk now"):
-        with st.spinner("Computing risk and anomalies..."):
-            results = run_risk_cycle()
-            st.success("Risk recomputed.")
-    else:
-        results = None
+    risk_results = {}
+    with st.spinner("Analyzing station risk..."):
+        risk_results = run_risk_cycle()
 
     # Station Risk Rankings
     st.subheader("Station Risk Ranking")
-    df_risk = pd.read_sql_query("""
-        SELECT id, name, region_id, lat, lon FROM stations
-    """, conn)
-    # Fetch latest risk per station from ai_alerts or ai_reports (we'll compute risk if missing)
-    # Join with latest ai_reports.kpi_json to show metrics
-    kpis = pd.read_sql_query("""
-        SELECT station_id, kpi_json, created_at FROM ai_reports
-        WHERE station_id IS NOT NULL
-        ORDER BY created_at DESC
-    """, conn)
-    # build map of station->kpi (latest)
-    latest_kpi = {}
-    for _, r in kpis.iterrows():
-        sid = r['station_id']
-        if sid not in latest_kpi:
-            try:
-                latest_kpi[sid] = json.loads(r['kpi_json']) if r['kpi_json'] else {}
-            except:
-                latest_kpi[sid] = {}
+    df_stations = pd.read_sql_query("SELECT id, name, region_id, lat, lon FROM stations", conn)
 
     ranking_rows = []
-    for _, s in df_risk.iterrows():
-        sid = s['id']
-        metrics = latest_kpi.get(sid, {})
-        # simple risk: use safety -> lower safety => higher risk
-        safety = metrics.get('safety') or metrics.get('safety_score') or 7
-        risk_est = 100 - (safety * 10)
+    for _, station in df_stations.iterrows():
+        sid = station['id']
+        risk_data = risk_results.get(sid)
+        
+        if risk_data:
+            risk_score = risk_data.get('risk', 0)
+            safety_score = risk_data.get('metrics', {}).get('safety_score', 'N/A')
+        else:
+            # Fallback for stations with no reports
+            risk_score = 0
+            safety_score = 'N/A'
+            
         ranking_rows.append({
             "station_id": sid,
-            "station_name": s['name'],
-            "region_id": s['region_id'],
-            "lat": s['lat'],
-            "lon": s['lon'],
-            "safety": safety,
-            "risk_score": round(risk_est, 2)
+            "station_name": station['name'],
+            "region_id": station['region_id'],
+            "lat": station['lat'],
+            "lon": station['lon'],
+            "safety": safety_score,
+            "risk_score": round(risk_score, 2)
         })
 
     ranking_df = pd.DataFrame(ranking_rows).sort_values("risk_score", ascending=False)
     if ranking_df.empty:
-        st.info("No station KPIs yet.")
+        st.info("No station data available.")
     else:       
-        st.dataframe(ranking_df[['station_id','station_name','region_id','safety','risk_score']], use_container_width=True)
+        st.dataframe(ranking_df[['station_id','station_name','region_id','safety','risk_score']], use_container_width=True, hide_index=True)
 
     st.divider()
 
@@ -127,13 +111,17 @@ def render(conn):
 
     # Employee performance (derived from ai_reports contributions per station)
     st.subheader("Employee Performance Snapshot")
-    # Naive metric: count of ai_reports per station and average sentiment
+    # Metric: count of submissions per employee
     perf_df = pd.read_sql_query("""
-        SELECT e.id as employee_id, e.name || ' ' || e.surname as fullname, e.role, e.station_id,
-               COUNT(ar.id) as reports_count,
-               AVG(ar.sentiment) as avg_sentiment
+        SELECT 
+            e.id as employee_id, 
+            e.name || ' ' || e.surname as fullname, 
+            e.role, 
+            s.name as station_name,
+            COUNT(sub.id) as reports_count
         FROM employees e
-        LEFT JOIN ai_reports ar ON ar.station_id = e.station_id
+        LEFT JOIN submissions sub ON sub.employee_id = e.id
+        LEFT JOIN stations s ON e.station_id = s.id
         GROUP BY e.id
         ORDER BY reports_count DESC
         LIMIT 50
@@ -141,26 +129,27 @@ def render(conn):
     if perf_df.empty:
         st.info("No performance data yet.")
     else:
-        st.dataframe(perf_df, use_container_width=True)
+        st.dataframe(perf_df, use_container_width=True, hide_index=True)
 
     st.divider()
 
     # AI anomaly alerts (recent)
     st.subheader("AI Anomaly Alerts (Recent)")
     alerts = pd.read_sql_query("""
-        SELECT a.id, s.name as station, a.severity, a.message, a.created_at
+        SELECT a.id, s.name as station, a.severity, a.message, a.created_at, a.status
         FROM ai_alerts a
         LEFT JOIN stations s ON s.id = a.station_id
+        WHERE a.status != 'resolved'
         ORDER BY a.created_at DESC
         LIMIT 50
     """, conn)
     if alerts.empty:
-        st.success("No anomalies detected.")
+        st.success("No unresolved anomalies detected.")
     else:
         for _, a in alerts.iterrows():
             if a['severity'] == "HIGH":
-                st.error(f"[{a['created_at']}] {a['station']}: {a['message']}")
+                st.error(f"[{a['created_at']}] **{a['station']}**: {a['message']} (Status: {a['status']})")
             elif a['severity'] == "MEDIUM":
-                st.warning(f"[{a['created_at']}] {a['station']}: {a['message']}")
+                st.warning(f"[{a['created_at']}] **{a['station']}**: {a['message']} (Status: {a['status']})")
             else:
-                st.info(f"[{a['created_at']}] {a['station']}: {a['message']}")
+                st.info(f"[{a['created_at']}] **{a['station']}**: {a['message']} (Status: {a['status']})")

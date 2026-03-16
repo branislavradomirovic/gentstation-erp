@@ -14,6 +14,7 @@ except ImportError:
     def send_welcome_comms(data): return None
 
 def hash_password(password: str) -> str:
+    """Legacy SHA256 hash for the 'employees' table password column."""
     return hashlib.sha256(password.encode()).hexdigest()
 
 def generate_temp_password(n: int = 10) -> str:

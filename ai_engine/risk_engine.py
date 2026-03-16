@@ -78,21 +78,24 @@ def record_ai_alert(conn, station_id: int, severity: str, message: str):
 
 def run_risk_cycle(threshold: float = 60.0) -> Dict[int, Dict[str, Any]]:
     """
-    1) Read latest ai_reports for stations (most recent entry per station)
+    1) Read latest processed submissions for stations.
     2) Compute risk score
-    3) Persist risk as new ai_reports entry or ai_alerts when risk > threshold
+    3) Persist alerts when risk > threshold.
     4) Return mapping station_id -> {risk: float, details: {...}}
     """
     conn = get_connection()
     cur = conn.cursor()
 
-    # Fetch last ai_report per station (group by station_id picking latest)
+    # Fetch last processed submission per station
     rows = cur.execute("""
-        SELECT a.station_id, a.kpi_json, a.created_at FROM ai_reports a
+        SELECT s.station_id, s.data_json, s.timestamp FROM submissions s
         INNER JOIN (
-            SELECT station_id, MAX(created_at) as ma FROM ai_reports GROUP BY station_id
-        ) sub ON sub.station_id = a.station_id AND sub.ma = a.created_at
-        WHERE a.station_id IS NOT NULL
+            SELECT station_id, MAX(timestamp) as max_ts 
+            FROM submissions 
+            WHERE processed = 1 AND data_json IS NOT NULL
+            GROUP BY station_id
+        ) sub ON sub.station_id = s.station_id AND sub.max_ts = s.timestamp
+        WHERE s.station_id IS NOT NULL
     """).fetchall()
 
     results = {}
@@ -109,20 +112,18 @@ def run_risk_cycle(threshold: float = 60.0) -> Dict[int, Dict[str, Any]]:
             msg = f"Station {station_id} risk score {risk} >= threshold {threshold}"
             record_ai_alert(conn, station_id, "HIGH", msg)
 
-            # Optionally also insert a General Manager report or annotate DB; for now we only alert
-
     return results
 
 # Optional: compute station-level anomalies from historical metric series
 def detect_kpi_anomalies(station_id: int, metric_key: str, current_value: float, window: int = 20) -> Tuple[bool, Optional[Dict[str, float]]]:
     """
     Compare current_value with historical average for metric_key (read from ai_reports.kpi_json).
-    If relative deviation > 0.5 flag anomaly.
+    If relative deviation > 0.5, flag anomaly.
     Return (is_anomaly, details)
     """
     conn = get_connection()
     cur = conn.cursor()
-    rows = cur.execute("SELECT kpi_json FROM ai_reports WHERE station_id = ? ORDER BY created_at DESC LIMIT ?", (station_id, window)).fetchall()
+    rows = cur.execute("SELECT data_json FROM submissions WHERE station_id = ? AND processed = 1 AND data_json IS NOT NULL ORDER BY timestamp DESC LIMIT ?", (station_id, window)).fetchall()
     vals = []
     for (kjson,) in rows:
         try:

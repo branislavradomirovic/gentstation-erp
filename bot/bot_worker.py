@@ -1,4 +1,4 @@
-import os
+import os, sys
 import sqlite3
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
@@ -6,6 +6,8 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from dotenv import load_dotenv
 from telegram.ext import MessageHandler, filters
 from pathlib import Path
+
+sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     print("[bot_worker] handle_video called")
@@ -26,17 +28,17 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 2. Download the video
     video_file = await update.message.video.get_file()
     # Save locally or to a cloud bucket
-    os.makedirs("uploads", exist_ok=True)
-    file_path = f"uploads/vid_{update.message.message_id}.mp4"
-    await video_file.download_to_drive(file_path)
+    UPLOADS_DIR = PROJECT_ROOT / "uploads"
+    UPLOADS_DIR.mkdir(exist_ok=True)
+    file_path = UPLOADS_DIR / f"vid_{update.message.message_id}.mp4"
+    await video_file.download_to_drive(str(file_path))
 
     # 3. Save submission to DB for AI processing
-
     try:
         cursor.execute("""
             INSERT INTO submissions (station_id, employee_id, video_path, processed) 
             VALUES (?, ?, ?, 0)
-        """, (station_id, emp_id, file_path))
+        """, (station_id, emp_id, str(file_path)))
         conn.commit()
         print(f"[bot_worker] Inserted submission: station_id={station_id}, emp_id={emp_id}, file_path={file_path}")
     except Exception as e:
@@ -52,8 +54,8 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
 print("[bot_worker] Starting bot_worker.py...")
 load_dotenv()
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-# Use absolute path for DB_PATH to match app and avoid duplicate DBs
-DB_PATH = str(Path(__file__).resolve().parents[0] / "company.db")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DB_PATH = str(PROJECT_ROOT / "company.db")
 print(f"[bot_worker] Using DB_PATH: {DB_PATH}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):

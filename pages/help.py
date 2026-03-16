@@ -41,10 +41,11 @@ def render(conn):
             "category": "Management Modules",
             "title": "⛽ Stations",
             "content": """**Access**: GM, Region Director, Region Manager
-            - **Create Station**: Use the map to pin a location, name the station, and assign it to a region.
-            - **Edit Station**: Update address, manager, or move the map pin.
-            - **Daily Trends**: View a bar chart of video submissions for the current month.
-            - **Delete**: Remove a station (only if no critical data is linked)."""
+            This module is for managing individual station properties.
+            - **Create/Edit Station**: Use the map to pin a location, name the station, assign it to a region, and assign a Gas Station Manager.
+            - **Station Audit History**: For any selected station, you can view a complete timeline of all AI reports, including scores and a link to watch the original video submission.
+            - **Assigned Employees**: See a list of all employees assigned to the selected station.
+            - **QR Code Management**: Generate and download a unique QR code for each station. This code links employees' Telegram accounts to the reporting bot. You can also email the instructions directly to the station manager."""
         },
         {
             "category": "Management Modules",
@@ -68,9 +69,19 @@ def render(conn):
             "category": "Dashboards & Reporting",
             "title": "📈 AI Reports",
             "content": """**Access**: All Managers
-            - **Feed**: A chronological list of AI-generated reports from video submissions.
-            - **Scores**: View granular scores (1-10) for Safety, Cleanliness, Staff, etc.
-            - **Filtering**: Automatically filters based on your role (e.g., Station Managers only see their station)."""
+            This page is your hub for reviewing AI analysis and managing the processing pipeline.
+            - **Processing Queue**: Shows a list of video submissions that are 'Pending' analysis or have 'Failed'.
+            - **Retry Failed Submissions**: If a submission fails (e.g., due to a temporary API issue), you can select it from a dropdown and click 'Retry' to re-queue it for processing.
+            - **30-Day Safety Trends**: A bar chart showing the average safety score for each station over the last 30 days, helping you identify trends.
+            - **Completed Reports**: A table of all successfully processed reports. You can select any report to view its detailed JSON output, including all scores, summaries, and detected issues."""
+        },
+        {
+            "category": "Dashboards & Reporting",
+            "title": "🚨 AI Alerts & Incidents",
+            "content": """**Access**: All Managers
+            This page provides a dedicated feed for managing critical events detected by the AI.
+            - **Alert Feed**: Shows a chronological list of alerts, including safety hazards and operational anomalies (like low merchandising scores).
+            - **Filtering**: You can filter alerts by their status (new, acknowledged, resolved), severity (HIGH, MEDIUM, LOW), or by station."""
         },
         {
             "category": "Dashboards & Reporting",
@@ -100,7 +111,9 @@ def render(conn):
             "category": "System Administration",
             "title": "⚙️ Settings",
             "content": """**Access**: All Users
-            - **Profile**: Change your own login password."""
+            - **Profile**: Change your own login password.
+            - **Appearance**: Toggle between light and dark mode for the application. Your preference is saved to your user profile.
+            - **AI Configuration**: Manually trigger the AI processing batch to run immediately, instead of waiting for the next hourly cycle. You can also monitor the real-time progress of the batch here."""
         },
         {
             "category": "Contact Support",
