@@ -1,4 +1,5 @@
 # gentstation_opus/pages/stations.py
+import os
 import streamlit as st
 import sqlite3
 import pandas as pd
@@ -8,6 +9,7 @@ from core.activity_logger import log_activity
 from ui.header import render_page_header
 import urllib.parse
 import urllib.request
+import json
 
 # Import email service
 try:
@@ -100,7 +102,8 @@ def render(conn):
     df = pd.read_sql_query("""
         SELECT s.id, s.name, r.name as region_name,
                s.physical_address, s.email, s.lat, s.lon,
-               (SELECT name || ' ' || surname FROM employees WHERE station_id = s.id AND role = 'Gas Station Manager' LIMIT 1) as manager
+               (SELECT name || ' ' || surname FROM employees WHERE station_id = s.id AND role = 'Gas Station Manager' LIMIT 1) as manager,
+               (SELECT id FROM employees WHERE station_id = s.id AND role = 'Gas Station Manager' LIMIT 1) as manager_id
         FROM stations s
         LEFT JOIN regions r ON s.region_id = r.id
         ORDER BY s.id
@@ -110,7 +113,36 @@ def render(conn):
     if df.empty:
         st.info("No stations available.")
     else:
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        # Custom Table Header
+        cols = st.columns([0.5, 1.5, 1.5, 2, 2, 1.5])
+        cols[0].markdown("**ID**")
+        cols[1].markdown("**Name**")
+        cols[2].markdown("**Region**")
+        cols[3].markdown("**Address**")
+        cols[4].markdown("**Email**")
+        cols[5].markdown("**Manager**")
+        st.divider()
+
+        for _, row in df.iterrows():
+            c = st.columns([0.5, 1.5, 1.5, 2, 2, 1.5], vertical_alignment="center")
+            c[0].write(str(row['id']))
+            c[1].write(row['name'])
+            c[2].write(row['region_name'] if row['region_name'] else "-")
+            c[3].write(row['physical_address'] if row['physical_address'] else "-")
+            c[4].write(row['email'] if row['email'] else "-")
+            
+            mgr_name = row['manager']
+            mgr_id = row['manager_id']
+            
+            if pd.notna(mgr_id) and mgr_name:
+                if c[5].button(f"👤 {mgr_name}", key=f"nav_mgr_st_{row['id']}", help="Go to Employee Details"):
+                    st.session_state["active_page"] = "Employees"
+                    st.session_state["target_employee_id"] = int(mgr_id)
+                    st.rerun()
+            else:
+                c[5].write(mgr_name if mgr_name else "-")
+            
+            st.divider()
 
     # --- 2.1 TRENDS CHART ---
     st.markdown("### 📊 Daily Submission Trends")
@@ -250,6 +282,56 @@ def render(conn):
                     st.session_state.pop(f"edit_lat_{sel}", None)
                     st.session_state.pop(f"edit_lon_{sel}", None)
                     st.rerun()
+
+        st.markdown("---")
+        st.subheader("📜 Station Audit History")
+        
+        audit_query = """
+            SELECT s.timestamp, s.data_json, e.name || ' ' || e.surname as employee_name, s.video_path
+            FROM submissions s
+            JOIN employees e ON s.employee_id = e.id
+            WHERE s.station_id = ? AND s.processed = 1 AND s.data_json IS NOT NULL
+            ORDER BY s.timestamp DESC
+            LIMIT 50
+        """
+        audit_df = pd.read_sql_query(audit_query, conn, params=(sel,))
+
+        if audit_df.empty:
+            st.info("No AI-processed audit reports found for this station.")
+        else:
+            for _, report in audit_df.iterrows():
+                with st.container(border=True):
+                    report_data = json.loads(report['data_json'])
+                    
+                    st.markdown(f"**Submitted by:** `{report['employee_name']}` on **{report['timestamp']}**")
+                    
+                    # Display scores in columns
+                    score_cols = st.columns(4)
+                    with score_cols[0]:
+                        st.metric("Safety", f"{report_data.get('safety_score', 'N/A')}/10")
+                    with score_cols[1]:
+                        st.metric("Cleanliness", f"{report_data.get('cleanliness_score', 'N/A')}/10")
+                    with score_cols[2]:
+                        st.metric("Staff", f"{report_data.get('staff_score', 'N/A')}/10")
+                    with score_cols[3]:
+                        st.metric("Merchandising", f"{report_data.get('merchandising_score', 'N/A')}/10")
+
+                    # Display summary and other details
+                    st.markdown(f"**AI Summary:** *{report_data.get('summary', 'No summary available.')}*")
+                    
+                    hazards = report_data.get('hazards', [])
+                    if hazards:
+                        st.warning(f"**Hazards Detected:** {', '.join(hazards)}")
+
+                    stock_issues = report_data.get('stock_issues', [])
+                    if stock_issues:
+                        st.info(f"**Stock Issues:** {', '.join(stock_issues)}")
+                    
+                    if report['video_path'] and os.path.exists(report['video_path']):
+                        with st.expander("🎥 Watch Video Footage"):
+                            st.video(report['video_path'])
+                    elif report['video_path']:
+                        st.caption("⚠️ Video file not found on server.")
 
         st.markdown("---")
         st.subheader("👥 Employees Assigned to this Station")
