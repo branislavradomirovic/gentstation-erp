@@ -214,7 +214,8 @@ if "user_id" not in st.session_state:
                     st.error(msg)
 
     # --- FORGOT PASSWORD ---
-    if st.button("Forgot Password?", type="link"):
+    # The 'type' parameter for st.button does not accept "link". Using "secondary" to fix the error.
+    if st.button("Forgot Password?", type="secondary"):
         st.session_state['show_forgot_pw'] = True
 
     if st.session_state.get('show_forgot_pw'):

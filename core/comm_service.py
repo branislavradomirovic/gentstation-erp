@@ -9,6 +9,7 @@ import hashlib
 import streamlit as st
 from dotenv import load_dotenv
 from core.auth import hash_password as hash_password_bcrypt
+from core.activity_logger import log_activity
 
 # Load variables from .env
 load_dotenv()
@@ -248,6 +249,16 @@ def send_password_reset_email(conn, email: str):
     if not user_row:
         st.error("No account found with that email address.")
         return
+        
+    # 1.5 Rate Limit Check (Prevent abuse)
+    # Check if a reset was requested for this email in the last 15 minutes
+    last_request = conn.execute("""
+        SELECT timestamp FROM activity_logs 
+        WHERE action = 'RESET_REQUEST' AND details LIKE ? AND timestamp >= datetime('now', '-15 minutes')
+    """, (f"%{email}%",)).fetchone()
+    if last_request:
+        st.error("A password reset was already requested recently. Please check your email or wait 15 minutes.")
+        return
 
     user_id, username = user_row
 
@@ -325,6 +336,7 @@ def send_password_reset_email(conn, email: str):
             server.starttls()
             server.login(SENDER_EMAIL, SENDER_PASSWORD)
             server.send_message(msg)
+        log_activity(conn, "RESET_REQUEST", f"Password reset email sent to {email}")
         st.success("Password reset successful. Please check your email for a new temporary password.")
     except Exception as e:
         st.error(f"Failed to send reset email: {e}")
