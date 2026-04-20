@@ -14,7 +14,7 @@ def create_session_token(user_id: int, ttl_hours: int = 8) -> Tuple[str, str]:
     token = secrets.token_urlsafe(32)
     created_at = datetime.utcnow()
     expires_at = created_at + timedelta(hours=ttl_hours)
-    cur.execute("INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?,?,?,?)", (
+    cur.execute("INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (%s,%s,%s,%s)", (
         token, user_id, created_at.isoformat(), expires_at.isoformat()
     ))
     conn.commit()
@@ -28,14 +28,14 @@ def validate_session_token(token: str) -> Optional[int]:
         return None
     conn = get_connection()
     cur = conn.cursor()
-    row = cur.execute("SELECT user_id, expires_at FROM sessions WHERE token = ?", (token,)).fetchone()
+    row = cur.execute("SELECT user_id, expires_at FROM sessions WHERE token = %s", (token,)).fetchone()
     if not row:
         return None
     user_id, expires_at = row
     try:
         if datetime.fromisoformat(expires_at) < datetime.utcnow():
             # expired -> delete
-            cur.execute("DELETE FROM sessions WHERE token = ?", (token,))
+            cur.execute("DELETE FROM sessions WHERE token = %s", (token,))
             conn.commit()
             return None
     except Exception:
@@ -45,5 +45,5 @@ def validate_session_token(token: str) -> Optional[int]:
 def destroy_session_token(token: str):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("DELETE FROM sessions WHERE token = ?", (token,))
+    cur.execute("DELETE FROM sessions WHERE token = %s", (token,))
     conn.commit()

@@ -6,10 +6,13 @@ from email.mime.image import MIMEImage
 from pathlib import Path
 import secrets
 import hashlib
+import logging
 import streamlit as st
 from dotenv import load_dotenv
 from core.auth import hash_password as hash_password_bcrypt
 from core.activity_logger import log_activity
+
+logger = logging.getLogger("gentstation.comm_service")
 
 # Load variables from .env
 load_dotenv()
@@ -144,11 +147,11 @@ def send_ai_report_email(conn, station_id: int, report_data: dict):
         FROM users u
         JOIN employees e ON u.username = e.email
         JOIN stations s ON e.station_id = s.id
-        WHERE e.role = 'Gas Station Manager' AND e.station_id = ? AND u.email IS NOT NULL
+        WHERE e.role = 'Gas Station Manager' AND e.station_id = %s AND u.email IS NOT NULL
     """, (station_id,)).fetchone()
 
     if not manager_query:
-        print(f"📧 [comm_service] No manager found for station {station_id}. Skipping email.")
+        logger.debug("No manager found for station %s. Skipping email.", station_id)
         return
 
     manager_email, station_name = manager_query
@@ -160,7 +163,7 @@ def send_ai_report_email(conn, station_id: int, report_data: dict):
     SENDER_PASSWORD = os.getenv("SMTP_PASS")
 
     if not SENDER_EMAIL or not SENDER_PASSWORD:
-        print("📧 [comm_service] SMTP credentials missing. AI report email skipped.")
+        logger.debug("SMTP credentials missing. AI report email skipped.")
         return
 
     # 3. Prepare Email Content
@@ -192,9 +195,9 @@ def send_ai_report_email(conn, station_id: int, report_data: dict):
             server.starttls()
             server.login(SENDER_EMAIL, SENDER_PASSWORD)
             server.send_message(msg)
-            print(f"✅ [comm_service] AI report sent to {manager_email} for station {station_id}.")
+            logger.info("AI report sent to %s for station %s.", manager_email, station_id)
     except Exception as e:
-        print(f"❌ [comm_service] SMTP Error sending AI report: {e}")
+        logger.error("SMTP error sending AI report: %s", e)
 
 def send_station_qr_email(station_name: str, recipient_email: str, bot_link: str, qr_url: str):
     """
@@ -245,7 +248,7 @@ def send_password_reset_email(conn, email: str):
     Finds a user by email, generates a new password, updates the DB, and sends it.
     """
     # 1. Verify user exists
-    user_row = conn.execute("SELECT id, username FROM users WHERE email = ?", (email,)).fetchone()
+    user_row = conn.execute("SELECT id, username FROM users WHERE email = %s", (email,)).fetchone()
     if not user_row:
         st.error("No account found with that email address.")
         return
@@ -254,7 +257,7 @@ def send_password_reset_email(conn, email: str):
     # Check if a reset was requested for this email in the last 15 minutes
     last_request = conn.execute("""
         SELECT timestamp FROM activity_logs 
-        WHERE action = 'RESET_REQUEST' AND details LIKE ? AND timestamp >= datetime('now', '-15 minutes')
+        WHERE action = 'RESET_REQUEST' AND details LIKE %s AND timestamp >= NOW() - INTERVAL '15 MINUTES'
     """, (f"%{email}%",)).fetchone()
     if last_request:
         st.error("A password reset was already requested recently. Please check your email or wait 15 minutes.")
@@ -270,11 +273,11 @@ def send_password_reset_email(conn, email: str):
     try:
         # Update users table (bcrypt)
         new_bcrypt_hash = hash_password_bcrypt(new_pw)
-        conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (new_bcrypt_hash, user_id))
+        conn.execute("UPDATE users SET password_hash = %s WHERE id = %s", (new_bcrypt_hash, user_id))
 
         # Update employees table (legacy SHA256)
         new_sha_hash = hashlib.sha256(new_pw.encode()).hexdigest()
-        conn.execute("UPDATE employees SET password = ? WHERE email = ?", (new_sha_hash, email))
+        conn.execute("UPDATE employees SET password = %s WHERE email = %s", (new_sha_hash, email))
         
         conn.commit()
     except Exception as e:
@@ -329,7 +332,7 @@ def send_password_reset_email(conn, email: str):
                 img.add_header('Content-Disposition', 'inline')
                 msg.attach(img)
         except Exception as e:
-            print(f"Error attaching logo to email: {e}")
+            logger.debug("Error attaching logo to email: %s", e)
 
     try:
         with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:

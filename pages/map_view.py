@@ -11,7 +11,7 @@ def get_station_status(conn, station_id):
     Returns (status_color, pending_count)
     """
     pending_count = conn.execute(
-        "SELECT COUNT(*) FROM submissions WHERE station_id = ? AND processed = 0",
+        "SELECT COUNT(*) FROM submissions WHERE station_id = %s AND processed = 0",
         (station_id,)
     ).fetchone()[0]
 
@@ -66,7 +66,7 @@ def render(conn):
         # --- Fetch Active Stations (Last 1 hour) ---
         active_ids = set()
         try:
-            rows = conn.execute("SELECT DISTINCT station_id FROM submissions WHERE timestamp >= datetime('now', '-1 hour')").fetchall()
+            rows = conn.execute("SELECT DISTINCT station_id FROM submissions WHERE timestamp >= NOW() - INTERVAL '1 HOUR'").fetchall()
             active_ids = {r[0] for r in rows}
         except Exception:
             pass
@@ -121,7 +121,7 @@ def render(conn):
                 FROM ai_alerts a
                 JOIN stations s ON a.station_id = s.id
                 WHERE a.severity = 'HIGH' 
-                  AND a.created_at >= date('now', '-7 days')
+                  AND a.created_at >= NOW() - INTERVAL '7 days'
                   AND s.lat IS NOT NULL
             """, conn)
 

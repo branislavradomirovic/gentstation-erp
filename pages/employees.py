@@ -1,8 +1,8 @@
 import streamlit as st
 import pandas as pd
 import hashlib
-import sqlite3
 import secrets
+from psycopg2 import IntegrityError
 from core.activity_logger import log_activity
 from core.auth import create_user, hash_password as hash_password_bcrypt
 from ui.header import render_page_header
@@ -92,23 +92,23 @@ def render(conn):
                         try:
                             # Use email as username to ensure uniqueness and simplicity
                             create_user(username=email.strip(), password=temp_pw, email=email.strip(), role=role)
-                        except sqlite3.IntegrityError:
+                        except IntegrityError:
                             st.warning(f"Note: A user account for '{email.strip()}' already exists. Linking to new employee record.")
                         except Exception as e:
                             st.error(f"Failed to create login account: {e}")
                             st.stop()
 
                         cursor = conn.execute(
-                            "INSERT INTO employees (name, surname, email, password, role, station_id, region_id) VALUES (?,?,?,?,?,?,?)",
+                            "INSERT INTO employees (name, surname, email, password, role, station_id, region_id) VALUES (%s,%s,%s,%s,%s,%s,%s)",
                             (first.strip(), last.strip(), email.strip(), hashed, role, assign_station_id, assign_region_id)
                         )
-                        new_id = cursor.lastrowid
+                        new_id = cursor.fetchone()[0]
 
                         # Handle Region Director M2M relationship
                         if role == "Region Director" and assign_region_ids:
                             for region_id in assign_region_ids:
                                 conn.execute(
-                                    "INSERT INTO director_regions (employee_id, region_id) VALUES (?, ?)",
+                                    "INSERT INTO director_regions (employee_id, region_id) VALUES (%s, %s)",
                                     (new_id, region_id)
                                 )
                         conn.commit() # Commit after all inserts
@@ -202,6 +202,11 @@ def render(conn):
             else:
                 c7.write("-")
 
+            if c7.button("🕒", key=f"jump_shift_emp_{row['id']}", help="Open shift schedule"):
+                st.session_state["active_page"] = "Shifts"
+                st.session_state["target_shift_employee_id"] = int(row['id'])
+                st.rerun()
+
     # --- 3. EDIT / DELETE SECTION ---
     st.divider()
     st.subheader("✏️ Edit / Delete Employee")
@@ -217,7 +222,7 @@ def render(conn):
     if emp_ids:
         sel = st.selectbox("Select employee", emp_ids, key=sb_key,
                            format_func=lambda x: f"ID {x}: {df[df['id']==x]['fullname'].values[0]}")
-        rec = pd.read_sql_query("SELECT * FROM employees WHERE id = ?", conn, params=(sel,)).iloc[0]
+        rec = pd.read_sql_query("SELECT * FROM employees WHERE id = %s", conn, params=(sel,)).iloc[0]
         
         with st.form(f"edit_emp_{sel}"):
             e_name = st.text_input("First name", value=rec['name'])
@@ -242,7 +247,7 @@ def render(conn):
 
             elif e_role == "Region Director":
                 current_director_regions = pd.read_sql_query(
-                    "SELECT region_id FROM director_regions WHERE employee_id = ?", conn, params=(sel,)
+                    "SELECT region_id FROM director_regions WHERE employee_id = %s", conn, params=(sel,)
                 )['region_id'].tolist()
                 
                 e_region_ids = st.multiselect(
@@ -268,15 +273,15 @@ def render(conn):
                         final_station_id = e_station_id if e_role in ["Employee", "Gas Station Supervisor", "Gas Station Manager"] else None
                         final_region_id = e_region_id if e_role == "Region Manager" else None
 
-                        conn.execute("UPDATE employees SET name=?, surname=?, email=?, role=?, station_id=?, region_id=?, telegram_chat_id=? WHERE id=?", (e_name.strip(), e_surname.strip(), e_email.strip(), e_role, final_station_id, final_region_id, e_tg.strip() if e_tg.strip() else None, sel))
+                        conn.execute("UPDATE employees SET name=%s, surname=%s, email=%s, role=%s, station_id=%s, region_id=%s, telegram_chat_id=%s WHERE id=%s", (e_name.strip(), e_surname.strip(), e_email.strip(), e_role, final_station_id, final_region_id, e_tg.strip() if e_tg.strip() else None, sel))
                         
                         # Handle Region Director M2M relationship by clearing and re-inserting
-                        conn.execute("DELETE FROM director_regions WHERE employee_id = ?", (sel,))
+                        conn.execute("DELETE FROM director_regions WHERE employee_id = %s", (sel,))
                         if e_role == "Region Director" and e_region_ids:
                             for region_id in e_region_ids:
-                                conn.execute("INSERT INTO director_regions (employee_id, region_id) VALUES (?, ?)", (sel, region_id))
+                                conn.execute("INSERT INTO director_regions (employee_id, region_id) VALUES (%s, %s)", (sel, region_id))
                         
-                        conn.execute("UPDATE users SET role=?, email=?, username=? WHERE email=?", (e_role, e_email.strip(), e_email.strip(), rec['email']))
+                        conn.execute("UPDATE users SET role=%s, email=%s, username=%s WHERE email=%s", (e_role, e_email.strip(), e_email.strip(), rec['email']))
                         conn.commit()
                         st.success("Changes saved.")
                         st.rerun()
@@ -289,11 +294,11 @@ def render(conn):
             if st.button("🔄 Resend Invite / Reset PW"):
                 try:
                     new_pw = generate_temp_password()
-                    conn.execute("UPDATE employees SET password = ? WHERE id = ?", (hash_password(new_pw), sel))
+                    conn.execute("UPDATE employees SET password = %s WHERE id = %s", (hash_password(new_pw), sel))
                     
                     # Also update the system user password (users table)
                     new_bcrypt = hash_password_bcrypt(new_pw)
-                    conn.execute("UPDATE users SET password_hash = ? WHERE email = ?", (new_bcrypt, rec['email']))
+                    conn.execute("UPDATE users SET password_hash = %s WHERE email = %s", (new_bcrypt, rec['email']))
                     
                     conn.commit()
                     
@@ -308,12 +313,12 @@ def render(conn):
         with col_del:
             if st.button("🗑️ Delete Employee Record"):
                 try:
-                    conn.execute("DELETE FROM employees WHERE id = ?", (sel,))
+                    conn.execute("DELETE FROM employees WHERE id = %s", (sel,))
                     conn.commit()
                     log_activity(conn, "DELETE_EMPLOYEE", f"Deleted ID {sel}")
                     st.success(f"Employee ID {sel} was successfully deleted.")
                     st.rerun()
-                except sqlite3.IntegrityError:
+                except IntegrityError:
                     st.error("Cannot delete employee: They are linked to existing submissions. Please reassign or remove linked records first.")
                 except Exception as e:
                     st.error(f"An unexpected error occurred: {e}")

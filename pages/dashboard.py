@@ -5,6 +5,15 @@ from streamlit_folium import st_folium
 from ui.header import render_page_header
 from core.activity_logger import log_activity
 
+
+def fetch_df(conn, query, params=None):
+    cur = conn.cursor()
+    cur.execute(query, params or ())
+    rows = cur.fetchall()
+    columns = [desc[0] for desc in cur.description] if cur.description else []
+    return pd.DataFrame(rows, columns=columns)
+
+
 def get_status_emoji(unprocessed_count):
     """Visual status based on unprocessed submissions."""
     if unprocessed_count == 0:
@@ -47,22 +56,22 @@ def render(conn):
 
         with col1:
             st.metric("Total Regions", total_regions)
-            if st.button("📂 Manage Regions", key="nav_regions", use_container_width=True):
+            if st.button("📂 Manage Regions", key="nav_regions", width="stretch"):
                 st.session_state.active_page = "Regions"
                 st.rerun()
         with col2:
             st.metric("Total Stations", total_stations)
-            if st.button("⛽ Manage Stations", key="nav_stations", use_container_width=True):
+            if st.button("⛽ Manage Stations", key="nav_stations", width="stretch"):
                 st.session_state.active_page = "Stations"
                 st.rerun()
         with col3:
             st.metric("Total Employees", total_employees)
-            if st.button("👥 Manage Employees", key="nav_employees", use_container_width=True):
+            if st.button("👥 Manage Employees", key="nav_employees", width="stretch"):
                 st.session_state.active_page = "Employees"
                 st.rerun()
         with col4:
             st.metric("Pending Tasks", pending_tasks)
-            if st.button("🗺️ View on Map", key="nav_map", use_container_width=True):
+            if st.button("🗺️ View on Map", key="nav_map", width="stretch"):
                 st.session_state.active_page = "Map View"
                 st.rerun()
     except Exception as e:
@@ -74,18 +83,18 @@ def render(conn):
     st.subheader("🌍 Regional Status Overview")
     try:
         query_regions = """
-            SELECT r.name as 'Region', COUNT(s.id) as 'Stations',
-            COALESCE(SUM((SELECT COUNT(*) FROM submissions WHERE station_id = s.id AND processed = 0)), 0) as 'Pending'
+            SELECT r.name as "Region", COUNT(s.id) as "Stations",
+            COALESCE(SUM((SELECT COUNT(*) FROM submissions WHERE station_id = s.id AND processed = 0)), 0) as "Pending"
             FROM regions r 
             LEFT JOIN stations s ON r.id = s.region_id 
             GROUP BY r.id
         """
-        df_reg_status = pd.read_sql_query(query_regions, conn)
+        df_reg_status = fetch_df(conn, query_regions)
         df_reg_status['Status'] = df_reg_status['Pending'].apply(get_status_emoji)
         
         st.dataframe(
             df_reg_status[['Status', 'Region', 'Stations', 'Pending']], 
-            use_container_width=True, 
+            width="stretch", 
             hide_index=True
         )
     except Exception as e:
@@ -97,20 +106,23 @@ def render(conn):
         query_merch = """
             SELECT 
                 st.name as Station, 
-                AVG(CAST(json_extract(s.data_json, '$.merchandising_score') AS FLOAT)) as Score
+                AVG(CAST(s.data_json->>'merchandising_score' AS FLOAT)) as Score
             FROM submissions s
             JOIN stations st ON s.station_id = st.id
             WHERE s.processed = 1 AND s.data_json IS NOT NULL
             GROUP BY st.id
             ORDER BY Score DESC
         """
-        df_merch = pd.read_sql_query(query_merch, conn)
+        df_merch = fetch_df(conn, query_merch)
         if not df_merch.empty:
             st.bar_chart(df_merch.set_index("Station"))
         else:
             st.info("No merchandising data available yet.")
     except Exception as e:
-        st.warning(f"Merchandising analytics unavailable: {e}")
+        st.warning(
+            "Merchandising analytics unavailable. If you still see a json_extract() error, "
+            "restart the Streamlit server so it picks up the PostgreSQL query changes."
+        )
 
     st.divider()
 
@@ -118,7 +130,7 @@ def render(conn):
     st.subheader("📍 Station Location Map")
     try:
         query_stations = "SELECT name, physical_address, lat, lon FROM stations WHERE lat IS NOT NULL"
-        df_stats = pd.read_sql_query(query_stations, conn)
+        df_stats = fetch_df(conn, query_stations)
 
         if not df_stats.empty:
             m = folium.Map(location=[44.2108, 20.9224], zoom_start=7)
@@ -141,10 +153,10 @@ def render(conn):
                 FROM submissions sub
                 JOIN stations s ON sub.station_id = s.id
                 JOIN employees e ON sub.employee_id = e.id
-                WHERE sub.timestamp >= datetime('now', '-1 day') AND s.lat IS NOT NULL
+                WHERE sub.timestamp >= NOW() - INTERVAL '1 DAY' AND s.lat IS NOT NULL
                 ORDER BY sub.timestamp DESC LIMIT 50
             """
-            df_act = pd.read_sql_query(query_activity, conn)
+            df_act = fetch_df(conn, query_activity)
             for _, row in df_act.iterrows():
                 folium.CircleMarker(
                     location=[row['lat'], row['lon']],
@@ -174,7 +186,7 @@ def render(conn):
             ORDER BY a.created_at DESC
             LIMIT 5
         """
-        alerts_df = pd.read_sql_query(alerts_query, conn)
+        alerts_df = fetch_df(conn, alerts_query)
 
         if alerts_df.empty:
             st.success("✅ No outstanding alerts to display.")
@@ -189,7 +201,7 @@ def render(conn):
                         st.caption(row['message'])
                     with col2:
                         st.write("") # for vertical alignment
-                        if st.button("Resolve", key=f"dash_res_{row['id']}", use_container_width=True):
+                        if st.button("Resolve", key=f"dash_res_{row['id']}", width="stretch"):
                             conn.execute("UPDATE ai_alerts SET status = 'resolved' WHERE id = ?", (row['id'],))
                             conn.commit()
                             log_activity(conn, "RESOLVE_ALERT", f"Resolved alert ID {row['id']} from dashboard")
@@ -204,11 +216,11 @@ def render(conn):
     try:
         # NOTE: Updated 'timestamp' to match standard SQL or your log schema
         audit_query = """
-            SELECT timestamp as 'Time', user_name as 'User', action as 'Action', ip_address as 'IP' 
+            SELECT timestamp as "Time", user_name as "User", action as "Action", ip_address as "IP" 
             FROM activity_logs 
             ORDER BY timestamp DESC LIMIT 5
         """
-        df_recent = pd.read_sql_query(audit_query, conn)
+        df_recent = fetch_df(conn, audit_query)
         st.table(df_recent)
     except Exception as e:
         st.caption("No recent activity logs found.")

@@ -1,0 +1,110 @@
+version: '3.9'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: gentstation-postgres
+    environment:
+      POSTGRES_DB: ${DB_NAME:-gentstation}
+      POSTGRES_USER: ${DB_USER:-gentstation_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-secure_password}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8"
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init_db.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-gentstation_user} -d ${DB_NAME:-gentstation}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - gentstation-network
+    restart: unless-stopped
+
+  # Ollama LLM Service (Optional - connect to local Ollama if available)
+  # Uncomment if you want to run Ollama in Docker
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   container_name: gentstation-ollama
+  #   ports:
+  #     - "11434:11434"
+  #   volumes:
+  #     - ollama_data:/root/.ollama
+  #   environment:
+  #     - OLLAMA_HOST=0.0.0.0:11434
+  #   networks:
+  #     - gentstation-network
+  #   restart: unless-stopped
+
+  # GentStationAI Application
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: gentstation-app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Database Configuration
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-gentstation}
+      DB_USER: ${DB_USER:-gentstation_user}
+      DB_PASSWORD: ${DB_PASSWORD:-secure_password}
+      
+      # Ollama Configuration (connect to local Ollama or external service)
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:14b-instruct}
+      OLLAMA_VISION_MODEL: ${OLLAMA_VISION_MODEL:-}
+      OLLAMA_TEMPERATURE: 0.3
+      VIDEO_FRAME_SAMPLES: ${VIDEO_FRAME_SAMPLES:-6}
+      VIDEO_MAX_FRAME_DIMENSION: ${VIDEO_MAX_FRAME_DIMENSION:-768}
+      
+      # Telegram Configuration
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_BOT_URL: ${TELEGRAM_BOT_URL}
+      
+      # Email Configuration
+      SENDER_EMAIL: ${SENDER_EMAIL}
+      SMTP_USER: ${SMTP_USER}
+      SMTP_PASS: ${SMTP_PASS}
+      SMTP_SERVER: ${SMTP_SERVER:-smtp.gmail.com}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      MANAGER_EMAIL: ${MANAGER_EMAIL}
+      
+      # Streamlit Configuration
+      STREAMLIT_SERVER_PORT: 8501
+      STREAMLIT_SERVER_ADDRESS: 0.0.0.0
+      STREAMLIT_BROWSER_GATHERUSAGESTATS: false
+    
+    ports:
+      - "8501:8501"
+    
+    volumes:
+      # Mount uploads directory for video processing
+      - ./uploads:/app/uploads
+      - ./downloads:/app/downloads
+      - ./assets:/app/assets
+    
+    networks:
+      - gentstation-network
+    
+    restart: unless-stopped
+    
+    # Keep container running
+    stdin_open: true
+    tty: true
+
+volumes:
+  postgres_data:
+    driver: local
+  # ollama_data:
+  #   driver: local
+
+networks:
+  gentstation-network:
+    driver: bridge

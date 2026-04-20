@@ -1,9 +1,25 @@
 import os
+import logging
+import warnings
 import streamlit as st
 from pathlib import Path
 
 import subprocess
 import sys
+
+warnings.filterwarnings(
+    "ignore",
+    message="pandas only supports SQLAlchemy connectable",
+)
+try:
+    from urllib3.exceptions import NotOpenSSLWarning
+
+    warnings.filterwarnings("ignore", category=NotOpenSSLWarning)
+except Exception:
+    pass
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger("gentstation.app")
 
 
 # --- 1. PAGE CONFIGURATION (MUST BE FIRST) ---
@@ -24,17 +40,14 @@ def start_background_workers():
     # 1. Start Telegram Bot
     bot_script = project_root / "bot" / "bot_worker.py"
     if bot_script.exists():
-        subprocess.Popen([sys.executable, str(bot_script)], cwd=str(project_root))
-        print(f"🚀 [app.py] Started Bot Worker: {bot_script}")
+        subprocess.Popen([sys.executable, "-u", str(bot_script)], cwd=str(project_root))
+        logger.debug("Started Bot Worker: %s", bot_script)
 
     # 2. Start AI Worker
     ai_script = project_root / "core" / "ai_worker.py"
     if ai_script.exists():
-        subprocess.Popen([sys.executable, str(ai_script)], cwd=str(project_root))
-        print(f"🧠 [app.py] Started AI Worker: {ai_script}")
-
-# Initialize workers
-start_background_workers()
+        subprocess.Popen([sys.executable, "-u", str(ai_script)], cwd=str(project_root))
+        logger.debug("Started AI Worker: %s", ai_script)
 
 # --- 2. GLOBAL CSS INJECTION (Optimized for Spacing & Alignment) ---
 st.markdown("""
@@ -121,6 +134,8 @@ from core.config import LOGIN_DISCLAIMER_HTML, FOOTER_DISCLAIMER_TEXT
 
 # Page imports
 import pages.dashboard as dashboard
+import pages.role_center as role_center
+import pages.shifts as shifts
 import pages.regions as regions
 import pages.stations as stations
 import pages.map_view as map_view
@@ -142,8 +157,27 @@ try:
 except ImportError:
     def send_password_reset_email(*args, **kwargs): st.error("Email service unavailable.")
 
+def _build_db_unavailable_message(error: Exception) -> str:
+    return (
+        "Database connection is unavailable right now. "
+        "Please make sure PostgreSQL is running and reachable at the host configured in `.env` "
+        f"(current error: {error})."
+    )
+
+
 # Initialize Database
-conn = get_connection()
+try:
+    conn = get_connection()
+except Exception as db_error:
+    st.error(_build_db_unavailable_message(db_error))
+    st.info(
+        "If you are running locally, start PostgreSQL on your machine or run the Docker stack. "
+        "If you are using Docker, verify the `postgres` service is up and healthy."
+    )
+    st.stop()
+
+# Initialize workers only after the database is reachable.
+start_background_workers()
 
 # --- 3. SESSION PERSISTENCE ---
 def restore_session():
@@ -201,7 +235,7 @@ if "user_id" not in st.session_state:
         pw = st.text_input("Password", type="password")
         ack = st.checkbox("I acknowledge the disclaimer below")
         
-        submitted = st.form_submit_button("Login", use_container_width=True)
+        submitted = st.form_submit_button("Login", width="stretch")
         
         if submitted:
             if not ack:
@@ -222,7 +256,7 @@ if "user_id" not in st.session_state:
         with st.form("forgot_pw_form"):
             st.subheader("Reset Your Password")
             email_to_reset = st.text_input("Enter your registered email address")
-            if st.form_submit_button("Send Reset Link", use_container_width=True):
+            if st.form_submit_button("Send Reset Link", width="stretch"):
                 if email_to_reset:
                     send_password_reset_email(conn, email_to_reset)
                 else:
@@ -253,6 +287,8 @@ try:
     # Dictionary mapping page IDs to their render functions
     PAGE_HANDLERS = {
         "Dashboard": dashboard.render,
+        "Role Center": role_center.render,
+        "Shifts": shifts.render,
         "Regions": regions.render,
         "Stations": stations.render,
         "Map View": map_view.render,

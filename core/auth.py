@@ -35,10 +35,11 @@ def create_user(username: str, password: str, email: Optional[str], role: str = 
     pw_hash = hash_password(password)
     cur.execute("""
         INSERT INTO users (username, email, password_hash, role, is_active, created_at)
-        VALUES (?, ?, ?, ?, 1, ?)
+        VALUES (%s, %s, %s, %s, 1, %s)
+        RETURNING id
     """, (username, email, pw_hash, role, datetime.utcnow().isoformat()))
+    uid = cur.fetchone()[0]
     conn.commit()
-    uid = cur.lastrowid
     return {"id": uid, "username": username, "email": email, "role": role}
 
 def authenticate_user(username_or_email: str, password: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
@@ -51,7 +52,7 @@ def authenticate_user(username_or_email: str, password: str) -> Tuple[Optional[D
     # Try username, then email
     cur.execute("""
         SELECT id, username, email, password_hash, role, is_active, failed_attempts, locked_until, dark_mode_enabled
-        FROM users WHERE username = ? OR email = ?
+        FROM users WHERE username = %s OR email = %s
     """, (username_or_email, username_or_email))
     
     row = cur.fetchone()
@@ -82,7 +83,7 @@ def authenticate_user(username_or_email: str, password: str) -> Tuple[Optional[D
     # 2. Verify Password
     if verify_password(password, phash):
         # Success: Reset counters
-        cur.execute("UPDATE users SET failed_attempts = 0, locked_until = NULL WHERE id = ?", (uid,))
+        cur.execute("UPDATE users SET failed_attempts = 0, locked_until = NULL WHERE id = %s", (uid,))
         conn.commit()
         
         user = {"id": uid, "username": uname, "email": uemail, "role": role, "is_active": bool(active), "dark_mode": bool(dark_mode)}
@@ -97,7 +98,7 @@ def authenticate_user(username_or_email: str, password: str) -> Tuple[Optional[D
             new_lock = (datetime.utcnow() + timedelta(minutes=LOCKOUT_DURATION_MINUTES)).isoformat()
             msg = f"Account locked due to too many failed attempts ({LOCKOUT_DURATION_MINUTES} min)."
             
-        cur.execute("UPDATE users SET failed_attempts = ?, locked_until = ? WHERE id = ?", (attempts, new_lock, uid))
+        cur.execute("UPDATE users SET failed_attempts = %s, locked_until = %s WHERE id = %s", (attempts, new_lock, uid))
         conn.commit()
         return None, msg
 

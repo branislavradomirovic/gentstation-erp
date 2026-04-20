@@ -1,7 +1,6 @@
 # gentstation_opus/pages/stations.py
 import os
 import streamlit as st
-import sqlite3
 import pandas as pd
 import folium
 from streamlit_folium import st_folium
@@ -10,12 +9,24 @@ from ui.header import render_page_header
 import urllib.parse
 import urllib.request
 import json
+from psycopg2 import IntegrityError
 
 # Import email service
 try:
     from core.comm_service import send_station_qr_email
 except ImportError:
     def send_station_qr_email(*args): st.error("Email service unavailable")
+
+
+def _ensure_dict(payload):
+    if isinstance(payload, dict):
+        return payload
+    if not payload:
+        return {}
+    try:
+        return json.loads(payload)
+    except Exception:
+        return {}
 
 def render(conn):
     render_page_header("⛽ Stations Management")
@@ -77,14 +88,15 @@ def render(conn):
                     region_id = regions_map.get(region_name) if region_name != "-- None --" else None
                     cursor = conn.execute("""
                         INSERT INTO stations (name, region_id, physical_address, email, lat, lon, category)
-                        VALUES (?,?,?,?,?,?,?)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s)
+                        RETURNING id
                     """, (s_name.strip(), region_id, s_addr.strip() or None, s_email.strip() or None, lat_val, lon_val, "Retail"))
-                    new_id = cursor.lastrowid
+                    new_id = cursor.fetchone()[0]
                     
                     # Link Manager
                     if mgr_name != "-- None --":
                         mgr_id = mgr_map.get(mgr_name)
-                        conn.execute("UPDATE employees SET station_id = ? WHERE id = ?", (new_id, mgr_id))
+                        conn.execute("UPDATE employees SET station_id = %s WHERE id = %s", (new_id, mgr_id))
                     
                     conn.commit()
                     
@@ -155,10 +167,10 @@ def render(conn):
 
     try:
         trend_df = pd.read_sql_query("""
-            SELECT strftime('%Y-%m-%d', timestamp) as day, COUNT(*) as count
+            SELECT to_char(timestamp, 'YYYY-MM-DD') as day, COUNT(*) as count
             FROM submissions
             WHERE timestamp IS NOT NULL
-              AND strftime('%Y-%m', timestamp) = ?
+              AND to_char(timestamp, 'YYYY-MM') = %s
             GROUP BY day
             ORDER BY day
         """, conn, params=(selected_month,))
@@ -173,9 +185,9 @@ def render(conn):
     st.markdown("### 📅 Monthly Submission Trends (Last 12 Months)")
     try:
         monthly_df = pd.read_sql_query("""
-            SELECT strftime('%Y-%m', timestamp) as month, COUNT(*) as count
+            SELECT to_char(timestamp, 'YYYY-MM') as month, COUNT(*) as count
             FROM submissions
-            WHERE timestamp >= date('now', '-12 months')
+            WHERE timestamp >= NOW() - INTERVAL '12 months'
             GROUP BY month
             ORDER BY month
         """, conn)
@@ -203,7 +215,7 @@ def render(conn):
                            format_func=lambda x: f"ID {x}: {df[df['id']==x]['name'].values[0]}")
         
         # Load existing data for selected station
-        curr = pd.read_sql_query("SELECT * FROM stations WHERE id = ?", conn, params=(sel,)).iloc[0]
+        curr = pd.read_sql_query("SELECT * FROM stations WHERE id = %s", conn, params=(sel,)).iloc[0]
         
         st.write("📍 **Update Location (Optional)**")
         # Initialize map at current station coordinates
@@ -244,7 +256,7 @@ def render(conn):
             mgr_options = ["-- None --"] + list(mgr_map.keys())
             curr_mgr_name_q = pd.read_sql_query("""
                 SELECT name || ' ' || surname as fullname FROM employees 
-                WHERE station_id = ? AND role = 'Gas Station Manager' LIMIT 1
+                WHERE station_id = %s AND role = 'Gas Station Manager' LIMIT 1
             """, conn, params=(sel,))
             curr_mgr_name = curr_mgr_name_q['fullname'].iloc[0] if not curr_mgr_name_q.empty else "-- None --"
             sel_mgr = st.selectbox("Gas Station Manager", mgr_options, 
@@ -261,15 +273,15 @@ def render(conn):
                     # Update Database
                     region_id = regions_map.get(sel_region) if sel_region != "-- None --" else None
                     conn.execute("""
-                        UPDATE stations SET name=?, physical_address=?, email=?, region_id=?, lat=?, lon=? 
-                        WHERE id=?
+                        UPDATE stations SET name=%s, physical_address=%s, email=%s, region_id=%s, lat=%s, lon=%s 
+                        WHERE id=%s
                     """, (name.strip(), addr.strip() or None, email.strip() or None, region_id, u_lat, u_lon, sel))
                     
                     # Update Manager link
-                    conn.execute("UPDATE employees SET station_id = NULL WHERE station_id = ? AND role = 'Gas Station Manager'", (sel,))
+                    conn.execute("UPDATE employees SET station_id = NULL WHERE station_id = %s AND role = 'Gas Station Manager'", (sel,))
                     if sel_mgr != "-- None --":
                         mgr_id = mgr_map.get(sel_mgr)
-                        conn.execute("UPDATE employees SET station_id = ? WHERE id = ?", (sel, mgr_id))
+                        conn.execute("UPDATE employees SET station_id = %s WHERE id = %s", (sel, mgr_id))
                     
                     conn.commit()
                     
@@ -290,7 +302,7 @@ def render(conn):
             SELECT s.timestamp, s.data_json, e.name || ' ' || e.surname as employee_name, s.video_path
             FROM submissions s
             JOIN employees e ON s.employee_id = e.id
-            WHERE s.station_id = ? AND s.processed = 1 AND s.data_json IS NOT NULL
+            WHERE s.station_id = %s AND s.processed = 1 AND s.data_json IS NOT NULL
             ORDER BY s.timestamp DESC
             LIMIT 50
         """
@@ -301,7 +313,7 @@ def render(conn):
         else:
             for _, report in audit_df.iterrows():
                 with st.container(border=True):
-                    report_data = json.loads(report['data_json'])
+                    report_data = _ensure_dict(report['data_json'])
                     
                     st.markdown(f"**Submitted by:** `{report['employee_name']}` on **{report['timestamp']}**")
                     
@@ -336,14 +348,14 @@ def render(conn):
         st.markdown("---")
         st.subheader("👥 Employees Assigned to this Station")
         assigned_employees_df = pd.read_sql_query(
-            "SELECT name, surname, role, email FROM employees WHERE station_id = ?",
+            "SELECT name, surname, role, email FROM employees WHERE station_id = %s",
             conn,
             params=(sel,)
         )
         if assigned_employees_df.empty:
             st.info("No employees are currently assigned to this station.")
         else:
-            st.dataframe(assigned_employees_df, use_container_width=True, hide_index=True)
+            st.dataframe(assigned_employees_df, width="stretch", hide_index=True)
 
         st.markdown("---")
         st.subheader("📱 Mobile Access (QR Code)")
@@ -361,7 +373,7 @@ def render(conn):
             st.caption("Distribute this QR code to employees at this station. Scanning it will open the reporting bot in Telegram.")
             
             # Fetch manager email for this station
-            mgr_email_row = conn.execute("SELECT email FROM employees WHERE station_id = ? AND role = 'Gas Station Manager'", (sel,)).fetchone()
+            mgr_email_row = conn.execute("SELECT email FROM employees WHERE station_id = %s AND role = 'Gas Station Manager'", (sel,)).fetchone()
             mgr_email = mgr_email_row[0] if mgr_email_row else None
 
             col_dl, col_email = st.columns(2)
@@ -370,12 +382,12 @@ def render(conn):
                 with urllib.request.urlopen(qr_api_url) as response:
                     qr_bytes = response.read()
                     with col_dl:
-                        st.download_button("⬇️ Download QR Code", qr_bytes, file_name=f"station_{sel}_qr.png", mime="image/png", use_container_width=True)
+                        st.download_button("⬇️ Download QR Code", qr_bytes, file_name=f"station_{sel}_qr.png", mime="image/png", width="stretch")
             except Exception:
                 st.warning("Could not generate download (Internet required).")
             
             with col_email:
-                if st.button("📧 Share via Email", disabled=(not mgr_email), help="Send instructions to Station Manager", use_container_width=True):
+                if st.button("📧 Share via Email", disabled=(not mgr_email), help="Send instructions to Station Manager", width="stretch"):
                     if mgr_email:
                         send_station_qr_email(curr['name'], mgr_email, bot_link, qr_api_url)
                     else:
@@ -384,13 +396,13 @@ def render(conn):
         # Separate delete button outside the form for safety
         if st.button("🗑️ Delete Station", type="secondary"):
             try:
-                conn.execute("DELETE FROM stations WHERE id = ?", (sel,))
+                conn.execute("DELETE FROM stations WHERE id = %s", (sel,))
                 conn.commit()
                 log_activity(conn, "DELETE_STATION", f"Deleted station ID {sel}")
                 st.success(f"Station ID {sel} removed.")
                 st.toast("Station deleted.", icon="🗑️")
                 st.rerun()
-            except sqlite3.IntegrityError:
+            except IntegrityError:
                 st.error("Cannot delete station: It contains linked records (e.g., employees, history).")
             except Exception as e:
                 st.error(f"Error deleting station: {e}")

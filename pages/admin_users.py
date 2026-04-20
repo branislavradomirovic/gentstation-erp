@@ -19,7 +19,14 @@ def render(conn):
         new_maint = st.toggle("🚨 Enable Maintenance Mode", value=is_maint_on)
         if new_maint != is_maint_on:
             val = '1' if new_maint else '0'
-            conn.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES ('maintenance_mode', ?)", (val,))
+            conn.execute(
+                """
+                INSERT INTO system_settings (key, value)
+                VALUES (%s, %s)
+                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+                """,
+                ("maintenance_mode", val)
+            )
             conn.commit()
             log_activity(conn, "MAINTENANCE_MODE", f"Set to {new_maint}")
             st.rerun()
@@ -49,7 +56,7 @@ def render(conn):
         st.info("No users yet.")
         return
 
-    st.dataframe(df[['id', 'username', 'email', 'role', 'is_active', 'failed_attempts', 'locked_until']], use_container_width=True, hide_index=True)
+    st.dataframe(df[['id', 'username', 'email', 'role', 'is_active', 'failed_attempts', 'locked_until']], width="stretch", hide_index=True)
 
     st.divider()
     st.markdown("### Edit / Deactivate user")
@@ -64,26 +71,26 @@ def render(conn):
         
         # Unlock button - only shows if user is locked
         if row['locked_until']:
-            if cols[0].button("🔓 Unlock User", use_container_width=True, type="primary"):
-                conn.execute("UPDATE users SET failed_attempts = 0, locked_until = NULL WHERE id = ?", (uid,))
+            if cols[0].button("🔓 Unlock User", width="stretch", type="primary"):
+                conn.execute("UPDATE users SET failed_attempts = 0, locked_until = NULL WHERE id = %s", (uid,))
                 conn.commit()
                 log_activity(conn, "UNLOCK_USER", f"Manually unlocked user ID {uid}")
                 st.success(f"User {row['username']} has been unlocked.")
                 st.rerun()
 
-        if cols[1].button("Deactivate user", use_container_width=True):
-            conn.execute("UPDATE users SET is_active = 0 WHERE id = ?", (uid,))
+        if cols[1].button("Deactivate user", width="stretch"):
+            conn.execute("UPDATE users SET is_active = 0 WHERE id = %s", (uid,))
             conn.commit()
             log_activity(conn, "DEACTIVATE_USER", f"User ID {uid}")
             st.success("User deactivated.")
-        if cols[2].button("Activate user", use_container_width=True):
-            conn.execute("UPDATE users SET is_active = 1 WHERE id = ?", (uid,))
+        if cols[2].button("Activate user", width="stretch"):
+            conn.execute("UPDATE users SET is_active = 1 WHERE id = %s", (uid,))
             conn.commit()
             log_activity(conn, "ACTIVATE_USER", f"User ID {uid}")
             st.success("User activated.")
-        if cols[3].button("🗑️ Delete user", type="secondary", use_container_width=True):
+        if cols[3].button("🗑️ Delete user", type="secondary", width="stretch"):
             try:
-                conn.execute("DELETE FROM users WHERE id = ?", (uid,))
+                conn.execute("DELETE FROM users WHERE id = %s", (uid,))
                 conn.commit()
                 log_activity(conn, "DELETE_USER", f"User ID {uid}")
                 st.success("User deleted.")
@@ -98,7 +105,7 @@ def render(conn):
         if not new_pw:
             st.error("Provide new password.")
         else:
-            conn.execute("UPDATE users SET password_hash = ? , updated_at = ? WHERE id = ?", (hash_password(new_pw), pd.Timestamp.now().isoformat(), uid_reset))
+            conn.execute("UPDATE users SET password_hash = %s , updated_at = %s WHERE id = %s", (hash_password(new_pw), pd.Timestamp.now().isoformat(), uid_reset))
             conn.commit()
             log_activity(conn, "RESET_PASSWORD", f"Reset password for user {uid_reset}")
             st.success("Password reset. Share temporary password securely with the user.")

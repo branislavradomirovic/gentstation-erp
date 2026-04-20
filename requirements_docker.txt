@@ -1,0 +1,11 @@
+streamlit
+pandas
+folium
+streamlit-folium
+python-dotenv
+python-telegram-bot
+bcrypt
+ollama
+requests
+psycopg2-binary
+opencv-python-headless

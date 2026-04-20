@@ -10,9 +10,20 @@ def get_employee_id_from_user_id(conn, user_id):
         SELECT e.id 
         FROM employees e
         JOIN users u ON e.email = u.username
-        WHERE u.id = ?
+        WHERE u.id = %s
     """, (user_id,)).fetchone()
     return emp_row[0] if emp_row else None
+
+
+def _ensure_dict(payload):
+    if isinstance(payload, dict):
+        return payload
+    if not payload:
+        return {}
+    try:
+        return json.loads(payload)
+    except Exception:
+        return {}
 
 def render(conn):
     render_page_header("📈 AI Reports & Processing Queue")
@@ -27,7 +38,7 @@ def render(conn):
 
     if role == "Region Director":
         if employee_id:
-            regs = conn.execute("SELECT region_id FROM director_regions WHERE employee_id = ?", (employee_id,)).fetchall()
+            regs = conn.execute("SELECT region_id FROM director_regions WHERE employee_id = %s", (employee_id,)).fetchall()
             region_ids = [r[0] for r in regs]
             if region_ids:
                 placeholder = ",".join("?"*len(region_ids))
@@ -36,14 +47,14 @@ def render(conn):
             else: where_clause = "AND 1=0" # No regions assigned
     elif role == "Region Manager":
         if employee_id:
-            region_id_row = conn.execute("SELECT region_id FROM employees WHERE id = ?", (employee_id,)).fetchone()
+            region_id_row = conn.execute("SELECT region_id FROM employees WHERE id = %s", (employee_id,)).fetchone()
             if region_id_row:
                 where_clause = "AND st.region_id = ?"
                 params = [region_id_row[0]]
             else: where_clause = "AND 1=0"
     elif role == "Gas Station Manager":
         if employee_id:
-            station_id_row = conn.execute("SELECT station_id FROM employees WHERE id = ?", (employee_id,)).fetchone()
+            station_id_row = conn.execute("SELECT station_id FROM employees WHERE id = %s", (employee_id,)).fetchone()
             if station_id_row:
                 where_clause = "AND s.station_id = ?"
                 params = [station_id_row[0]]
@@ -70,7 +81,7 @@ def render(conn):
         st.info("No pending or failed submissions in the queue for your scope.")
     else:
         queue_df['status'] = queue_df['processed'].map({0: 'Pending', -1: 'Failed'})
-        st.dataframe(queue_df[['id', 'timestamp', 'station_name', 'employee_name', 'status']], use_container_width=True, hide_index=True)
+        st.dataframe(queue_df[['id', 'timestamp', 'station_name', 'employee_name', 'status']], width="stretch", hide_index=True)
 
         failed_submissions = queue_df[queue_df['processed'] == -1]
         if not failed_submissions.empty:
@@ -82,9 +93,9 @@ def render(conn):
                 selected_id = st.selectbox("Select a failed submission ID to retry:", options=failed_submissions['id'].tolist())
             with col2:
                 st.write("") # for vertical alignment
-                if st.button("🔄 Retry Selected Submission", type="primary", use_container_width=True):
+                if st.button("🔄 Retry Selected Submission", type="primary", width="stretch"):
                     if selected_id:
-                        conn.execute("UPDATE submissions SET processed = 0 WHERE id = ?", (selected_id,))
+                        conn.execute("UPDATE submissions SET processed = 0 WHERE id = %s", (selected_id,))
                         conn.commit()
                         st.success(f"Submission ID {selected_id} has been re-queued for processing.")
                         st.toast("Task re-queued!", icon="🔄")
@@ -98,12 +109,12 @@ def render(conn):
     analytics_query = f"""
         SELECT 
             st.name as Station, 
-            AVG(CAST(json_extract(s.data_json, '$.safety_score') AS FLOAT)) as "Average Safety Score"
+            AVG(CAST(s.data_json->>'safety_score' AS FLOAT)) as "Average Safety Score"
         FROM submissions s
         JOIN stations st ON s.station_id = st.id
         WHERE s.processed = 1 
           AND s.data_json IS NOT NULL
-          AND s.timestamp >= date('now', '-30 days')
+          AND s.timestamp >= NOW() - INTERVAL '30 days'
           {where_clause}
         GROUP BY st.id
         ORDER BY "Average Safety Score" ASC
@@ -134,16 +145,15 @@ def render(conn):
         st.info("No completed AI reports available for your scope.")
     else:
         def extract_from_json(json_str, key, default=None):
-            if not json_str: return default
-            try: return json.loads(json_str).get(key, default)
-            except (json.JSONDecodeError, TypeError): return default
+            data = _ensure_dict(json_str)
+            return data.get(key, default)
 
         df['safety_score'] = df['kpi_json'].apply(lambda x: extract_from_json(x, 'safety_score'))
         df['cleanliness_score'] = df['kpi_json'].apply(lambda x: extract_from_json(x, 'cleanliness_score'))
         df['staff_score'] = df['kpi_json'].apply(lambda x: extract_from_json(x, 'staff_score'))
         df['merchandising_score'] = df['kpi_json'].apply(lambda x: extract_from_json(x, 'merchandising_score'))
 
-        st.dataframe(df[['timestamp', 'station_name', 'safety_score', 'cleanliness_score', 'staff_score', 'merchandising_score']], use_container_width=True, hide_index=True)
+        st.dataframe(df[['timestamp', 'station_name', 'safety_score', 'cleanliness_score', 'staff_score', 'merchandising_score']], width="stretch", hide_index=True)
         
         if not df.empty:
             idx = st.selectbox("Select report ID to preview details", df['id'].tolist())
@@ -152,7 +162,7 @@ def render(conn):
                 st.subheader(f"Report Details for Submission #{idx}")
                 st.write(f"**Station:** {row['station_name']} | **Submitted:** {row['timestamp']}")
                 
-                kpi_data = json.loads(row['kpi_json']) if row['kpi_json'] else {}
+                kpi_data = _ensure_dict(row['kpi_json'])
                 if kpi_data:
                     st.write(f"**Summary:** {kpi_data.get('summary', 'N/A')}")
                     st.json(kpi_data)

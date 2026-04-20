@@ -24,7 +24,9 @@ def render(conn):
     st.subheader("Top-level KPIs")
     total_stations = conn.execute("SELECT COUNT(*) FROM stations").fetchone()[0]
     total_alerts = conn.execute("SELECT COUNT(*) FROM ai_alerts WHERE severity='HIGH' AND status != 'resolved'").fetchone()[0]
-    avg_safety_query = conn.execute("SELECT AVG(CAST(json_extract(data_json, '$.safety_score') AS REAL)) FROM submissions WHERE processed = 1 AND data_json IS NOT NULL").fetchone()[0]
+    avg_safety_query = conn.execute(
+        "SELECT AVG(CAST(data_json->>'safety_score' AS REAL)) FROM submissions WHERE processed = 1 AND data_json IS NOT NULL"
+    ).fetchone()[0]
     col1, col2, col3 = st.columns(3)
     col1.metric("Stations", total_stations)
     col2.metric("High-Severity Alerts", total_alerts)
@@ -68,7 +70,7 @@ def render(conn):
     if ranking_df.empty:
         st.info("No station data available.")
     else:       
-        st.dataframe(ranking_df[['station_id','station_name','region_id','safety','risk_score']], use_container_width=True, hide_index=True)
+        st.dataframe(ranking_df[['station_id','station_name','region_id','safety','risk_score']], width="stretch", hide_index=True)
 
     st.divider()
 
@@ -122,14 +124,14 @@ def render(conn):
         FROM employees e
         LEFT JOIN submissions sub ON sub.employee_id = e.id
         LEFT JOIN stations s ON e.station_id = s.id
-        GROUP BY e.id
+        GROUP BY e.id, e.name, e.surname, e.role, s.name
         ORDER BY reports_count DESC
         LIMIT 50
     """, conn)
     if perf_df.empty:
         st.info("No performance data yet.")
     else:
-        st.dataframe(perf_df, use_container_width=True, hide_index=True)
+        st.dataframe(perf_df, width="stretch", hide_index=True)
 
     st.divider()
 

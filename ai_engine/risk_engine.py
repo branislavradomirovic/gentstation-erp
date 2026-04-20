@@ -71,6 +71,17 @@ def compute_station_risk_from_metrics(metrics: Dict[str, Any]) -> float:
     score = min(100.0, round(raw_risk * 100, 2))
     return score
 
+
+def _ensure_dict(payload: Any) -> Dict[str, Any]:
+    if isinstance(payload, dict):
+        return payload
+    if not payload:
+        return {}
+    try:
+        return json.loads(payload)
+    except Exception:
+        return {}
+
 def record_ai_alert(conn, station_id: int, severity: str, message: str):
     now = datetime.utcnow().isoformat()
     conn.execute("INSERT INTO ai_alerts (station_id, severity, message, created_at) VALUES (?,?,?,?)", (station_id, severity, message, now))
@@ -100,10 +111,7 @@ def run_risk_cycle(threshold: float = 60.0) -> Dict[int, Dict[str, Any]]:
 
     results = {}
     for station_id, kpi_json, created_at in rows:
-        try:
-            metrics = json.loads(kpi_json) if kpi_json else {}
-        except Exception:
-            metrics = {}
+        metrics = _ensure_dict(kpi_json)
         risk = compute_station_risk_from_metrics(metrics)
         results[station_id] = {"risk": risk, "metrics": metrics, "last_seen": created_at}
 
@@ -126,17 +134,15 @@ def detect_kpi_anomalies(station_id: int, metric_key: str, current_value: float,
     rows = cur.execute("SELECT data_json FROM submissions WHERE station_id = ? AND processed = 1 AND data_json IS NOT NULL ORDER BY timestamp DESC LIMIT ?", (station_id, window)).fetchall()
     vals = []
     for (kjson,) in rows:
-        try:
-            j = json.loads(kjson)
-            v = None
-            # Try various keys
-            for k in (metric_key, metric_key + "_score", metric_key + "ness"):
-                if isinstance(j.get(k), (int, float)):
-                    v = j.get(k); break
-            if v is not None:
-                vals.append(float(v))
-        except:
-            continue
+        j = _ensure_dict(kjson)
+        v = None
+        # Try various keys
+        for k in (metric_key, metric_key + "_score", metric_key + "ness"):
+            if isinstance(j.get(k), (int, float)):
+                v = j.get(k)
+                break
+        if v is not None:
+            vals.append(float(v))
     if not vals:
         return False, None
     avg = sum(vals) / len(vals)

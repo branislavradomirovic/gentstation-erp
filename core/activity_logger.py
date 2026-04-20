@@ -1,5 +1,6 @@
 # gentstation_opus/core/activity_logger.py
 import streamlit as st
+import logging
 try:
     from streamlit.web.server.websocket_headers import _get_websocket_headers
 except ImportError:
@@ -25,7 +26,7 @@ def log_activity(conn, action, details):
     try:
         # Attempt insert with ip_address column
         conn.execute(
-            "INSERT INTO activity_logs (user_name, action, details, ip_address) VALUES (?, ?, ?, ?)",
+            "INSERT INTO activity_logs (user_name, action, details, ip_address) VALUES (%s, %s, %s, %s)",
             (user, action, details, ip)
         )
         conn.commit()
@@ -34,9 +35,10 @@ def log_activity(conn, action, details):
         try:
             final_details = f"{details} [IP: {ip}]" if ip else details
             conn.execute(
-                "INSERT INTO activity_logs (user_name, action, details) VALUES (?, ?, ?)",
+                "INSERT INTO activity_logs (user_name, action, details) VALUES (%s, %s, %s)",
                 (user, action, final_details)
             )
             conn.commit()
         except Exception as e:
-            print("log_activity error:", e)
+            logger.debug("log_activity error: %s", e)
+logger = logging.getLogger("gentstation.activity_logger")

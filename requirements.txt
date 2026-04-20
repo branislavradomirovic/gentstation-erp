@@ -2,7 +2,10 @@ streamlit
 pandas
 folium
 streamlit-folium
-google-generativeai
 python-dotenv
 python-telegram-bot
 bcrypt
+ollama
+requests
+psycopg2-binary
+opencv-python-headless

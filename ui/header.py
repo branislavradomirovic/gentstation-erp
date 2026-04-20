@@ -4,6 +4,8 @@ from core.database import get_connection
 # Mapping from page ID to the help tab name in pages/help.py
 HELP_TAB_MAP = {
     "Dashboard": "Overview & submission",
+    "Role Center": "Overview & submission",
+    "Shifts": "Management Modules",
     "Regions": "Management Modules",
     "Stations": "Management Modules",
     "Employees": "Management Modules",
@@ -57,13 +59,13 @@ def render_page_header(title: str):
 
     if alert_col:
         with alert_col:
-            if st.button(f"🔔 {alert_count}", key="header_alert_btn", use_container_width=True, type="primary", help="Unresolved Alerts"):
+            if st.button(f"🔔 {alert_count}", key="header_alert_btn", width="stretch", type="primary", help="Unresolved Alerts"):
                 st.session_state["active_page"] = "AI Alerts"
                 st.rerun()
 
     if help_col:
         with help_col:
-            if st.button("❓ Help", key=f"help_btn_{page_id}", use_container_width=True, help=f"Help: {page_id}"):
+            if st.button("❓ Help", key=f"help_btn_{page_id}", width="stretch", help=f"Help: {page_id}"):
                 st.session_state["active_page"] = "Help"
                 st.session_state["help_target_tab"] = help_tab_name
                 st.rerun()

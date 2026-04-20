@@ -28,7 +28,7 @@ def get_hierarchy_emails(station_id):
     # 1. Get Manager & Supervisor for THIS station
     staff = cursor.execute("""
         SELECT email, role FROM employees 
-        WHERE station_id = ? AND role IN ('Gas Station Supervisor', 'Gas Station Manager')
+        WHERE station_id = %s AND role IN ('Gas Station Supervisor', 'Gas Station Manager')
         ORDER BY role DESC
     """, (clean_s_id,)).fetchall()
     
@@ -45,7 +45,7 @@ def get_hierarchy_emails(station_id):
     region_data = cursor.execute("""
         SELECT r.id, r.name FROM regions r
         JOIN stations s ON s.region_id = r.id
-        WHERE s.id = ?
+        WHERE s.id = %s
     """, (clean_s_id,)).fetchone()
 
     region_name = "Unknown"
@@ -53,14 +53,14 @@ def get_hierarchy_emails(station_id):
         region_id, region_name = region_data
         
         # Region Manager
-        reg_mgr = cursor.execute("SELECT email FROM employees WHERE region_id = ? AND role = 'Region Manager'", (region_id,)).fetchone()
+        reg_mgr = cursor.execute("SELECT email FROM employees WHERE region_id = %s AND role = 'Region Manager'", (region_id,)).fetchone()
         if reg_mgr: emails["region_mgr"] = reg_mgr[0]
 
         # Directors
         directors = cursor.execute("""
             SELECT e.email FROM employees e
             JOIN director_regions dr ON e.id = dr.employee_id
-            WHERE dr.region_id = ? AND e.role = 'Region Director'
+            WHERE dr.region_id = %s AND e.role = 'Region Director'
         """, (region_id,)).fetchall()
         emails["directors"] = [d[0] for d in directors]
 

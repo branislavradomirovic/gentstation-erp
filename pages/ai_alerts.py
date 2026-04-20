@@ -73,13 +73,13 @@ def render(conn):
             
             b_cols = st.columns(8)
             if row['status'] != 'acknowledged':
-                if b_cols[0].button("Acknowledge", key=f"ack_{row['id']}", use_container_width=True):
+                if b_cols[0].button("Acknowledge", key=f"ack_{row['id']}", width="stretch"):
                     conn.execute("UPDATE ai_alerts SET status = 'acknowledged' WHERE id = ?", (row['id'],))
                     conn.commit()
                     log_activity(conn, "ACK_ALERT", f"Acknowledged alert ID {row['id']}")
                     st.rerun()
             if row['status'] != 'resolved':
-                if b_cols[1].button("Resolve", key=f"res_{row['id']}", use_container_width=True):
+                if b_cols[1].button("Resolve", key=f"res_{row['id']}", width="stretch"):
                     conn.execute("UPDATE ai_alerts SET status = 'resolved' WHERE id = ?", (row['id'],))
                     conn.commit()
                     log_activity(conn, "RESOLVE_ALERT", f"Resolved alert ID {row['id']}")

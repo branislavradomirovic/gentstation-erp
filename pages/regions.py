@@ -1,7 +1,7 @@
 # gentstation_opus/pages/regions.py
 import streamlit as st
-import sqlite3
 import pandas as pd
+from psycopg2 import IntegrityError
 from core.activity_logger import log_activity
 from ui.header import render_page_header
 
@@ -17,7 +17,7 @@ def render(conn):
                 if not r_name.strip():
                     st.error("Region name is required.")
                 else:
-                    conn.execute("INSERT INTO regions (name, email) VALUES (?,?)", (r_name.strip(), r_email.strip() or None))
+                    conn.execute("INSERT INTO regions (name, email) VALUES (%s,%s)", (r_name.strip(), r_email.strip() or None))
                     conn.commit()
                     log_activity(conn, "CREATE_REGION", f"Added region: {r_name}")
                     st.success(f"Region '{r_name}' added.")
@@ -96,7 +96,7 @@ def render(conn):
                 if not new_name.strip():
                     st.error("Region name cannot be empty.")
                 else:
-                    conn.execute("UPDATE regions SET name = ?, email = ? WHERE id = ?", (new_name.strip(), new_email.strip() or None, selected))
+                    conn.execute("UPDATE regions SET name = %s, email = %s WHERE id = %s", (new_name.strip(), new_email.strip() or None, selected))
                     conn.commit()
                     log_activity(conn, "UPDATE_REGION", f"Updated region {selected} -> {new_name}")
                     st.success("Region updated.")
@@ -104,23 +104,23 @@ def render(conn):
 
     if st.button("🗑️ Delete Region", key=f"del_region_{selected}"):
         try:
-            conn.execute("DELETE FROM regions WHERE id = ?", (selected,))
+            conn.execute("DELETE FROM regions WHERE id = %s", (selected,))
             conn.commit()
             log_activity(conn, "DELETE_REGION", f"Deleted region ID {selected}")
             st.success("Region deleted.")
             st.rerun()
-        except sqlite3.IntegrityError:
+        except IntegrityError:
             st.error("Cannot delete region: Stations are currently assigned to this region. Please reassign them first.")
         except Exception as e:
             st.error(f"An error occurred: {e}")
 
     st.divider()
     st.subheader("🔗 Stations in the selected Region")
-    stations = pd.read_sql_query("SELECT id, name, physical_address FROM stations WHERE region_id = ? ORDER BY id", conn, params=(selected,))
+    stations = pd.read_sql_query("SELECT id, name, physical_address FROM stations WHERE region_id = %s ORDER BY id", conn, params=(selected,))
     if stations.empty:
         st.info("No stations assigned to this region.")
     else:
-        st.dataframe(stations, use_container_width=True, hide_index=True)
+        st.dataframe(stations, width="stretch", hide_index=True)
 
     st.divider()
     st.subheader("👥 Attach/Assign Region Manager")
@@ -134,7 +134,7 @@ def render(conn):
         else:
             mgr_id = int(mgrs[mgrs['fullname'] == selected_mgr]['id'].values[0])
             # For simplicity we set employee.region_id = region
-            conn.execute("UPDATE employees SET region_id = ? WHERE id = ?", (selected, mgr_id))
+            conn.execute("UPDATE employees SET region_id = %s WHERE id = %s", (selected, mgr_id))
             conn.commit()
             log_activity(conn, "ASSIGN_REGION_MANAGER", f"Assigned employee {mgr_id} to region {curr['Name']}")
             st.success(f"Assigned {selected_mgr} to region {curr['Name']}")
