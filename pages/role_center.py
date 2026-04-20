@@ -4,6 +4,7 @@ import pandas as pd
 import streamlit as st
 
 from core.activity_logger import log_activity
+from pages.shifts import _start_shift
 from ui.header import render_page_header
 
 
@@ -112,16 +113,18 @@ def _render_shift_panel(conn, employee_row):
             st.rerun()
     else:
         st.warning("No active shift is currently running.")
+        try:
+            srow = conn.execute("SELECT value FROM system_settings WHERE key=%s", ("default_break_minutes",)).fetchone()
+            rc_default = int(srow[0]) if srow and srow[0] else 15
+        except Exception:
+            rc_default = 15
+
+        br = st.number_input("Break (min)", min_value=1, max_value=240, value=rc_default, key="role_center_break_override")
         if st.button("Start My Shift", key="role_center_start_shift", width="stretch", type="primary"):
-            conn.execute(
-                """
-                INSERT INTO employee_shifts (employee_id, shift_started_at, status)
-                VALUES (%s, CURRENT_TIMESTAMP, 'active')
-                """,
-                (employee_id,),
-            )
+            station_id = employee_row[7] if employee_row and employee_row[7] else None
+            shift_id = _start_shift(conn, employee_id, station_id, notes="Started from role center", break_duration_minutes=int(br))
             conn.commit()
-            log_activity(conn, "START_SHIFT", f"Employee {employee_id} started a shift")
+            log_activity(conn, "START_SHIFT", f"Employee {employee_id} started a shift {shift_id}")
             st.toast("Shift started.", icon="🟢")
             st.rerun()
 

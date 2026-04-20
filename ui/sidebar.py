@@ -116,17 +116,31 @@ def _status_badge(label: str, status: str, details: str = None):
     """
 
 
-def _read_status(conn, key):
-    row = conn.execute("SELECT value FROM system_settings WHERE key=%s", (key,)).fetchone()
+                        # allow override of break duration when clocking in
+                        try:
+                            srow = conn.execute("SELECT value FROM system_settings WHERE key=%s", ("default_break_minutes",)).fetchone()
+                            sidebar_default_break = int(srow[0]) if srow and srow[0] else 15
+                        except Exception:
+                            sidebar_default_break = 15
+
+                        bval = st.number_input("Break (min)", min_value=1, max_value=240, value=sidebar_default_break, key="sidebar_break_override")
+                        if st.button("▶️ Clock In (Scheduled)", key="sidebar_clock_in_scheduled", type="primary", width="stretch"):
+                            _start_shift(conn, employee_id, upcoming[3] or user_row[7], shift_id=upcoming[0], scheduled_start=upcoming[1], scheduled_end=upcoming[2], shift_type=upcoming[4] or "standard", notes=upcoming[5], break_duration_minutes=int(bval))
     if not row or not row[0]:
         return {}
     try:
         return json.loads(row[0])
     except Exception:
         return {}
-
-
-def display_sidebar(conn):
+                        try:
+                            srow = conn.execute("SELECT value FROM system_settings WHERE key=%s", ("default_break_minutes",)).fetchone()
+                            sidebar_default_break = int(srow[0]) if srow and srow[0] else 15
+                        except Exception:
+                            sidebar_default_break = 15
+                        bval = st.number_input("Break (min)", min_value=1, max_value=240, value=sidebar_default_break, key="sidebar_break_override_2")
+                        if st.button("▶️ Clock In", key="sidebar_clock_in", width="stretch"):
+                            station_id = user_row[7]
+                            shift_id = _start_shift(conn, employee_id, station_id, notes="Clocked in from sidebar", break_duration_minutes=int(bval))
     user_role = st.session_state.get("user_role", "Employee")
     username = st.session_state.get("username", "User")
 
