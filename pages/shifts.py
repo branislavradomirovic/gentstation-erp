@@ -186,7 +186,7 @@ def _upcoming_scheduled_shift(conn, employee_id):
     ).fetchone()
 
 
-def _start_shift(conn, employee_id, station_id, shift_id=None, scheduled_start=None, scheduled_end=None, shift_type="standard", notes=None):
+def _start_shift(conn, employee_id, station_id, shift_id=None, scheduled_start=None, scheduled_end=None, shift_type="standard", notes=None, break_duration_minutes=None):
     if shift_id:
         conn.execute(
             """
@@ -197,11 +197,12 @@ def _start_shift(conn, employee_id, station_id, shift_id=None, scheduled_start=N
                 scheduled_start_at = COALESCE(scheduled_start_at, %s),
                 scheduled_end_at = COALESCE(scheduled_end_at, %s),
                 shift_type = COALESCE(shift_type, %s),
+                break_duration_minutes = COALESCE(%s, break_duration_minutes),
                 status = 'active',
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = %s
             """,
-            (station_id, scheduled_start, scheduled_end, shift_type, shift_id),
+            (station_id, scheduled_start, scheduled_end, shift_type, break_duration_minutes, shift_id),
         )
         return shift_id
 
@@ -209,25 +210,25 @@ def _start_shift(conn, employee_id, station_id, shift_id=None, scheduled_start=N
         """
         INSERT INTO employee_shifts (
             employee_id, station_id, shift_type, scheduled_start_at, scheduled_end_at,
-            clock_in_at, shift_started_at, status, notes
-        ) VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'active', %s)
+            clock_in_at, shift_started_at, status, notes, break_duration_minutes
+        ) VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'active', %s, %s)
         RETURNING id
         """,
-        (employee_id, station_id, shift_type, scheduled_start, scheduled_end, notes),
+        (employee_id, station_id, shift_type, scheduled_start, scheduled_end, notes, break_duration_minutes),
     )
     return cur.fetchone()[0]
 
 
-def _create_scheduled_shift(conn, employee_id, station_id, scheduled_start, scheduled_end, shift_type="standard", notes=None):
+def _create_scheduled_shift(conn, employee_id, station_id, scheduled_start, scheduled_end, shift_type="standard", notes=None, break_duration_minutes=None):
     cur = conn.execute(
         """
         INSERT INTO employee_shifts (
             employee_id, station_id, shift_type, scheduled_start_at, scheduled_end_at,
-            shift_started_at, status, notes
-        ) VALUES (%s, %s, %s, %s, %s, %s, 'scheduled', %s)
+            shift_started_at, status, notes, break_duration_minutes
+        ) VALUES (%s, %s, %s, %s, %s, %s, 'scheduled', %s, %s)
         RETURNING id
         """,
-        (employee_id, station_id, shift_type, scheduled_start, scheduled_end, scheduled_start, notes),
+        (employee_id, station_id, shift_type, scheduled_start, scheduled_end, scheduled_start, notes, break_duration_minutes),
     )
     return cur.fetchone()[0]
 
@@ -448,6 +449,14 @@ def render(conn):
                 col_e, col_f = st.columns(2)
                 end_time = col_e.time_input("End time", value=dt_time(16, 0))
                 shift_type = col_f.selectbox("Shift type", ["standard", "morning", "afternoon", "night", "custom"])
+                # fetch system default for break duration if present
+                try:
+                    srow = conn.execute("SELECT value FROM system_settings WHERE key=%s", ("default_break_minutes",)).fetchone()
+                    default_break = int(srow[0]) if srow and srow[0] else 15
+                except Exception:
+                    default_break = 15
+
+                break_minutes = st.number_input("Break duration (minutes)", min_value=1, max_value=240, value=default_break)
                 notes = st.text_area("Notes", placeholder="Optional handover notes, coverage instructions, or special conditions.")
 
                 if st.form_submit_button("Create Shift", width="stretch"):
@@ -464,6 +473,7 @@ def render(conn):
                             scheduled_end=scheduled_end,
                             shift_type=shift_type,
                             notes=notes.strip() or None,
+                            break_duration_minutes=int(break_minutes),
                         )
                         conn.commit()
                         log_activity(conn, "CREATE_SHIFT", f"Created shift {shift_id} for employee {employee_label}")
