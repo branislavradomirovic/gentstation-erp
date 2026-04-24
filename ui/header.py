@@ -4,7 +4,7 @@ from core.database import get_connection
 # Mapping from page ID to the help tab name in pages/help.py
 HELP_TAB_MAP = {
     "Dashboard": "Overview & submission",
-    "Role Center": "Overview & submission",
+    "Personal Dashboard": "Overview & submission",
     "Shifts": "Management Modules",
     "Regions": "Management Modules",
     "Stations": "Management Modules",

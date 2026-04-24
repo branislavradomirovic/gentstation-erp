@@ -30,6 +30,7 @@ except Exception:  # pragma: no cover - optional dependency
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "neural-chat")
 OLLAMA_VISION_MODEL = os.getenv("OLLAMA_VISION_MODEL", "").strip()
+OLLAMA_LOCAL_ONLY = os.getenv("OLLAMA_LOCAL_ONLY", "1").strip().lower() in {"1", "true", "yes", "on"}
 FRAME_SAMPLES = int(os.getenv("VIDEO_FRAME_SAMPLES", "6"))
 MAX_FRAME_DIMENSION = int(os.getenv("VIDEO_MAX_FRAME_DIMENSION", "768"))
 
@@ -229,13 +230,25 @@ def _candidate_base_urls():
     candidates: List[str] = []
     add(OLLAMA_BASE_URL)
 
+    # Always include local loopback variants for local development.
+    if "localhost" in OLLAMA_BASE_URL:
+        add(OLLAMA_BASE_URL.replace("localhost", "127.0.0.1"))
+    if "127.0.0.1" in OLLAMA_BASE_URL:
+        add(OLLAMA_BASE_URL.replace("127.0.0.1", "localhost"))
     if "host.docker.internal" in OLLAMA_BASE_URL:
         add(OLLAMA_BASE_URL.replace("host.docker.internal", "localhost"))
-    if "localhost" in OLLAMA_BASE_URL:
-        add(OLLAMA_BASE_URL.replace("localhost", "host.docker.internal"))
+        add(OLLAMA_BASE_URL.replace("host.docker.internal", "127.0.0.1"))
 
     add("http://localhost:11434")
-    add("http://host.docker.internal:11434")
+    add("http://127.0.0.1:11434")
+
+    # Optional Docker-specific fallback, disabled by default for local-first development.
+    if not OLLAMA_LOCAL_ONLY:
+        if "localhost" in OLLAMA_BASE_URL:
+            add(OLLAMA_BASE_URL.replace("localhost", "host.docker.internal"))
+        if "127.0.0.1" in OLLAMA_BASE_URL:
+            add(OLLAMA_BASE_URL.replace("127.0.0.1", "host.docker.internal"))
+        add("http://host.docker.internal:11434")
     return candidates
 
 
@@ -270,7 +283,9 @@ def _call_ollama(prompt: str, model: str, images: Optional[List[str]] = None) ->
 
     raise RuntimeError(
         f"Cannot connect to Ollama server at {OLLAMA_BASE_URL}. "
-        f"Checked local fallbacks too. Last error: {last_error}"
+        f"Tried: {', '.join(_candidate_base_urls())}. "
+        f"Last error: {last_error}. "
+        "For local development, ensure Ollama is running: `ollama serve`."
     )
 
 

@@ -6,6 +6,7 @@ Supports both local development and Docker deployment.
 """
 
 import os
+import logging
 import psycopg2
 from psycopg2 import sql
 from psycopg2.extras import RealDictCursor
@@ -20,6 +21,8 @@ DB_PORT = int(os.getenv("DB_PORT", 5432))
 DB_NAME = os.getenv("DB_NAME", "gentstation")
 DB_USER = os.getenv("DB_USER", "gentstation_user")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "secure_password")
+_RESOLVED_DB_HOST = None
+logger = logging.getLogger("gentstation.database_postgres")
 
 class DatabaseConnection:
     """PostgreSQL connection manager with connection pooling support."""
@@ -29,6 +32,7 @@ class DatabaseConnection:
     @staticmethod
     def get_connection():
         """Get a database connection (singleton pattern for simplicity)."""
+        global _RESOLVED_DB_HOST
         try:
             conn = psycopg2.connect(
                 host=DB_HOST,
@@ -38,8 +42,25 @@ class DatabaseConnection:
                 password=DB_PASSWORD,
                 connect_timeout=5
             )
+            _RESOLVED_DB_HOST = DB_HOST
             return conn
         except psycopg2.Error as e:
+            if DB_HOST == "postgres":
+                try:
+                    if _RESOLVED_DB_HOST != "localhost":
+                        logger.debug("DB_HOST=postgres not reachable; retrying with localhost for local development.")
+                    conn = psycopg2.connect(
+                        host="localhost",
+                        port=DB_PORT,
+                        database=DB_NAME,
+                        user=DB_USER,
+                        password=DB_PASSWORD,
+                        connect_timeout=5
+                    )
+                    _RESOLVED_DB_HOST = "localhost"
+                    return conn
+                except psycopg2.Error:
+                    pass
             print(f"❌ Database connection failed: {e}")
             raise
 

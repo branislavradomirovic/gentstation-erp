@@ -99,10 +99,17 @@ def render(conn):
                             st.stop()
 
                         cursor = conn.execute(
-                            "INSERT INTO employees (name, surname, email, password, role, station_id, region_id) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                            """
+                            INSERT INTO employees (name, surname, email, password, role, station_id, region_id)
+                            VALUES (%s,%s,%s,%s,%s,%s,%s)
+                            RETURNING id
+                            """,
                             (first.strip(), last.strip(), email.strip(), hashed, role, assign_station_id, assign_region_id)
                         )
-                        new_id = cursor.fetchone()[0]
+                        new_row = cursor.fetchone()
+                        if not new_row:
+                            raise RuntimeError("Employee created but ID was not returned by the database.")
+                        new_id = new_row[0]
 
                         # Handle Region Director M2M relationship
                         if role == "Region Director" and assign_region_ids:
@@ -135,7 +142,11 @@ def render(conn):
                             st.toast("Telegram invitation generated.", icon="🤖")
                         
                         st.balloons()
+                    except IntegrityError as e:
+                        conn.rollback()
+                        st.error(f"Database integrity error: {e}")
                     except Exception as e:
+                        conn.rollback()
                         st.error(f"Database error: {e}")
 
     # --- 2. EMPLOYEE DIRECTORY ---

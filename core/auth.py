@@ -35,7 +35,7 @@ def create_user(username: str, password: str, email: Optional[str], role: str = 
     pw_hash = hash_password(password)
     cur.execute("""
         INSERT INTO users (username, email, password_hash, role, is_active, created_at)
-        VALUES (%s, %s, %s, %s, 1, %s)
+        VALUES (%s, %s, %s, %s, TRUE, %s)
         RETURNING id
     """, (username, email, pw_hash, role, datetime.utcnow().isoformat()))
     uid = cur.fetchone()[0]
@@ -47,12 +47,17 @@ def authenticate_user(username_or_email: str, password: str) -> Tuple[Optional[D
     Verify credentials with lockout logic. 
     Returns (user_dict, error_message).
     """
+    if not username_or_email:
+        return None, "Invalid credentials"
+
+    username_or_email = username_or_email.strip()
+    
     conn = get_connection()
     cur = conn.cursor()
-    # Try username, then email
+    # Try username (exact), then email (case-insensitive)
     cur.execute("""
         SELECT id, username, email, password_hash, role, is_active, failed_attempts, locked_until, dark_mode_enabled
-        FROM users WHERE username = %s OR email = %s
+        FROM users WHERE username = %s OR LOWER(email) = LOWER(%s)
     """, (username_or_email, username_or_email))
     
     row = cur.fetchone()
@@ -63,7 +68,8 @@ def authenticate_user(username_or_email: str, password: str) -> Tuple[Optional[D
 
     # Check Maintenance Mode
     try:
-        m_row = cur.execute("SELECT value FROM system_settings WHERE key='maintenance_mode'").fetchone()
+        cur.execute("SELECT value FROM system_settings WHERE key='maintenance_mode'")
+        m_row = cur.fetchone()
         if m_row and m_row[0] == '1':
             if role != "General Manager":
                 return None, "⚠️ System is in Maintenance Mode. Admin login only."
@@ -72,8 +78,16 @@ def authenticate_user(username_or_email: str, password: str) -> Tuple[Optional[D
 
     # 1. Check if locked
     if locked_until:
-        lock_time = datetime.fromisoformat(locked_until)
-        if lock_time > datetime.utcnow():
+        # Handle both string (from some DB drivers) and datetime objects (from psycopg2)
+        if isinstance(locked_until, str):
+            try:
+                lock_time = datetime.fromisoformat(locked_until)
+            except ValueError:
+                lock_time = None
+        else:
+            lock_time = locked_until
+        
+        if lock_time and lock_time > datetime.utcnow():
             remaining_mins = int((lock_time - datetime.utcnow()).total_seconds() / 60) + 1
             return None, f"Account locked. Try again in {remaining_mins} minutes."
 

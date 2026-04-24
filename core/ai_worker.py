@@ -2,6 +2,8 @@ import time
 import os
 import sys, json
 import logging
+import atexit
+import subprocess
 from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
@@ -15,15 +17,82 @@ logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("requests").setLevel(logging.WARNING)
 logger = logging.getLogger("gentstation.ai_worker")
 
+LOCK_FILE = Path("/tmp/gentstationai_ai_worker_v1.lock")
+
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except (OSError, ProcessLookupError):
+        return False
+    # Treat zombie processes as dead so stale lock files do not block startup.
+    try:
+        stat = subprocess.check_output(
+            ["ps", "-p", str(pid), "-o", "stat="],
+            text=True,
+        ).strip()
+        if not stat:
+            return False
+        if stat.upper().startswith("Z"):
+            return False
+    except Exception:
+        pass
+    return True
+
+def acquire_lock() -> bool:
+    my_pid = os.getpid()
+    try:
+        fd = os.open(str(LOCK_FILE), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(str(my_pid))
+        return True
+    except FileExistsError:
+        try:
+            existing_pid_str = LOCK_FILE.read_text().strip()
+            if existing_pid_str:
+                existing_pid = int(existing_pid_str)
+                if existing_pid == my_pid:
+                    return True
+                if _pid_alive(existing_pid):
+                    return False
+        except Exception:
+            pass
+        try:
+            LOCK_FILE.unlink(missing_ok=True)
+        except Exception:
+            pass
+        try:
+            fd = os.open(str(LOCK_FILE), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            with os.fdopen(fd, "w") as fh:
+                fh.write(str(my_pid))
+            return True
+        except Exception:
+            return False
+
+def release_lock():
+    try:
+        if LOCK_FILE.exists():
+            existing_pid_str = LOCK_FILE.read_text().strip()
+            if existing_pid_str and int(existing_pid_str) == os.getpid():
+                LOCK_FILE.unlink()
+    except Exception:
+        pass
+
+atexit.register(release_lock)
+
 def update_processing_status(conn, status_dict):
     """Helper to update the AI processing status in the database."""
-    conn.execute(
+    payload = dict(status_dict or {})
+    payload["last_update_ts"] = time.time()
+    cur = conn.cursor()
+    cur.execute(
         """
         INSERT INTO system_settings (key, value)
         VALUES (%s, %s)
         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
         """,
-        ("ai_processing_status", json.dumps(status_dict))
+        ("ai_processing_status", json.dumps(payload))
     )
     conn.commit()
 
@@ -98,9 +167,15 @@ def process_pending_submissions():
         update_processing_status(conn, {"status": "processing", "total": total_tasks, "current": i + 1})
         logger.debug("Progress: %s/%s", i + 1, total_tasks)
 
+    # Explicitly switch back to idle when the batch completes.
+    update_processing_status(conn, {"status": "idle", "last_run_ts": time.time(), "total": total_tasks, "current": total_tasks})
     conn.close()
 
 if __name__ == "__main__":
+    if not acquire_lock():
+        logger.error("AI worker lock could not be acquired; another instance is active. Exiting.")
+        sys.exit(0)
+
     logger.info("AI worker started (batch mode).")
     last_run_time = 0
     BATCH_INTERVAL = 3600  # keep as a safety throttle for empty queues / forced retries
@@ -114,7 +189,8 @@ if __name__ == "__main__":
             if row and row[0] == '1':
                 force_run = True
                 # Reset the flag immediately
-                conn.execute(
+                cur = conn.cursor()
+                cur.execute(
                     """
                     INSERT INTO system_settings (key, value)
                     VALUES (%s, '0')

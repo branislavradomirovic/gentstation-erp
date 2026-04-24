@@ -79,12 +79,12 @@ def render(conn):
                 st.rerun()
 
         if cols[1].button("Deactivate user", width="stretch"):
-            conn.execute("UPDATE users SET is_active = 0 WHERE id = %s", (uid,))
+            conn.execute("UPDATE users SET is_active = FALSE WHERE id = %s", (uid,))
             conn.commit()
             log_activity(conn, "DEACTIVATE_USER", f"User ID {uid}")
             st.success("User deactivated.")
         if cols[2].button("Activate user", width="stretch"):
-            conn.execute("UPDATE users SET is_active = 1 WHERE id = %s", (uid,))
+            conn.execute("UPDATE users SET is_active = TRUE WHERE id = %s", (uid,))
             conn.commit()
             log_activity(conn, "ACTIVATE_USER", f"User ID {uid}")
             st.success("User activated.")

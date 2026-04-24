@@ -1,20 +1,35 @@
 # gentstation_opus/core/activity_logger.py
 import streamlit as st
 import logging
-try:
-    from streamlit.web.server.websocket_headers import _get_websocket_headers
-except ImportError:
-    def _get_websocket_headers(): return {}
+
+logger = logging.getLogger("gentstation.activity_logger")
 
 def get_client_ip():
-    """Best-effort retrieval of client IP address from WebSocket headers."""
+    """Best-effort retrieval of client IP address from headers."""
+    headers = {}
     try:
-        headers = _get_websocket_headers()
+        # Streamlit 1.34+ context-based headers (preferred)
+        if hasattr(st, "context"):
+            headers = st.context.headers
+        else:
+            # Fallback for very old versions, using a dynamic lookup to avoid static analysis warnings
+            import importlib
+            try:
+                mod_name = "streamlit.web.server.websocket_headers"
+                mod = importlib.import_module(mod_name)
+                if hasattr(mod, "_get_websocket_headers"):
+                    headers = mod._get_websocket_headers()
+            except ImportError:
+                pass
+
         if headers:
-            if "X-Forwarded-For" in headers:
-                return headers["X-Forwarded-For"].split(",")[0].strip()
-            if "X-Real-Ip" in headers:
-                return headers["X-Real-Ip"]
+            # Check various common IP headers (case-insensitive)
+            # st.context.headers is a dict-like object
+            for key in ["X-Forwarded-For", "X-Real-Ip", "x-forwarded-for", "x-real-ip"]:
+                if key in headers:
+                    val = headers[key]
+                    if val:
+                        return val.split(",")[0].strip()
     except Exception:
         pass
     return None
@@ -41,4 +56,3 @@ def log_activity(conn, action, details):
             conn.commit()
         except Exception as e:
             logger.debug("log_activity error: %s", e)
-logger = logging.getLogger("gentstation.activity_logger")

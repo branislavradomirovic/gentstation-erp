@@ -29,25 +29,91 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-@st.cache_resource
 def start_background_workers():
     """
-    Starts background processes (Telegram Bot, AI Worker) exactly once
-    per server session using Streamlit's cache mechanism.
+    Ensure background processes (Telegram Bot, AI Worker) are running.
+    Uses lock-file PID checks to avoid duplicate launches across reruns.
     """
     project_root = Path(__file__).resolve().parent
+    bot_lock_file = Path("/tmp/gentstationai_bot_worker.lock")
+    ai_lock_file = Path("/tmp/gentstationai_ai_worker_v1.lock")
+
+    def _pid_alive(pid: int) -> bool:
+        if pid <= 0:
+            return False
+        try:
+            os.kill(pid, 0)
+        except Exception:
+            return False
+        # Treat zombie state as not running.
+        try:
+            stat = subprocess.check_output(["ps", "-p", str(pid), "-o", "stat="], text=True).strip()
+            if not stat or stat.upper().startswith("Z"):
+                return False
+        except Exception:
+            pass
+        return True
+
+    def _is_running_from_lock(lock_file: Path) -> bool:
+        try:
+            if not lock_file.exists():
+                return False
+            pid_txt = lock_file.read_text().strip()
+            if not pid_txt:
+                return False
+            return _pid_alive(int(pid_txt))
+        except Exception:
+            return False
+
+    def _spawn_worker(script_path: Path, log_path: Path):
+        try:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_file = open(log_path, "a", buffering=1)
+            subprocess.Popen(
+                [sys.executable, "-u", str(script_path)],
+                cwd=str(project_root),
+                stdout=log_file,
+                stderr=log_file,
+                start_new_session=True,
+            )
+            return True
+        except Exception as e:
+            logger.warning("Could not start worker %s: %s", script_path, e)
+            return False
+
+    def _env_bool(name: str, default: str = "1") -> bool:
+        return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+    auto_start = _env_bool("AUTO_START_BACKGROUND_WORKERS", "1")
+    auto_start_telegram = _env_bool("AUTO_START_TELEGRAM_BOT", "1")
+    auto_start_ai = _env_bool("AUTO_START_AI_WORKER", "1")
+
+    if not auto_start:
+        logger.info("AUTO_START_BACKGROUND_WORKERS is disabled. Skipping worker startup.")
+        return
     
     # 1. Start Telegram Bot
     bot_script = project_root / "bot" / "bot_worker.py"
-    if bot_script.exists():
-        subprocess.Popen([sys.executable, "-u", str(bot_script)], cwd=str(project_root))
-        logger.debug("Started Bot Worker: %s", bot_script)
+    telegram_token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+    if not auto_start_telegram:
+        logger.info("AUTO_START_TELEGRAM_BOT is disabled. Skipping Telegram Bot startup.")
+    elif _is_running_from_lock(bot_lock_file):
+        logger.debug("Telegram Bot worker already running.")
+    elif bot_script.exists() and telegram_token:
+        if _spawn_worker(bot_script, Path("/tmp/gentstation_bot.log")):
+            logger.info("Started Telegram Bot worker: %s", bot_script)
+    elif bot_script.exists():
+        logger.info("Skipping Telegram Bot startup (TELEGRAM_BOT_TOKEN is not configured).")
 
     # 2. Start AI Worker
     ai_script = project_root / "core" / "ai_worker.py"
-    if ai_script.exists():
-        subprocess.Popen([sys.executable, "-u", str(ai_script)], cwd=str(project_root))
-        logger.debug("Started AI Worker: %s", ai_script)
+    if not auto_start_ai:
+        logger.info("AUTO_START_AI_WORKER is disabled. Skipping AI worker startup.")
+    elif _is_running_from_lock(ai_lock_file):
+        logger.debug("AI worker already running.")
+    elif ai_script.exists():
+        if _spawn_worker(ai_script, Path("/tmp/gentstation_ai.log")):
+            logger.info("Started AI worker: %s", ai_script)
 
 # --- 2. GLOBAL CSS INJECTION (Optimized for Spacing & Alignment) ---
 st.markdown("""
@@ -203,65 +269,74 @@ if "session_token" in st.session_state:
 
 # --- 4. LOGIN INTERFACE ---
 if "user_id" not in st.session_state:
-    # Use a column layout: [1, 4, 1] - small side buffers, logo, then text
-    # We use 5 columns to center the pair: [buffer, logo, text, buffer]
-    _, logo_col, text_col, _ = st.columns([1.5, 0.4, 1.8, 1.5], vertical_alignment="center")
-    
-    with logo_col:
-        logo_path = Path("assets/OpusLogo.png")
+    st.markdown(
+        """
+        <style>
+            /* Pull login content to the top of the viewport. */
+            [data-testid="stAppViewContainer"] .main .block-container {
+                padding-top: 0.4rem !important;
+                margin-top: 0 !important;
+            }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # Center logo and login form in the same column for visual alignment.
+    _, content_col, _ = st.columns([1, 1.6, 1], vertical_alignment="top")
+    with content_col:
+        logo_path = Path("assets/GSAI_Horizontal.png")
+        if not logo_path.exists():
+            logo_path = Path("assets/OpusLogo.png")
         if logo_path.exists():
-            # We set a fixed width (e.g., 80px) to match the height of H2 text
-            st.image(str(logo_path), width=100)
-            
-    with text_col:
-        # Removing the 'text-align: center' since it is now left-aligned to the logo
-        st.markdown("<h2 style='margin: 0; padding: 0;'>Gas Station Manager</h2>", unsafe_allow_html=True)
+            st.image(str(logo_path), use_container_width=True)
 
-    # Add a bit of space before the form
-    st.markdown("<br>", unsafe_allow_html=True)    
+        # Add a bit of space before the form
+        st.markdown("<br>", unsafe_allow_html=True)
 
-    # --- SYSTEM STATUS WIDGET ---
-    try:
-        sys_row = conn.execute("SELECT value FROM system_settings WHERE key='maintenance_mode'").fetchone()
-        if sys_row and sys_row[0] == '1':
-            st.warning("🛠️ **MAINTENANCE MODE**\n\nLogin restricted to Administrators.", icon="⚠️")
-        else:
-            st.caption("🟢 System Status: **Operational**")
-    except Exception:
-        pass
-
-    with st.form("login_form"):
-        cred = st.text_input("Username or Email")
-        pw = st.text_input("Password", type="password")
-        ack = st.checkbox("I acknowledge the disclaimer below")
-        
-        submitted = st.form_submit_button("Login", width="stretch")
-        
-        if submitted:
-            if not ack:
-                st.error("You must acknowledge the disclaimer to log in.")
+        # --- SYSTEM STATUS WIDGET ---
+        try:
+            sys_row = conn.execute("SELECT value FROM system_settings WHERE key='maintenance_mode'").fetchone()
+            if sys_row and sys_row[0] == '1':
+                st.warning("🛠️ **MAINTENANCE MODE**\n\nLogin restricted to Administrators.", icon="⚠️")
             else:
-                ok, msg = login_user_streamlit(st, cred, pw)
-                if ok:
-                    st.rerun()
+                st.caption("🟢 System Status: **Operational**")
+        except Exception:
+            pass
+
+        with st.form("login_form"):
+            cred = st.text_input("Username or Email")
+            pw = st.text_input("Password", type="password")
+            ack = st.checkbox("I acknowledge the disclaimer below")
+
+            submitted = st.form_submit_button("Login", width="stretch")
+
+            if submitted:
+                if not ack:
+                    st.error("You must acknowledge the disclaimer to log in.")
                 else:
-                    st.error(msg)
+                    ok, msg = login_user_streamlit(st, cred, pw)
+                    if ok:
+                        st.rerun()
+                    else:
+                        st.error(msg)
 
-    # --- FORGOT PASSWORD ---
-    # The 'type' parameter for st.button does not accept "link". Using "secondary" to fix the error.
-    if st.button("Forgot Password?", type="secondary"):
-        st.session_state['show_forgot_pw'] = True
+        # --- FORGOT PASSWORD ---
+        # The 'type' parameter for st.button does not accept "link". Using "secondary" to fix the error.
+        if st.button("Forgot Password?", type="secondary"):
+            st.session_state['show_forgot_pw'] = True
 
-    if st.session_state.get('show_forgot_pw'):
-        with st.form("forgot_pw_form"):
-            st.subheader("Reset Your Password")
-            email_to_reset = st.text_input("Enter your registered email address")
-            if st.form_submit_button("Send Reset Link", width="stretch"):
-                if email_to_reset:
-                    send_password_reset_email(conn, email_to_reset)
-                else:
-                    st.error("Please enter an email address.")
+        if st.session_state.get('show_forgot_pw'):
+            with st.form("forgot_pw_form"):
+                st.subheader("Reset Your Password")
+                email_to_reset = st.text_input("Enter your registered email address")
+                if st.form_submit_button("Send Reset Link", width="stretch"):
+                    if email_to_reset:
+                        send_password_reset_email(conn, email_to_reset)
+                    else:
+                        st.error("Please enter an email address.")
 
+    # Render disclaimer outside the centered login column so it spans the full page content width.
     st.markdown(LOGIN_DISCLAIMER_HTML, unsafe_allow_html=True)
 
     st.stop()
@@ -287,7 +362,7 @@ try:
     # Dictionary mapping page IDs to their render functions
     PAGE_HANDLERS = {
         "Dashboard": dashboard.render,
-        "Role Center": role_center.render,
+        "Personal Dashboard": role_center.render,
         "Shifts": shifts.render,
         "Regions": regions.render,
         "Stations": stations.render,

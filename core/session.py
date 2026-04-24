@@ -33,7 +33,12 @@ def validate_session_token(token: str) -> Optional[int]:
         return None
     user_id, expires_at = row
     try:
-        if datetime.fromisoformat(expires_at) < datetime.utcnow():
+        if isinstance(expires_at, str):
+            expiry_dt = datetime.fromisoformat(expires_at)
+        else:
+            expiry_dt = expires_at
+
+        if expiry_dt and expiry_dt < datetime.utcnow():
             # expired -> delete
             cur.execute("DELETE FROM sessions WHERE token = %s", (token,))
             conn.commit()

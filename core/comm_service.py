@@ -246,13 +246,41 @@ def send_station_qr_email(station_name: str, recipient_email: str, bot_link: str
 def send_password_reset_email(conn, email: str):
     """
     Finds a user by email, generates a new password, updates the DB, and sends it.
+    Checks both users and employees tables to ensure they stay in sync.
     """
-    # 1. Verify user exists
-    user_row = conn.execute("SELECT id, username FROM users WHERE email = %s", (email,)).fetchone()
-    if not user_row:
-        st.error("No account found with that email address.")
+    if not email:
+        st.error("Please enter an email address.")
         return
+
+    email = email.strip()
+    
+    # 1. Verify user exists (Case-insensitive)
+    user_row = conn.execute("SELECT id, username, role FROM users WHERE LOWER(email) = LOWER(%s)", (email,)).fetchone()
+    
+    if not user_row:
+        # Check if they exist in employees table instead
+        emp_row = conn.execute("SELECT name, surname, role FROM employees WHERE LOWER(email) = LOWER(%s)", (email,)).fetchone()
+        if not emp_row:
+            st.error("No account found with that email address.")
+            return
         
+        # User exists in employees but not users - let's create the user record now
+        emp_name, emp_surname, emp_role = emp_row
+        st.info(f"Syncing system account for {emp_name}...")
+        
+        # We need a temporary password to create the user, but we'll reset it immediately anyway
+        temp_alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+        init_pw = ''.join(secrets.choice(temp_alphabet) for _ in range(12))
+        
+        try:
+            from core.auth import create_user
+            create_user(username=email, password=init_pw, email=email, role=emp_role)
+            # Re-fetch the newly created user
+            user_row = conn.execute("SELECT id, username, role FROM users WHERE LOWER(email) = LOWER(%s)", (email,)).fetchone()
+        except Exception as e:
+            st.error(f"Failed to sync user account: {e}")
+            return
+            
     # 1.5 Rate Limit Check (Prevent abuse)
     # Check if a reset was requested for this email in the last 15 minutes
     last_request = conn.execute("""
@@ -263,7 +291,7 @@ def send_password_reset_email(conn, email: str):
         st.error("A password reset was already requested recently. Please check your email or wait 15 minutes.")
         return
 
-    user_id, username = user_row
+    user_id, username, role = user_row
 
     # 2. Generate new password
     alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
@@ -277,7 +305,7 @@ def send_password_reset_email(conn, email: str):
 
         # Update employees table (legacy SHA256)
         new_sha_hash = hashlib.sha256(new_pw.encode()).hexdigest()
-        conn.execute("UPDATE employees SET password = %s WHERE email = %s", (new_sha_hash, email))
+        conn.execute("UPDATE employees SET password = %s WHERE LOWER(email) = LOWER(%s)", (new_sha_hash, email))
         
         conn.commit()
     except Exception as e:
@@ -323,7 +351,7 @@ def send_password_reset_email(conn, email: str):
     msg.attach(MIMEText(html_body, 'html'))
 
     # Attach Logo
-    logo_path = Path(__file__).resolve().parents[1] / "assets" / "OpusLogo.png"
+    logo_path = Path(__file__).resolve().parents[1] / "assets" / "GSAI_Logo.png"
     if logo_path.exists():
         try:
             with open(logo_path, 'rb') as f:

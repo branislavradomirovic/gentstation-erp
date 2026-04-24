@@ -294,7 +294,7 @@ def _render_scope_activity(conn, scope_where, scope_params, user_role, employee_
 
 
 def render(conn):
-    render_page_header("🧭 Role Center")
+    render_page_header("🧭 Personal Dashboard")
 
     user_role = st.session_state.get("user_role", "Employee")
     user_row = _get_current_user(conn)
