@@ -51,6 +51,11 @@ PAGE_CONFIG = {
         "icon": "🚨",
         "roles": ["General Manager", "Region Director", "Region Manager", "Gas Station Manager"],
     },
+    "AI Monitoring": {
+        "id": "AI Monitoring",
+        "icon": "🖥️",
+        "roles": ["General Manager", "Region Director"],
+    },
     "Audit Log": {
         "id": "Audit Log",
         "icon": "🛡️",
@@ -198,12 +203,13 @@ def display_sidebar(conn):
                     ("GM Dashboard", "GM Dashboard", "ai_gm_dashboard"),
                     ("AI Reports", "AI Reports", "ai_reports"),
                     ("AI Alerts", "AI Alerts", "ai_alerts"),
+                    ("AI Monitoring", "AI Monitoring", "ai_monitoring"),
                 ],
             },
             {
                 "title": "⚙️ Settings Management",
                 "pages": [
-                    ("Settings", "Settings", "setting_root"),
+                    ("Settings", "General Settings", "setting_root"),
                     ("Admin Users", "Admin Users", "setting_admin_users"),
                     ("Help", "Help", "setting_help"),
                 ],

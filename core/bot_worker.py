@@ -42,10 +42,6 @@ import signal
 import subprocess
 import socket
 import tempfile
-try:
-    import psutil
-except ImportError:
-    psutil = None
 import time
 import uuid
 from contextlib import suppress
@@ -81,7 +77,6 @@ logger = logging.getLogger("bot_worker")
 # ---------------------------------------------------------------------------
 BOT_STATUS_KEY = os.getenv("DB_STATUS_KEY", "telegram_bot_status")
 BOT_HEARTBEAT_INTERVAL = int(os.getenv("HEARTBEAT_INTERVAL_SECONDS", "30"))
-BOT_MEMORY_LIMIT_MB = int(os.getenv("BOT_WORKER_MEMORY_LIMIT_MB", "1024"))
 RETRY_BASE_SECONDS = int(os.getenv("TELEGRAM_RETRY_BASE_SECONDS", "10"))
 RETRY_MAX_SECONDS = int(os.getenv("TELEGRAM_RETRY_MAX_SECONDS", "180"))
 MAX_VIDEO_SIZE_MB = int(os.getenv("MAX_VIDEO_SIZE_MB", "300"))
@@ -345,41 +340,8 @@ async def update_bot_status(status: str, details: str | None = None) -> None:
     await asyncio.to_thread(_work)
 
 
-async def record_worker_health() -> None:
-    """Captures CPU and Memory usage and enforces limits."""
-    if psutil is None:
-        logger.debug("psutil not installed; skipping health recording.")
-        return
-    def _work():
-        try:
-            process = psutil.Process(os.getpid())
-            cpu = process.cpu_percent(interval=None)
-            mem = process.memory_info().rss / (1024 * 1024)
-            
-            conn = get_connection()
-            cur = conn.cursor()
-            
-            cur.execute("SELECT value FROM system_settings WHERE key='bot_worker_memory_limit'")
-            row = cur.fetchone()
-            limit = int(row[0]) if row and row[0] else BOT_MEMORY_LIMIT_MB
-
-            cur.execute(
-                "INSERT INTO worker_health_logs (worker_name, cpu_percent, memory_mb) VALUES (%s, %s, %s)",
-                ("bot_worker", cpu, mem)
-            )
-            conn.commit()
-            conn.close()
-
-            if mem > limit:
-                logger.error("FATAL: Memory limit exceeded (Current: %.1f MB | Limit: %d MB). Restarting...", mem, limit)
-                os.kill(os.getpid(), signal.SIGTERM)
-        except Exception as e:
-            logger.debug("Failed to record bot health: %s", e)
-    await asyncio.to_thread(_work)
-
-
 async def db_record_redis_health(is_online: bool, details: str | None = None) -> None:
-    """Records Redis health status to the database for Monitoring charts."""
+    """Records Redis health status to the database."""
     def _work() -> None:
         conn = None
         try:
@@ -400,7 +362,6 @@ async def db_record_redis_health(is_online: bool, details: str | None = None) ->
                 with suppress(Exception):
                     conn.close()
     await asyncio.to_thread(_work)
-
 
 # ---------------------------------------------------------------------------
 # Redis queue
@@ -470,7 +431,6 @@ async def heartbeat_loop() -> None:
         try:
             if bot_running_event.is_set():
                 await update_bot_status("online")
-                await record_worker_health()
                 # Also ping Redis and record its health
                 try:
                     redis_client_for_ping = await get_redis()

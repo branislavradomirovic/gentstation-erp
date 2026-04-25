@@ -7,7 +7,9 @@ Supports both local development and Docker deployment.
 
 import os
 import logging
+import time
 import psycopg2
+from psycopg2 import pool
 from psycopg2 import sql
 from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
@@ -22,6 +24,9 @@ DB_USER = os.getenv("DB_USER", "gentstation_user")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "secure_password")
 _RESOLVED_DB_HOST = None
 _SCHEMA_INITIALIZED = False
+_POOL = None
+_START_TIME = time.time()
+SLOW_QUERY_THRESHOLD = float(os.getenv("DB_SLOW_QUERY_THRESHOLD", "1.0"))
 logger = logging.getLogger("gentstation.database")
 
 
@@ -62,10 +67,31 @@ class CompatCursor:
 
     def execute(self, query, params=None):
         query = _translate_placeholders(query)
-        if params is None:
-            self._cursor.execute(query)
-        else:
-            self._cursor.execute(query, params)
+        start_time = time.time()
+        try:
+            if params is None:
+                self._cursor.execute(query)
+            else:
+                self._cursor.execute(query, params)
+        finally:
+            duration = time.time() - start_time
+            if duration > SLOW_QUERY_THRESHOLD:
+                query_snippet = query.strip().replace("\n", " ")
+                logger.warning(
+                    "DB SLOW QUERY (%.2fs): %s | Params: %s",
+                    duration, query_snippet, params
+                )
+                # Persist slow query to database (avoid logging the log itself)
+                if "INSERT INTO slow_query_logs" not in query:
+                    try:
+                        # Use a separate cursor to avoid interfering with current results
+                        with self._connection._conn.cursor() as log_cur:
+                            log_cur.execute(
+                                "INSERT INTO slow_query_logs (query_text, duration_seconds, params) VALUES (%s, %s, %s)",
+                                (query_snippet, duration, str(params))
+                            )
+                    except Exception:
+                        pass # Prevent logging failures from crashing the app
 
         self._lastrowid = None
         lowered = query.lstrip().lower()
@@ -113,8 +139,9 @@ class CompatCursor:
 class CompatConnection:
     """Adapter that exposes sqlite-like convenience methods on psycopg2."""
 
-    def __init__(self, conn):
+    def __init__(self, conn, pool=None):
         self._conn = conn
+        self._pool = pool
 
     def cursor(self, *args, **kwargs):
         return CompatCursor(self, self._conn.cursor(*args, **kwargs))
@@ -132,7 +159,16 @@ class CompatConnection:
         return self._conn.rollback()
 
     def close(self):
-        return self._conn.close()
+        if self._pool is not None:
+            self._pool.putconn(self._conn)
+        else:
+            self._conn.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
 
     def __getattr__(self, name):
         return getattr(self._conn, name)
@@ -145,38 +181,85 @@ class DatabaseConnection:
     @staticmethod
     def get_connection():
         """Get a database connection (singleton pattern for simplicity)."""
-        global _RESOLVED_DB_HOST
-        try:
-            conn = _connect(DB_HOST)
-            _RESOLVED_DB_HOST = DB_HOST
-            return conn
-        except psycopg2.Error as e:
-            # Local development often runs Streamlit outside Docker, where the
-            # `postgres` service name is not resolvable. Fall back to localhost
-            # automatically in that case so the same .env can serve both modes.
-            if DB_HOST == "postgres":
-                try:
-                    if _RESOLVED_DB_HOST != "localhost":
-                        logger.debug("DB_HOST=postgres not reachable; retrying with localhost for local development.")
-                    _RESOLVED_DB_HOST = "localhost"
-                    return _connect("localhost")
-                except psycopg2.Error as fallback_error:
-                    logger.error("Database connection failed: %s", fallback_error)
+        global _RESOLVED_DB_HOST, _POOL
+        
+        if _POOL is None:
+            # Resolve host first
+            host_to_use = DB_HOST
+            try:
+                test_conn = _connect(DB_HOST)
+                test_conn.close()
+                _RESOLVED_DB_HOST = DB_HOST
+            except psycopg2.Error:
+                if DB_HOST == "postgres":
+                    try:
+                        test_conn = _connect("localhost")
+                        test_conn.close()
+                        _RESOLVED_DB_HOST = "localhost"
+                        host_to_use = "localhost"
+                    except psycopg2.Error as e:
+                        logger.error("Database connection failed: %s", e)
+                        raise
+                else:
                     raise
 
-            logger.error("Database connection failed: %s", e)
-            raise
+            # Initialize the pool
+            _POOL = pool.ThreadedConnectionPool(
+                1, 100,
+                host=host_to_use,
+                port=DB_PORT,
+                database=DB_NAME,
+                user=DB_USER,
+                password=DB_PASSWORD,
+                connect_timeout=5
+            )
+            logger.info("Database connection pool initialized (host: %s)", host_to_use)
+
+        return _POOL.getconn()
+
+def get_system_uptime():
+    """Returns the seconds elapsed since the database module was loaded."""
+    global _START_TIME
+    return time.time() - _START_TIME
 
 def get_connection():
     """Wrapper function for backward compatibility."""
     global _SCHEMA_INITIALIZED
-    conn = CompatConnection(DatabaseConnection.get_connection())
-    # Create tables if they don't exist, but only once per process to avoid
-    # repeated noisy logs on every Streamlit rerun.
-    if not _SCHEMA_INITIALIZED:
-        ensure_schema(conn)
-        _SCHEMA_INITIALIZED = True
-    return conn
+    
+    max_retries = 3
+    retry_delay = 2  # seconds
+
+    for attempt in range(max_retries):
+        try:
+            raw_conn = DatabaseConnection.get_connection()
+            conn = CompatConnection(raw_conn, pool=_POOL)
+            
+            # Create tables if they don't exist, but only once per process to avoid
+            # repeated noisy logs on every Streamlit rerun.
+            if not _SCHEMA_INITIALIZED:
+                ensure_schema(conn)
+                _SCHEMA_INITIALIZED = True
+            return conn
+            
+        except (psycopg2.OperationalError, psycopg2.InterfaceError, psycopg2.PoolError) as e:
+            if attempt < max_retries - 1:
+                logger.warning("Database connection attempt %d failed: %s. Retrying in %ds...", attempt + 1, e, retry_delay)
+                time.sleep(retry_delay)
+            else:
+                logger.error("Database connection failed after %d attempts: %s", max_retries, e)
+                raise
+
+def get_pool_stats():
+    """Returns statistics about the database connection pool."""
+    global _POOL
+    if _POOL is None:
+        return None
+    return {
+        "minconn": _POOL.minconn,
+        "maxconn": _POOL.maxconn,
+        "used": len(_POOL._used),
+        "available": len(_POOL._pool)
+    }
 
 def ensure_schema(conn):
     """
@@ -290,13 +373,27 @@ def ensure_schema(conn):
             role VARCHAR(100),
             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             processed INTEGER DEFAULT 0,
+            status VARCHAR(50) DEFAULT 'pending',
+            processing_started_ts TIMESTAMP,
+            retry_count INTEGER DEFAULT 0,
+            processed_ts TIMESTAMP,
             data_json JSONB,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         """)
 
+        cursor.execute("ALTER TABLE submissions ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'pending';")
+        cursor.execute("ALTER TABLE submissions ADD COLUMN IF NOT EXISTS processing_started_ts TIMESTAMP;")
+
         # Employee shift logs table
+        cursor.execute("""
+        ALTER TABLE submissions ADD COLUMN IF NOT EXISTS retry_count INTEGER DEFAULT 0;
+        """)
+        cursor.execute("""
+        ALTER TABLE submissions ADD COLUMN IF NOT EXISTS processed_ts TIMESTAMP;
+        """)
+
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS employee_shifts (
             id SERIAL PRIMARY KEY,
@@ -386,6 +483,49 @@ def ensure_schema(conn):
         );
         """)
         
+        # Redis Health Logs table
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS redis_health_logs (
+            id SERIAL PRIMARY KEY,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            is_online BOOLEAN NOT NULL,
+            details TEXT
+        );
+        """)
+
+        # AI Inference Latency table
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS ai_inference_latency (
+            id SERIAL PRIMARY KEY,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            model_name VARCHAR(255),
+            latency_seconds DECIMAL(10, 2),
+            submission_id INTEGER REFERENCES submissions(id) ON DELETE SET NULL
+        );
+        """)
+
+        # Worker Health Logs table
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS worker_health_logs (
+            id SERIAL PRIMARY KEY,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            worker_name VARCHAR(50),
+            cpu_percent DECIMAL(5, 2),
+            memory_mb DECIMAL(10, 2)
+        );
+        """)
+
+        # Slow Query Logs table
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS slow_query_logs (
+            id SERIAL PRIMARY KEY,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            query_text TEXT,
+            duration_seconds DECIMAL(10, 4),
+            params TEXT
+        );
+        """)
+
         # AI Jobs table
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS ai_jobs (
@@ -489,6 +629,22 @@ def ensure_schema(conn):
         CREATE INDEX IF NOT EXISTS idx_ai_reports_station_id 
         ON ai_reports(station_id);
         """)
+        cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_redis_health_logs_timestamp
+        ON redis_health_logs(timestamp);
+        """)
+        cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_ai_latency_timestamp
+        ON ai_inference_latency(timestamp);
+        """)
+        cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_worker_health_timestamp
+        ON worker_health_logs(timestamp);
+        """)
+        cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_slow_queries_timestamp
+        ON slow_query_logs(timestamp);
+        """)
 
         def sync_serial_sequence(table_name: str, column_name: str = "id"):
             seq_row = cursor.execute(
@@ -525,6 +681,10 @@ def ensure_schema(conn):
             "ai_alerts",
             "ai_jobs",
             "ai_reports",
+            "redis_health_logs",
+            "ai_inference_latency",
+            "worker_health_logs",
+            "slow_query_logs",
         ):
             sync_serial_sequence(table_name)
 

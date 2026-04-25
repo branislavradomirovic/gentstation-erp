@@ -183,11 +183,16 @@ def ensure_schema(conn):
             role VARCHAR(100),
             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             processed INTEGER DEFAULT 0,
+            status VARCHAR(50) DEFAULT 'pending',
+            processing_started_ts TIMESTAMP,
             data_json JSONB,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         """)
+        
+        cursor.execute("ALTER TABLE submissions ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'pending';")
+        cursor.execute("ALTER TABLE submissions ADD COLUMN IF NOT EXISTS processing_started_ts TIMESTAMP;")
         
         # AI Alerts table
         cursor.execute("""

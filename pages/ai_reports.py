@@ -3,6 +3,7 @@ import streamlit as st
 import pandas as pd
 import json
 from ui.header import render_page_header
+from core.activity_logger import log_activity
 
 def get_employee_id_from_user_id(conn, user_id):
     """Helper to get employees.id from users.id for permission scoping."""
@@ -85,7 +86,7 @@ def render(conn):
     queue_query = f"""
         SELECT 
             s.id, s.timestamp, st.name as station_name, 
-            e.name || ' ' || e.surname as employee_name, s.processed
+            e.name || ' ' || e.surname as employee_name, s.processed, s.retry_count
         FROM submissions s
         JOIN stations st ON s.station_id = st.id
         JOIN employees e ON s.employee_id = e.id
@@ -98,7 +99,7 @@ def render(conn):
         st.info("No pending or failed submissions in the queue for your scope.")
     else:
         queue_df['status'] = queue_df['processed'].map({0: 'Pending', -1: 'Failed'})
-        st.dataframe(queue_df[['id', 'timestamp', 'station_name', 'employee_name', 'status']], width="stretch", hide_index=True)
+        st.dataframe(queue_df[['id', 'timestamp', 'station_name', 'employee_name', 'retry_count', 'status']], width="stretch", hide_index=True)
 
         failed_submissions = queue_df[queue_df['processed'] == -1]
         if not failed_submissions.empty:
@@ -110,10 +111,17 @@ def render(conn):
                 selected_id = st.selectbox("Select a failed submission ID to retry:", options=failed_submissions['id'].tolist())
             with col2:
                 st.write("") # for vertical alignment
-                if st.button("🔄 Retry Selected Submission", type="primary", width="stretch"):
+                if st.button("🔄 Reset Retries & Re-queue", type="primary", width="stretch"):
                     if selected_id:
-                        conn.execute("UPDATE submissions SET processed = 0 WHERE id = %s", (selected_id,))
+                        conn.execute("""
+                            UPDATE submissions 
+                            SET processed = 0, 
+                                status = 'pending', 
+                                retry_count = 0 
+                            WHERE id = %s
+                        """, (selected_id,))
                         conn.commit()
+                        log_activity(conn, "AI_RETRY_RESET", f"Manually reset retries for submission ID {selected_id}")
                         st.success(f"Submission ID {selected_id} has been re-queued for processing.")
                         st.toast("Task re-queued!", icon="🔄")
                         st.rerun()

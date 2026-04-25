@@ -30,17 +30,17 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 def create_user(username: str, password: str, email: Optional[str], role: str = "Employee") -> Dict[str, Any]:
     """Create new user in users table. Returns user row dict."""
-    conn = get_connection()
-    cur = conn.cursor()
-    pw_hash = hash_password(password)
-    cur.execute("""
-        INSERT INTO users (username, email, password_hash, role, is_active, created_at)
-        VALUES (%s, %s, %s, %s, TRUE, %s)
-        RETURNING id
-    """, (username, email, pw_hash, role, datetime.utcnow().isoformat()))
-    uid = cur.fetchone()[0]
-    conn.commit()
-    return {"id": uid, "username": username, "email": email, "role": role}
+    with get_connection() as conn:
+        cur = conn.cursor()
+        pw_hash = hash_password(password)
+        cur.execute("""
+            INSERT INTO users (username, email, password_hash, role, is_active, created_at)
+            VALUES (%s, %s, %s, %s, TRUE, %s)
+            RETURNING id
+        """, (username, email, pw_hash, role, datetime.utcnow().isoformat()))
+        uid = cur.fetchone()[0]
+        conn.commit()
+        return {"id": uid, "username": username, "email": email, "role": role}
 
 def authenticate_user(username_or_email: str, password: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """
@@ -52,69 +52,69 @@ def authenticate_user(username_or_email: str, password: str) -> Tuple[Optional[D
 
     username_or_email = username_or_email.strip()
     
-    conn = get_connection()
-    cur = conn.cursor()
-    # Try username (exact), then email (case-insensitive)
-    cur.execute("""
-        SELECT id, username, email, password_hash, role, is_active, failed_attempts, locked_until, dark_mode_enabled
-        FROM users WHERE username = %s OR LOWER(email) = LOWER(%s)
-    """, (username_or_email, username_or_email))
-    
-    row = cur.fetchone()
-    if not row:
-        return None, "Invalid credentials"
-
-    uid, uname, uemail, phash, role, active, attempts, locked_until, dark_mode = row
-
-    # Check Maintenance Mode
-    try:
-        cur.execute("SELECT value FROM system_settings WHERE key='maintenance_mode'")
-        m_row = cur.fetchone()
-        if m_row and m_row[0] == '1':
-            if role != "General Manager":
-                return None, "⚠️ System is in Maintenance Mode. Admin login only."
-    except Exception:
-        pass # Fail open if settings table issue (schema not updated yet)
-
-    # 1. Check if locked
-    if locked_until:
-        # Handle both string (from some DB drivers) and datetime objects (from psycopg2)
-        if isinstance(locked_until, str):
-            try:
-                lock_time = datetime.fromisoformat(locked_until)
-            except ValueError:
-                lock_time = None
-        else:
-            lock_time = locked_until
+    with get_connection() as conn:
+        cur = conn.cursor()
+        # Try username (exact), then email (case-insensitive)
+        cur.execute("""
+            SELECT id, username, email, password_hash, role, is_active, failed_attempts, locked_until, dark_mode_enabled
+            FROM users WHERE username = %s OR LOWER(email) = LOWER(%s)
+        """, (username_or_email, username_or_email))
         
-        if lock_time and lock_time > datetime.utcnow():
-            remaining_mins = int((lock_time - datetime.utcnow()).total_seconds() / 60) + 1
-            return None, f"Account locked. Try again in {remaining_mins} minutes."
+        row = cur.fetchone()
+        if not row:
+            return None, "Invalid credentials"
 
-    if not active:
-        return None, "Account deactivated."
+        uid, uname, uemail, phash, role, active, attempts, locked_until, dark_mode = row
 
-    # 2. Verify Password
-    if verify_password(password, phash):
-        # Success: Reset counters
-        cur.execute("UPDATE users SET failed_attempts = 0, locked_until = NULL WHERE id = %s", (uid,))
-        conn.commit()
-        
-        user = {"id": uid, "username": uname, "email": uemail, "role": role, "is_active": bool(active), "dark_mode": bool(dark_mode)}
-        return user, None
-    else:
-        # Failure: Increment counters
-        attempts = (attempts or 0) + 1
-        new_lock = None
-        msg = "Invalid credentials"
-        
-        if attempts >= MAX_LOGIN_ATTEMPTS:
-            new_lock = (datetime.utcnow() + timedelta(minutes=LOCKOUT_DURATION_MINUTES)).isoformat()
-            msg = f"Account locked due to too many failed attempts ({LOCKOUT_DURATION_MINUTES} min)."
+        # Check Maintenance Mode
+        try:
+            cur.execute("SELECT value FROM system_settings WHERE key='maintenance_mode'")
+            m_row = cur.fetchone()
+            if m_row and m_row[0] == '1':
+                if role != "General Manager":
+                    return None, "⚠️ System is in Maintenance Mode. Admin login only."
+        except Exception:
+            pass # Fail open if settings table issue (schema not updated yet)
+
+        # 1. Check if locked
+        if locked_until:
+            # Handle both string (from some DB drivers) and datetime objects (from psycopg2)
+            if isinstance(locked_until, str):
+                try:
+                    lock_time = datetime.fromisoformat(locked_until)
+                except ValueError:
+                    lock_time = None
+            else:
+                lock_time = locked_until
             
-        cur.execute("UPDATE users SET failed_attempts = %s, locked_until = %s WHERE id = %s", (attempts, new_lock, uid))
-        conn.commit()
-        return None, msg
+            if lock_time and lock_time > datetime.utcnow():
+                remaining_mins = int((lock_time - datetime.utcnow()).total_seconds() / 60) + 1
+                return None, f"Account locked. Try again in {remaining_mins} minutes."
+
+        if not active:
+            return None, "Account deactivated."
+
+        # 2. Verify Password
+        if verify_password(password, phash):
+            # Success: Reset counters
+            cur.execute("UPDATE users SET failed_attempts = 0, locked_until = NULL WHERE id = %s", (uid,))
+            conn.commit()
+            
+            user = {"id": uid, "username": uname, "email": uemail, "role": role, "is_active": bool(active), "dark_mode": bool(dark_mode)}
+            return user, None
+        else:
+            # Failure: Increment counters
+            attempts = (attempts or 0) + 1
+            new_lock = None
+            msg = "Invalid credentials"
+            
+            if attempts >= MAX_LOGIN_ATTEMPTS:
+                new_lock = (datetime.utcnow() + timedelta(minutes=LOCKOUT_DURATION_MINUTES)).isoformat()
+                msg = f"Account locked due to too many failed attempts ({LOCKOUT_DURATION_MINUTES} min)."
+                
+            cur.execute("UPDATE users SET failed_attempts = %s, locked_until = %s WHERE id = %s", (attempts, new_lock, uid))
+            conn.commit()
+            return None, msg
 
 def login_user_streamlit(st, username_or_email: str, password: str):
     user, error_msg = authenticate_user(username_or_email, password)

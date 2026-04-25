@@ -1,11 +1,27 @@
-streamlit
-pandas
-folium
-streamlit-folium
-python-dotenv
-python-telegram-bot
-bcrypt
-ollama
-requests
-psycopg2-binary
-opencv-python-headless
+# UI / Dashboard
+streamlit>=1.30.0
+pandas>=2.0.0
+folium>=0.15.0
+streamlit-folium>=0.16.0
+
+# Core
+python-dotenv>=1.0.0
+requests>=2.31.0
+bcrypt>=4.1.0
+
+# Telegram Bot
+python-telegram-bot>=20
+psutil>=5.9.0
+
+# Database
+psycopg2-binary>=2.9.9
+
+# Queue
+redis>=5.0.0
+
+# AI / Processing
+opencv-python-headless>=4.8.0
+ollama>=0.1.6
+
+# Optional (recommended for future scaling)
+asyncpg>=0.29.0

@@ -13,6 +13,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from contextlib import closing
 
 import requests
 from dotenv import load_dotenv
@@ -28,8 +29,8 @@ except Exception:  # pragma: no cover - optional dependency
 
 # Configuration
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "neural-chat")
-OLLAMA_VISION_MODEL = os.getenv("OLLAMA_VISION_MODEL", "").strip()
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:14b-instruct")
+OLLAMA_VISION_MODEL = os.getenv("OLLAMA_VISION_MODEL", "bakllava").strip()
 OLLAMA_LOCAL_ONLY = os.getenv("OLLAMA_LOCAL_ONLY", "1").strip().lower() in {"1", "true", "yes", "on"}
 FRAME_SAMPLES = int(os.getenv("VIDEO_FRAME_SAMPLES", "6"))
 MAX_FRAME_DIMENSION = int(os.getenv("VIDEO_MAX_FRAME_DIMENSION", "768"))
@@ -103,7 +104,7 @@ def _encode_frame_to_base64(frame) -> str:
     return base64.b64encode(buffer.tobytes()).decode("utf-8")
 
 
-def _sample_frames(video_path: str, sample_count: int = FRAME_SAMPLES) -> List[VideoFrame]:
+def sample_frames(video_path: str, sample_count: int = FRAME_SAMPLES) -> List[VideoFrame]:
     if cv2 is None:
         return []
 
@@ -213,8 +214,33 @@ If the image evidence is weak or partially obscured, lower confidence accordingl
 
 
 def _select_model(use_images: bool) -> str:
-    if use_images and OLLAMA_VISION_MODEL:
-        return OLLAMA_VISION_MODEL
+    try:
+        from core.database import get_connection
+        with closing(get_connection()) as conn:
+            cur = conn.cursor()
+            
+            # 1. Check if Auto-Scale is active
+            cur.execute("SELECT value FROM system_settings WHERE key='ai_auto_scale_active'")
+            row_scale = cur.fetchone()
+            if row_scale and row_scale[0] == '1':
+                cur.execute("SELECT value FROM system_settings WHERE key='ai_auto_scale_down_model'")
+                row_failover = cur.fetchone()
+                if row_failover and row_failover[0]:
+                    return row_failover[0]
+
+            # 2. Check for standard overrides
+            if use_images:
+                cur.execute("SELECT value FROM system_settings WHERE key='ollama_vision_model_override'")
+                row = cur.fetchone()
+                if row and row[0]: return row[0]
+                if OLLAMA_VISION_MODEL: return OLLAMA_VISION_MODEL
+
+            cur.execute("SELECT value FROM system_settings WHERE key='ollama_model_override'")
+            row = cur.fetchone()
+            if row and row[0]: return row[0]
+    except Exception as e:
+        logger.debug("Could not fetch model override from DB: %s", e)
+
     return OLLAMA_MODEL
 
 
@@ -252,18 +278,20 @@ def _candidate_base_urls():
     return candidates
 
 
-def _call_ollama(prompt: str, model: str, images: Optional[List[str]] = None) -> str:
+def call_ollama(prompt: str, model: str, images: Optional[List[str]] = None, is_json: bool = True) -> str:
     payload = {
         "model": model,
         "prompt": prompt,
         "stream": False,
-        "format": "json",
         "temperature": 0.2,
     }
+    if is_json:
+        payload["format"] = "json"
+
     if images:
         payload["images"] = images
 
-    last_error = None
+    logger.info("Calling Ollama model '%s' at %s...", model, OLLAMA_BASE_URL)
     for base_url in _candidate_base_urls():
         try:
             response = requests.post(
@@ -363,14 +391,14 @@ def parse_station_video(video_path: str) -> dict:
     vision_ready = cv2 is not None and bool(OLLAMA_VISION_MODEL)
     frames: List[VideoFrame] = []
     if vision_ready:
-        frames = _sample_frames(video_path, FRAME_SAMPLES)
+        frames = sample_frames(video_path, FRAME_SAMPLES)
     elif cv2 is None:
         logger.debug("OpenCV is not installed; using metadata-only analysis.")
     elif not OLLAMA_VISION_MODEL:
         logger.debug("OLLAMA_VISION_MODEL is not configured; using metadata-only analysis.")
 
     use_images = bool(frames) and vision_ready
-    model = _select_model(use_images)
+    model = _select_model(use_images) # Still use internal selector for production logic
 
     logger.debug("Using model: %s (%s)", model, "frames attached" if use_images else "metadata fallback")
 
@@ -378,8 +406,9 @@ def parse_station_video(video_path: str) -> dict:
 
     try:
         image_payload = [frame.image_b64 for frame in frames] if use_images else None
-        response_text = _call_ollama(prompt, model, image_payload)
+        response_text = call_ollama(prompt, model, image_payload)
         result = _normalize_result(_parse_result(response_text))
+        result["_model_used"] = model
         logger.debug(
             "Analysis complete: C=%s S=%s St=%s M=%s",
             result["cleanliness_score"],
@@ -409,8 +438,9 @@ def parse_station_video(video_path: str) -> dict:
         if use_images:
             try:
                 fallback_prompt = _build_prompt(metadata, [], False)
-                response_text = _call_ollama(fallback_prompt, OLLAMA_MODEL, None)
+                response_text = call_ollama(fallback_prompt, OLLAMA_MODEL, None)
                 result = _normalize_result(_parse_result(response_text))
+                result["_model_used"] = OLLAMA_MODEL
                 result["summary"] = (
                     f"{result['summary']} (Vision fallback was unavailable; result used metadata-only analysis.)"
                 )

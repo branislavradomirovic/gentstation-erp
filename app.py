@@ -36,7 +36,7 @@ def start_background_workers():
     """
     project_root = Path(__file__).resolve().parent
     bot_lock_file = Path("/tmp/gentstationai_bot_worker.lock")
-    ai_lock_file = Path("/tmp/gentstationai_ai_worker_v1.lock")
+    ai_lock_file = Path("/tmp/gentstationai_ai_worker.lock")
 
     def _pid_alive(pid: int) -> bool:
         if pid <= 0:
@@ -210,6 +210,7 @@ import pages.admin_users as admin_users
 import pages.gm_dashboard as gm_dashboard
 import pages.ai_reports as ai_reports
 import pages.ai_alerts as ai_alerts
+import pages.ai_monitoring as ai_monitoring
 import pages.audit_log as audit_log
 import pages.settings as settings
 import pages.help as page_help
@@ -231,168 +232,166 @@ def _build_db_unavailable_message(error: Exception) -> str:
     )
 
 
-# Initialize Database
+conn = None
 try:
-    conn = get_connection()
-except Exception as db_error:
-    st.error(_build_db_unavailable_message(db_error))
-    st.info(
-        "If you are running locally, start PostgreSQL on your machine or run the Docker stack. "
-        "If you are using Docker, verify the `postgres` service is up and healthy."
-    )
-    st.stop()
+    # Initialize Database
+    try:
+        conn = get_connection()
+    except Exception as db_error:
+        st.error(_build_db_unavailable_message(db_error))
+        st.info(
+            "If you are running locally, start PostgreSQL on your machine or run the Docker stack. "
+            "If you are using Docker, verify the `postgres` service is up and healthy."
+        )
+        st.stop()
 
-# Initialize workers only after the database is reachable.
-start_background_workers()
+    # Initialize workers only after the database is reachable.
+    start_background_workers()
 
-# --- 3. SESSION PERSISTENCE ---
-def restore_session():
-    """Checks for an existing session token to keep the user logged in."""
-    token = st.session_state.get("session_token")
-    if token and "user_id" not in st.session_state:
-        uid = validate_session_token(token)
-        if uid:
-            row = conn.execute(
-                "SELECT id, username, email, role, dark_mode_enabled FROM users WHERE id = ?", (uid,)
-            ).fetchone()
-            if row:
-                st.session_state["user_id"] = row[0]
-                st.session_state["username"] = row[1]
-                st.session_state["user_role"] = row[3]
-                st.session_state["dark_mode"] = bool(row[4])
-            else:
-                if "session_token" in st.session_state:
-                    del st.session_state["session_token"]
-
-if "session_token" in st.session_state:
-    restore_session()
-
-# --- 4. LOGIN INTERFACE ---
-if "user_id" not in st.session_state:
-    st.markdown(
-        """
-        <style>
-            /* Pull login content to the top of the viewport. */
-            [data-testid="stAppViewContainer"] .main .block-container {
-                padding-top: 0.4rem !important;
-                margin-top: 0 !important;
-            }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    # Center logo and login form in the same column for visual alignment.
-    _, content_col, _ = st.columns([1, 1.6, 1], vertical_alignment="top")
-    with content_col:
-        logo_path = Path("assets/GSAI_Horizontal.png")
-        if not logo_path.exists():
-            logo_path = Path("assets/OpusLogo.png")
-        if logo_path.exists():
-            st.image(str(logo_path), use_container_width=True)
-
-        # Add a bit of space before the form
-        st.markdown("<br>", unsafe_allow_html=True)
-
-        # --- SYSTEM STATUS WIDGET ---
-        try:
-            sys_row = conn.execute("SELECT value FROM system_settings WHERE key='maintenance_mode'").fetchone()
-            if sys_row and sys_row[0] == '1':
-                st.warning("🛠️ **MAINTENANCE MODE**\n\nLogin restricted to Administrators.", icon="⚠️")
-            else:
-                st.caption("🟢 System Status: **Operational**")
-        except Exception:
-            pass
-
-        with st.form("login_form"):
-            cred = st.text_input("Username or Email")
-            pw = st.text_input("Password", type="password")
-            ack = st.checkbox("I acknowledge the disclaimer below")
-
-            submitted = st.form_submit_button("Login", width="stretch")
-
-            if submitted:
-                if not ack:
-                    st.error("You must acknowledge the disclaimer to log in.")
+    # --- 3. SESSION PERSISTENCE ---
+    def restore_session():
+        """Checks for an existing session token to keep the user logged in."""
+        token = st.session_state.get("session_token")
+        if token and "user_id" not in st.session_state:
+            uid = validate_session_token(token)
+            if uid:
+                # Using standard parameter replacement to avoid '? vs %s' confusion
+                row = conn.execute(
+                    "SELECT id, username, email, role, dark_mode_enabled FROM users WHERE id = %s", (uid,)
+                ).fetchone()
+                if row:
+                    st.session_state["user_id"] = row[0]
+                    st.session_state["username"] = row[1]
+                    st.session_state["user_role"] = row[3]
+                    st.session_state["dark_mode"] = bool(row[4])
                 else:
-                    ok, msg = login_user_streamlit(st, cred, pw)
-                    if ok:
-                        st.rerun()
+                    if "session_token" in st.session_state:
+                        del st.session_state["session_token"]
+
+    if "session_token" in st.session_state:
+        restore_session()
+
+    # --- 4. LOGIN INTERFACE ---
+    if "user_id" not in st.session_state:
+        st.markdown(
+            """
+            <style>
+                /* Pull login content to the top of the viewport. */
+                [data-testid="stAppViewContainer"] .main .block-container {
+                    padding-top: 0.4rem !important;
+                    margin-top: 0 !important;
+                }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        # Center logo and login form in the same column for visual alignment.
+        _, content_col, _ = st.columns([1, 1.6, 1], vertical_alignment="top")
+        with content_col:
+            logo_path = Path("assets/GSAI_Horizontal.png")
+            if not logo_path.exists():
+                logo_path = Path("assets/OpusLogo.png")
+            if logo_path.exists():
+                st.image(str(logo_path), use_container_width=True)
+
+            # Add a bit of space before the form
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            # --- SYSTEM STATUS WIDGET ---
+            try:
+                sys_row = conn.execute("SELECT value FROM system_settings WHERE key='maintenance_mode'").fetchone()
+                if sys_row and sys_row[0] == '1':
+                    st.warning("🛠️ **MAINTENANCE MODE**\n\nLogin restricted to Administrators.", icon="⚠️")
+                else:
+                    st.caption("🟢 System Status: **Operational**")
+            except Exception:
+                pass
+
+            with st.form("login_form"):
+                cred = st.text_input("Username or Email")
+                pw = st.text_input("Password", type="password")
+                ack = st.checkbox("I acknowledge the disclaimer below")
+
+                submitted = st.form_submit_button("Login", width="stretch")
+
+                if submitted:
+                    if not ack:
+                        st.error("You must acknowledge the disclaimer to log in.")
                     else:
-                        st.error(msg)
+                        ok, msg = login_user_streamlit(st, cred, pw)
+                        if ok:
+                            st.rerun()
+                        else:
+                            st.error(msg)
 
-        # --- FORGOT PASSWORD ---
-        # The 'type' parameter for st.button does not accept "link". Using "secondary" to fix the error.
-        if st.button("Forgot Password?", type="secondary"):
-            st.session_state['show_forgot_pw'] = True
+            # --- FORGOT PASSWORD ---
+            if st.button("Forgot Password?", type="secondary"):
+                st.session_state['show_forgot_pw'] = True
 
-        if st.session_state.get('show_forgot_pw'):
-            with st.form("forgot_pw_form"):
-                st.subheader("Reset Your Password")
-                email_to_reset = st.text_input("Enter your registered email address")
-                if st.form_submit_button("Send Reset Link", width="stretch"):
-                    if email_to_reset:
-                        send_password_reset_email(conn, email_to_reset)
-                    else:
-                        st.error("Please enter an email address.")
+            if st.session_state.get('show_forgot_pw'):
+                with st.form("forgot_pw_form"):
+                    st.subheader("Reset Your Password")
+                    email_to_reset = st.text_input("Enter your registered email address")
+                    if st.form_submit_button("Send Reset Link", width="stretch"):
+                        if email_to_reset:
+                            send_password_reset_email(conn, email_to_reset)
+                        else:
+                            st.error("Please enter an email address.")
 
-    # Render disclaimer outside the centered login column so it spans the full page content width.
-    st.markdown(LOGIN_DISCLAIMER_HTML, unsafe_allow_html=True)
+        # Render disclaimer outside the centered login column so it spans the full page content width.
+        st.markdown(LOGIN_DISCLAIMER_HTML, unsafe_allow_html=True)
 
-    st.stop()
+        st.stop()
 
-# --- 5. AUTHENTICATED APP SHELL ---
-selected_page = display_sidebar(conn)
+    # --- 5. AUTHENTICATED APP SHELL ---
+    selected_page = display_sidebar(conn)
 
-# --- Maintenance Mode Banner ---
-try:
-    m_row = conn.execute("SELECT value FROM system_settings WHERE key='maintenance_mode'").fetchone()
-    if m_row and m_row[0] == '1':
-        st.warning("🚨 **MAINTENANCE MODE ACTIVE** - System access is restricted to General Managers. Some features may be unavailable.", icon="⚠️")
-except Exception:
-    # Fail silently if the table/column doesn't exist yet
-    pass
+    # --- Maintenance Mode Banner ---
+    try:
+        m_row = conn.execute("SELECT value FROM system_settings WHERE key='maintenance_mode'").fetchone()
+        if m_row and m_row[0] == '1':
+            st.warning("🚨 **MAINTENANCE MODE ACTIVE** - System access is restricted to General Managers. Some features may be unavailable.", icon="⚠️")
+    except Exception:
+        pass
 
-# Fallback: If for some reason selected_page is None or empty, default to Dashboard
-if not selected_page:
-    selected_page = "Dashboard"
+    # Fallback
+    if not selected_page:
+        selected_page = "Dashboard"
 
-# --- 6. ROUTING LOGIC ---
-try:
-    # Dictionary mapping page IDs to their render functions
-    PAGE_HANDLERS = {
-        "Dashboard": dashboard.render,
-        "Personal Dashboard": role_center.render,
-        "Shifts": shifts.render,
-        "Regions": regions.render,
-        "Stations": stations.render,
-        "Map View": map_view.render,
-        "Employees": employees.render,
-        "AI Reports": ai_reports.render,
-        "AI Alerts": ai_alerts.render,
-        "Audit Log": audit_log.render,
-        "GM Dashboard": gm_dashboard.render,
-        "Admin Users": admin_users.render,
-        "Settings": settings.render,
-        "Help": page_help.render
-    }
+    # --- 6. ROUTING LOGIC ---
+    try:
+        PAGE_HANDLERS = {
+            "Dashboard": dashboard.render,
+            "Personal Dashboard": role_center.render,
+            "Shifts": shifts.render,
+            "Regions": regions.render,
+            "Stations": stations.render,
+            "Map View": map_view.render,
+            "Employees": employees.render,
+            "AI Reports": ai_reports.render,
+            "AI Alerts": ai_alerts.render,
+            "AI Monitoring": ai_monitoring.render,
+            "Audit Log": audit_log.render,
+            "GM Dashboard": gm_dashboard.render,
+            "Admin Users": admin_users.render,
+            "Settings": settings.render,
+            "Help": page_help.render
+        }
 
-    if selected_page in PAGE_HANDLERS:
-        # Verify permissions using the centralized PAGE_CONFIG from sidebar
-        required_roles = PAGE_CONFIG.get(selected_page, {}).get("roles", [])
-        
-        if st.session_state.get("user_role") in required_roles:
-            PAGE_HANDLERS[selected_page](conn)
-            
-            st.divider()
-            # Centered footer disclaimer
-            st.markdown(f"<div style='text-align: center; opacity: 0.7;'>{FOOTER_DISCLAIMER_TEXT}</div>", unsafe_allow_html=True)
+        if selected_page in PAGE_HANDLERS:
+            required_roles = PAGE_CONFIG.get(selected_page, {}).get("roles", [])
+            if st.session_state.get("user_role") in required_roles:
+                PAGE_HANDLERS[selected_page](conn)
+                st.divider()
+                st.markdown(f"<div style='text-align: center; opacity: 0.7;'>{FOOTER_DISCLAIMER_TEXT}</div>", unsafe_allow_html=True)
+            else:
+                st.error("Access Denied.")
         else:
-            st.error("Access Denied. You do not have permission to view this page.")
-            st.warning("Please select a page from the sidebar.")
-    else:
-        st.error(f"Page '{selected_page}' not found.")
+            st.error(f"Page '{selected_page}' not found.")
 
-except Exception as e:
-    st.error(f"Error loading page: {e}")
-    st.info("Check if the page module is correctly defined in the /pages folder.")
+    except Exception as e:
+        st.error(f"Error loading page: {e}")
+finally:
+    if conn:
+        conn.close()

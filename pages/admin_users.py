@@ -31,6 +31,29 @@ def render(conn):
             log_activity(conn, "MAINTENANCE_MODE", f"Set to {new_maint}")
             st.rerun()
 
+    # --- ADMIN: BREAK SETTINGS ---
+    with st.expander("☕ Admin: Break Settings", expanded=False):
+        st.write("Configure default break duration for all gas stations.")
+        try:
+            row = conn.execute("SELECT value FROM system_settings WHERE key=%s", ("default_break_minutes",)).fetchone()
+            current_default = int(row[0]) if row and row[0] else 15
+        except Exception:
+            current_default = 15
+
+        new_val = st.number_input("Default break duration (minutes)", min_value=1, max_value=240, value=current_default)
+        if st.button("Save Break Duration", type="primary", width="stretch"):
+            try:
+                conn.execute(
+                    "INSERT INTO system_settings (key, value) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+                    ("default_break_minutes", str(int(new_val))),
+                )
+                conn.commit()
+                log_activity(conn, "SETTING_CHANGE", f"Admin set default_break_minutes to {int(new_val)}")
+                st.success("Default break duration updated.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Failed to save: {e}")
+
     # Only accessible to admins via app.py permissions check (app should only call render for admins)
     st.markdown("### Create new system user")
     with st.form("create_user_form"):
