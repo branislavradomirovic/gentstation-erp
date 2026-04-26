@@ -175,14 +175,14 @@ class CompatConnection:
 
 class DatabaseConnection:
     """PostgreSQL connection manager with connection pooling support."""
-    
+
     _connection = None
-    
+
     @staticmethod
     def get_connection():
         """Get a database connection (singleton pattern for simplicity)."""
         global _RESOLVED_DB_HOST, _POOL
-        
+
         if _POOL is None:
             # Resolve host first
             host_to_use = DB_HOST
@@ -222,32 +222,65 @@ def get_system_uptime():
     global _START_TIME
     return time.time() - _START_TIME
 
-def get_connection():
+def get_connection(on_retry=None):
     """Wrapper function for backward compatibility."""
     global _SCHEMA_INITIALIZED
-    
-    max_retries = 3
-    retry_delay = 2  # seconds
+
+    # Increase retries and delay to allow more time for DB startup (e.g., 20 * 5 = 100 seconds)
+    max_retries = 20
+    retry_delay = 5  # seconds
 
     for attempt in range(max_retries):
         try:
             raw_conn = DatabaseConnection.get_connection()
             conn = CompatConnection(raw_conn, pool=_POOL)
-            
+
             # Create tables if they don't exist, but only once per process to avoid
             # repeated noisy logs on every Streamlit rerun.
             if not _SCHEMA_INITIALIZED:
                 ensure_schema(conn)
                 _SCHEMA_INITIALIZED = True
             return conn
-            
-        except (psycopg2.OperationalError, psycopg2.InterfaceError, psycopg2.PoolError) as e:
+
+        except (psycopg2.Error, pool.PoolError) as e:
             if attempt < max_retries - 1:
                 logger.warning("Database connection attempt %d failed: %s. Retrying in %ds...", attempt + 1, e, retry_delay)
-                time.sleep(retry_delay)
+                for i in range(retry_delay, 0, -1):
+                    if on_retry:
+                        on_retry(attempt + 1, max_retries, i, e)
+                    time.sleep(1)
             else:
                 logger.error("Database connection failed after %d attempts: %s", max_retries, e)
                 raise
+
+def test_redis_connection(on_retry=None, timeout=2) -> bool:
+    """Test if Redis server is running and responding."""
+    try:
+        import redis
+    except ImportError:
+        logger.error("Redis library not installed.")
+        return False
+
+    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    max_retries = 5
+    retry_delay = 3
+
+    for attempt in range(max_retries):
+        try:
+            r = redis.from_url(redis_url, socket_connect_timeout=timeout)
+            r.ping()
+            return True
+        except Exception as e:
+            if attempt < max_retries - 1:
+                logger.warning("Redis connection attempt %d failed: %s. Retrying in %ds...",
+                               attempt + 1, e, retry_delay)
+                for i in range(retry_delay, 0, -1):
+                    if on_retry:
+                        on_retry(attempt + 1, max_retries, i, e)
+                    time.sleep(1)
+            else:
+                logger.error("Redis connection failed after %d attempts: %s", max_retries, e)
+                return False
 
 def get_pool_stats():
     """Returns statistics about the database connection pool."""
@@ -267,7 +300,7 @@ def ensure_schema(conn):
     Uses idempotent CREATE TABLE IF NOT EXISTS statements.
     """
     cursor = conn.cursor()
-    
+
     try:
         # Regions table
         cursor.execute("""
@@ -279,7 +312,7 @@ def ensure_schema(conn):
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         """)
-        
+
         # Stations table
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS stations (
@@ -295,7 +328,7 @@ def ensure_schema(conn):
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         """)
-        
+
         # Employees table
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS employees (
@@ -312,7 +345,7 @@ def ensure_schema(conn):
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         """)
-        
+
         # Director-Regions mapping table
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS director_regions (
@@ -322,7 +355,7 @@ def ensure_schema(conn):
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         """)
-        
+
         # Users table
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
@@ -339,7 +372,7 @@ def ensure_schema(conn):
             dark_mode_enabled BOOLEAN DEFAULT FALSE
         );
         """)
-        
+
         # Sessions table
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS sessions (
@@ -349,7 +382,7 @@ def ensure_schema(conn):
             expires_at TIMESTAMP NOT NULL
         );
         """)
-        
+
         # Activity logs table
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS activity_logs (
@@ -361,7 +394,7 @@ def ensure_schema(conn):
             ip_address VARCHAR(45)
         );
         """)
-        
+
         # Submissions table (video/audio reports)
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS submissions (
@@ -385,6 +418,7 @@ def ensure_schema(conn):
 
         cursor.execute("ALTER TABLE submissions ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'pending';")
         cursor.execute("ALTER TABLE submissions ADD COLUMN IF NOT EXISTS processing_started_ts TIMESTAMP;")
+        cursor.execute("ALTER TABLE submissions ADD COLUMN IF NOT EXISTS error_message TEXT;")
 
         # Employee shift logs table
         cursor.execute("""
@@ -458,7 +492,7 @@ def ensure_schema(conn):
         ALTER TABLE employee_shifts
         ADD COLUMN IF NOT EXISTS is_on_break BOOLEAN DEFAULT FALSE;
         """)
-        
+
         # AI Alerts table
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS ai_alerts (
@@ -472,7 +506,7 @@ def ensure_schema(conn):
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         """)
-        
+
         # System settings table
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS system_settings (
@@ -482,7 +516,7 @@ def ensure_schema(conn):
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         """)
-        
+
         # Redis Health Logs table
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS redis_health_logs (
@@ -538,7 +572,7 @@ def ensure_schema(conn):
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         """)
-        
+
         # AI Reports table
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS ai_reports (
@@ -560,15 +594,15 @@ def ensure_schema(conn):
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         """)
-        
+
         # Create indexes for better query performance
         cursor.execute("""
-        CREATE INDEX IF NOT EXISTS idx_submissions_station_id 
+        CREATE INDEX IF NOT EXISTS idx_submissions_station_id
         ON submissions(station_id);
         """)
-        
+
         cursor.execute("""
-        CREATE INDEX IF NOT EXISTS idx_submissions_processed 
+        CREATE INDEX IF NOT EXISTS idx_submissions_processed
         ON submissions(processed);
         """)
 
@@ -594,39 +628,39 @@ def ensure_schema(conn):
         CREATE INDEX IF NOT EXISTS idx_employee_shifts_station_id
         ON employee_shifts(station_id);
         """)
-        
+
         cursor.execute("""
-        CREATE INDEX IF NOT EXISTS idx_ai_alerts_station_id 
+        CREATE INDEX IF NOT EXISTS idx_ai_alerts_station_id
         ON ai_alerts(station_id);
         """)
-        
+
         cursor.execute("""
-        CREATE INDEX IF NOT EXISTS idx_ai_alerts_created_at 
+        CREATE INDEX IF NOT EXISTS idx_ai_alerts_created_at
         ON ai_alerts(created_at);
         """)
-        
+
         cursor.execute("""
-        CREATE INDEX IF NOT EXISTS idx_activity_logs_timestamp 
+        CREATE INDEX IF NOT EXISTS idx_activity_logs_timestamp
         ON activity_logs(timestamp);
         """)
-        
+
         cursor.execute("""
-        CREATE INDEX IF NOT EXISTS idx_employees_email 
+        CREATE INDEX IF NOT EXISTS idx_employees_email
         ON employees(email);
         """)
-        
+
         cursor.execute("""
-        CREATE INDEX IF NOT EXISTS idx_users_username 
+        CREATE INDEX IF NOT EXISTS idx_users_username
         ON users(username);
         """)
-        
+
         cursor.execute("""
-        CREATE INDEX IF NOT EXISTS idx_ai_jobs_status 
+        CREATE INDEX IF NOT EXISTS idx_ai_jobs_status
         ON ai_jobs(status);
         """)
-        
+
         cursor.execute("""
-        CREATE INDEX IF NOT EXISTS idx_ai_reports_station_id 
+        CREATE INDEX IF NOT EXISTS idx_ai_reports_station_id
         ON ai_reports(station_id);
         """)
         cursor.execute("""
@@ -708,10 +742,10 @@ def ensure_schema(conn):
            OR clock_in_at IS NULL
            OR clock_out_at IS NULL;
         """)
-        
+
         conn.commit()
         logger.debug("Database schema initialized successfully")
-        
+
     except psycopg2.Error as e:
         conn.rollback()
         logger.error("Schema initialization error: %s", e)
@@ -720,24 +754,24 @@ def ensure_schema(conn):
 def execute_query(query, params=None, fetch=False):
     """
     Execute a SQL query safely.
-    
+
     Args:
         query: SQL query string
         params: Query parameters (for parameterized queries)
         fetch: If True, return results; if False, return row count
-    
+
     Returns:
         Query results if fetch=True, else row count
     """
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=RealDictCursor)
-    
+
     try:
         if params:
             cursor.execute(query, params)
         else:
             cursor.execute(query)
-        
+
         if fetch:
             results = cursor.fetchall()
             return results

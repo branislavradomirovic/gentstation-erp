@@ -19,7 +19,7 @@ from contextlib import suppress, closing
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from core.database import get_connection
+from core.database import get_connection, test_redis_connection
 from core.video_processor import parse_station_video
 from core.comm_service import send_ai_report_email
 
@@ -129,10 +129,10 @@ def record_worker_health(worker_name: str):
         process = psutil.Process(os.getpid())
         cpu = process.cpu_percent(interval=None)
         mem = process.memory_info().rss / (1024 * 1024)  # Convert to MB
-        
+
         with closing(_get_connection()) as conn:
             cur = conn.cursor()
-            
+
             # Fetch override from DB if exists
             cur.execute("SELECT value FROM system_settings WHERE key='ai_worker_memory_limit'")
             row = cur.fetchone()
@@ -298,9 +298,9 @@ def mark_failed(sub_id, error):
         res = cur.fetchone()
         new_count, new_status = res if res else (0, 'unknown')
         conn.commit()
-        
+
         level = logging.ERROR if new_status == 'failed' else logging.WARNING
-        logger.log(level, "Job %s failed (Attempt %s/%s). Status moved to: %s [DB PID: %s]. Error: %s", 
+        logger.log(level, "Job %s failed (Attempt %s/%s). Status moved to: %s [DB PID: %s]. Error: %s",
                    sub_id, new_count, AI_MAX_RETRIES, new_status, db_pid, error)
 
 
@@ -344,8 +344,10 @@ def process_job(job: SubmissionJob):
     start = time.time()
     db_pid = "unknown"
 
+    # Help debug path issues by logging the absolute path being checked
     if not os.path.exists(job.video_path):
-        raise FileNotFoundError(job.video_path)
+        abs_path = os.path.abspath(job.video_path)
+        raise FileNotFoundError(f"Video not found at: {job.video_path} (Resolved to: {abs_path})")
 
     result = parse_station_video(job.video_path)
     latency = time.time() - start
@@ -372,10 +374,26 @@ def main():
         return
 
     backoff = POLL_INTERVAL_SECONDS
+    redis_fail_count = 0
 
     while True:
         try:
             reset_stuck_jobs()
+
+            # Check Redis before proceeding (Backoff if offline)
+            # Increased timeout to 5 seconds to be more lenient during network blips
+            if not test_redis_connection(timeout=5):
+                redis_fail_count += 1
+                if redis_fail_count >= 5:
+                    logger.error("Redis connection failed 5 times. Terminating for auto-restart.")
+                    release_lock()
+                    os._exit(1)
+
+                logger.warning("Redis is offline (%d/5). Background workers require Redis for coordination. Backing off for 60s...", redis_fail_count)
+                time.sleep(60)
+                continue
+
+            redis_fail_count = 0
 
             pending_count = get_pending_count()
             force_run = get_force_run_flag()
@@ -389,12 +407,12 @@ def main():
             # Start batch processing
             total_in_batch = pending_count
             processed_count = 0
-            
+
             while True:
                 job = claim_job()
                 if not job:
                     break
-                
+
                 processed_count += 1
                 backoff = POLL_INTERVAL_SECONDS
                 update_ai_status("processing", total=total_in_batch, current=processed_count)

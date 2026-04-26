@@ -1,9 +1,13 @@
+import os
 import streamlit as st
 import pandas as pd
 import folium
 from streamlit_folium import st_folium
 from ui.header import render_page_header
 from core.activity_logger import log_activity
+from core.database import test_redis_connection, DB_HOST
+from core.video_processor import test_ollama_connection, OLLAMA_BASE_URL
+from core.comm_service import test_smtp_connection
 
 
 def fetch_df(conn, query, params=None):
@@ -17,9 +21,9 @@ def fetch_df(conn, query, params=None):
 def get_status_emoji(unprocessed_count):
     """Visual status based on unprocessed submissions."""
     if unprocessed_count == 0:
-        return "🟢" 
+        return "🟢"
     elif unprocessed_count < 3:
-        return "🟡" 
+        return "🟡"
     else:
         return "🔴"
 
@@ -46,7 +50,7 @@ def render(conn):
     # --- 1. METRICS ROW ---
     st.markdown("#### Key Performance Indicators")
     col1, col2, col3, col4 = st.columns(4)
-    
+
     try:
         total_regions = conn.execute("SELECT COUNT(*) FROM regions").fetchone()[0]
         total_stations = conn.execute("SELECT COUNT(*) FROM stations").fetchone()[0]
@@ -75,6 +79,7 @@ def render(conn):
                 st.session_state.active_page = "Map View"
                 st.rerun()
     except Exception as e:
+        conn.rollback()
         st.warning(f"Metrics partially unavailable: {e}")
 
     st.divider()
@@ -85,27 +90,28 @@ def render(conn):
         query_regions = """
             SELECT r.name as "Region", COUNT(s.id) as "Stations",
             COALESCE(SUM((SELECT COUNT(*) FROM submissions WHERE station_id = s.id AND processed = 0)), 0) as "Pending"
-            FROM regions r 
-            LEFT JOIN stations s ON r.id = s.region_id 
+            FROM regions r
+            LEFT JOIN stations s ON r.id = s.region_id
             GROUP BY r.id
         """
         df_reg_status = fetch_df(conn, query_regions)
         df_reg_status['Status'] = df_reg_status['Pending'].apply(get_status_emoji)
-        
+
         st.dataframe(
-            df_reg_status[['Status', 'Region', 'Stations', 'Pending']], 
-            width="stretch", 
+            df_reg_status[['Status', 'Region', 'Stations', 'Pending']],
+            width="stretch",
             hide_index=True
         )
     except Exception as e:
+        conn.rollback()
         st.info("Regional table data not yet available.")
 
     # --- 2.5 MERCHANDISING INSIGHTS ---
     st.subheader("🛒 Merchandising Performance")
     try:
         query_merch = """
-            SELECT 
-                st.name as Station, 
+            SELECT
+                st.name as Station,
                 AVG(CAST(s.data_json->>'merchandising_score' AS FLOAT)) as Score
             FROM submissions s
             JOIN stations st ON s.station_id = st.id
@@ -119,6 +125,7 @@ def render(conn):
         else:
             st.info("No merchandising data available yet.")
     except Exception as e:
+        conn.rollback()
         st.warning(
             "Merchandising analytics unavailable. If you still see a json_extract() error, "
             "restart the Streamlit server so it picks up the PostgreSQL query changes."
@@ -134,12 +141,12 @@ def render(conn):
 
         if not df_stats.empty:
             m = folium.Map(location=[44.2108, 20.9224], zoom_start=7)
-            
+
             # Layer 1: Stations (Blue Markers)
             fg_stations = folium.FeatureGroup(name="Stations")
             for _, s in df_stats.iterrows():
                 folium.Marker(
-                    [s['lat'], s['lon']], 
+                    [s['lat'], s['lon']],
                     popup=f"<b>{s['name']}</b><br>{s['physical_address']}",
                     tooltip=s['name'],
                     icon=folium.Icon(color='blue', icon='gas-pump', prefix='fa')
@@ -171,6 +178,7 @@ def render(conn):
         else:
             st.info("Add coordinates to stations to see them on the map.")
     except Exception as e:
+        conn.rollback()
         st.error(f"Map Error: {e}")
 
     # --- 3.5 RECENT UNRESOLVED ALERTS ---
@@ -193,7 +201,7 @@ def render(conn):
         else:
             for _, row in alerts_df.iterrows():
                 icon = {"HIGH": "🚨", "MEDIUM": "⚠️", "LOW": "ℹ️"}.get(row['severity'], "ℹ️")
-                
+
                 with st.container(border=True):
                     col1, col2 = st.columns([4, 1])
                     with col1:
@@ -201,13 +209,19 @@ def render(conn):
                         st.caption(row['message'])
                     with col2:
                         st.write("") # for vertical alignment
-                        if st.button("Resolve", key=f"dash_res_{row['id']}", width="stretch"):
+                        if st.button(
+                            "Resolve",
+                            key=f"dash_res_{row['id']}",
+                            width="stretch",
+                            help="Mark this alert as resolved and remove it from the dashboard view."
+                        ):
                             conn.execute("UPDATE ai_alerts SET status = 'resolved' WHERE id = ?", (row['id'],))
                             conn.commit()
                             log_activity(conn, "RESOLVE_ALERT", f"Resolved alert ID {row['id']} from dashboard")
                             st.toast(f"Alert {row['id']} resolved!", icon="✅")
                             st.rerun()
     except Exception as e:
+        conn.rollback()
         st.caption(f"Could not load alerts: {e}")
 
     # --- 4. RECENT ACTIVITY PREVIEW ---
@@ -216,11 +230,12 @@ def render(conn):
     try:
         # NOTE: Updated 'timestamp' to match standard SQL or your log schema
         audit_query = """
-            SELECT timestamp as "Time", user_name as "User", action as "Action", ip_address as "IP" 
-            FROM activity_logs 
+            SELECT timestamp as "Time", user_name as "User", action as "Action", ip_address as "IP"
+            FROM activity_logs
             ORDER BY timestamp DESC LIMIT 5
         """
         df_recent = fetch_df(conn, audit_query)
         st.table(df_recent)
     except Exception as e:
+        conn.rollback()
         st.caption("No recent activity logs found.")

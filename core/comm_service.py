@@ -1,5 +1,6 @@
 import os
 import smtplib
+import time
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.image import MIMEImage
@@ -45,7 +46,7 @@ def send_support_email(from_user: str, subject: str, message: str) -> bool:
     --- DETAILS ---
     From User: {from_user}
     Subject: {subject}
-    
+
     Message:
     {message}
     ----------------
@@ -73,12 +74,12 @@ def send_welcome_comms(user_data):
     SMTP_PORT = 587
     SENDER_EMAIL = os.getenv("SMTP_USER")
     SENDER_PASSWORD = os.getenv("SMTP_PASS")
-    
+
     # 2. Build the Telegram Deep Link
     # Note: Use your actual bot handle here
-    bot_handle = "BaneTest_Bot" 
+    bot_handle = "BaneTest_Bot"
     reporting_roles = ["Employee", "Gas Station Supervisor"]
-    
+
     tg_link = None
     if user_data['role'] in reporting_roles:
         tg_link = f"https://t.me/{bot_handle}?start={user_data['id']}"
@@ -103,9 +104,9 @@ def send_welcome_comms(user_data):
 
     if tg_link:
         body += f"""
-        
+
 📲 ACTION REQUIRED:
-Because your role is {user_data['role']}, you must connect your Telegram account 
+Because your role is {user_data['role']}, you must connect your Telegram account
 to our automated reporting bot to send video reports.
 
 Please click the link below to register:
@@ -127,10 +128,10 @@ Please click the link below to register:
         server.login(SENDER_EMAIL, SENDER_PASSWORD)
         server.send_message(msg)
         server.quit()
-        
+
         st.toast(f"✅ Email sent to {user_data['email']}", icon="📧")
         return tg_link
-        
+
     except Exception as e:
         st.error(f"❌ SMTP Error: {str(e)}")
         # We still return the link so the admin can give it to the user manually
@@ -253,25 +254,26 @@ def send_password_reset_email(conn, email: str):
         return
 
     email = email.strip()
-    
+
     # 1. Verify user exists (Case-insensitive)
     user_row = conn.execute("SELECT id, username, role FROM users WHERE LOWER(email) = LOWER(%s)", (email,)).fetchone()
-    
+
     if not user_row:
         # Check if they exist in employees table instead
         emp_row = conn.execute("SELECT name, surname, role FROM employees WHERE LOWER(email) = LOWER(%s)", (email,)).fetchone()
         if not emp_row:
             st.error("No account found with that email address.")
             return
-        
+
         # User exists in employees but not users - let's create the user record now
         emp_name, emp_surname, emp_role = emp_row
         st.info(f"Syncing system account for {emp_name}...")
-        
+
         # We need a temporary password to create the user, but we'll reset it immediately anyway
-        temp_alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+        import string
+        temp_alphabet = string.ascii_letters + string.digits
         init_pw = ''.join(secrets.choice(temp_alphabet) for _ in range(12))
-        
+
         try:
             from core.auth import create_user
             create_user(username=email, password=init_pw, email=email, role=emp_role)
@@ -280,11 +282,11 @@ def send_password_reset_email(conn, email: str):
         except Exception as e:
             st.error(f"Failed to sync user account: {e}")
             return
-            
+
     # 1.5 Rate Limit Check (Prevent abuse)
     # Check if a reset was requested for this email in the last 15 minutes
     last_request = conn.execute("""
-        SELECT timestamp FROM activity_logs 
+        SELECT timestamp FROM activity_logs
         WHERE action = 'RESET_REQUEST' AND details LIKE %s AND timestamp >= NOW() - INTERVAL '15 MINUTES'
     """, (f"%{email}%",)).fetchone()
     if last_request:
@@ -294,7 +296,8 @@ def send_password_reset_email(conn, email: str):
     user_id, username, role = user_row
 
     # 2. Generate new password
-    alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    import string
+    alphabet = string.ascii_letters + string.digits
     new_pw = ''.join(secrets.choice(alphabet) for _ in range(10))
 
     # 3. Hash and update databases
@@ -306,7 +309,7 @@ def send_password_reset_email(conn, email: str):
         # Update employees table (legacy SHA256)
         new_sha_hash = hashlib.sha256(new_pw.encode()).hexdigest()
         conn.execute("UPDATE employees SET password = %s WHERE LOWER(email) = LOWER(%s)", (new_sha_hash, email))
-        
+
         conn.commit()
     except Exception as e:
         st.error(f"Database error during password reset: {e}")
@@ -336,7 +339,7 @@ def send_password_reset_email(conn, email: str):
             </div>
             <p>Hello <strong>{username}</strong>,</p>
             <p>A password reset was requested for your account.</p>
-            
+
             <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0;">
                 <p><strong>Login URL:</strong> <a href="https://gentstation-erp.streamlit.app">https://gentstation-erp.streamlit.app</a></p>
                 <p><strong>Username:</strong> {email}</p>
@@ -371,3 +374,35 @@ def send_password_reset_email(conn, email: str):
         st.success("Password reset successful. Please check your email for a new temporary password.")
     except Exception as e:
         st.error(f"Failed to send reset email: {e}")
+
+def test_smtp_connection(on_retry=None) -> bool:
+    """Test if SMTP server is reachable and credentials are valid."""
+    smtp_server = os.getenv("SMTP_SERVER", "smtp.gmail.com")
+    smtp_port = int(os.getenv("SMTP_PORT", 587))
+    smtp_user = os.getenv("SMTP_USER")
+    smtp_pass = os.getenv("SMTP_PASS")
+
+    # Skip test if credentials are not configured yet
+    if not smtp_user or not smtp_pass:
+        return False
+
+    max_retries = 3
+    retry_delay = 5
+
+    for attempt in range(max_retries):
+        try:
+            with smtplib.SMTP(smtp_server, smtp_port, timeout=5) as server:
+                server.starttls()
+                server.login(smtp_user, smtp_pass)
+                return True
+        except Exception as e:
+            if attempt < max_retries - 1:
+                logger.warning("SMTP connection attempt %d failed: %s. Retrying in %ds...",
+                               attempt + 1, e, retry_delay)
+                for i in range(retry_delay, 0, -1):
+                    if on_retry:
+                        on_retry(attempt + 1, max_retries, i, e)
+                    time.sleep(1)
+            else:
+                logger.error("SMTP connection failed after %d attempts: %s", max_retries, e)
+                return False

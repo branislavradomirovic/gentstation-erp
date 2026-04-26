@@ -31,7 +31,7 @@ def render(conn):
     days = int(uptime_seconds // 86400)
     hours = int((uptime_seconds % 86400) // 3600)
     minutes = int((uptime_seconds % 3600) // 60)
-    
+
     uptime_str = f"{days}d {hours}h {minutes}m" if days > 0 else f"{hours}h {minutes}m {int(uptime_seconds % 60)}s"
     st.info(f"⏱️ **System Uptime:** {uptime_str}")
 
@@ -72,9 +72,9 @@ def render(conn):
     # --- Redis Status ---
     st.divider()
     st.subheader("📦 Infrastructure Services")
-    
+
     r_col1, r_col2 = st.columns(2)
-    
+
     # Redis Check
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     if redis is None:
@@ -164,17 +164,17 @@ def render(conn):
         )
         if not health_df.empty:
             hcol1, hcol2 = st.columns(2)
-            
+
             with hcol1:
                 st.write("**CPU Usage (%)**")
                 cpu_chart = health_df.pivot(index='timestamp', columns='worker_name', values='cpu_percent')
                 st.line_chart(cpu_chart)
-                
+
             with hcol2:
                 st.write("**Memory Usage (MB)**")
                 mem_chart = health_df.pivot(index='timestamp', columns='worker_name', values='memory_mb')
                 st.line_chart(mem_chart)
-                
+
             st.caption("Monitoring real-time overhead of AI inference and Telegram bot activity.")
         else:
             st.info("No worker health data recorded yet.")
@@ -186,7 +186,7 @@ def render(conn):
     try:
         volume_df = pd.read_sql_query(
             """
-            SELECT 
+            SELECT
                 date_trunc('hour', processed_ts) as hour,
                 COUNT(*) FILTER (WHERE processed = 1) as success,
                 COUNT(*) FILTER (WHERE processed = -1) as failure
@@ -219,14 +219,14 @@ def render(conn):
     # --- Query Statistics ---
     st.divider()
     st.subheader("📊 Database Query Performance")
-    
+
     qcol1, qcol2 = st.columns([2, 1])
-    
+
     try:
         # Aggregated stats for frequent slow queries
         query_stats_df = pd.read_sql_query(
             """
-            SELECT 
+            SELECT
                 LEFT(query_text, 100) as "Query Template",
                 COUNT(*) as "Hits",
                 ROUND(AVG(duration_seconds), 3) as "Avg Latency (s)",
@@ -239,7 +239,7 @@ def render(conn):
             """,
             conn
         )
-        
+
         with qcol1:
             st.write("**Top Slow Query Patterns (Last 24h)**")
             if not query_stats_df.empty:
@@ -352,13 +352,13 @@ def render(conn):
     # Active Model Display
     row_m = conn.execute("SELECT value FROM system_settings WHERE key='ollama_model_override'").fetchone()
     row_v = conn.execute("SELECT value FROM system_settings WHERE key='ollama_vision_model_override'").fetchone()
-    
+
     active_llm = row_m[0] if row_m else os.getenv("OLLAMA_MODEL", "qwen2.5:14b-instruct")
     active_vision = row_v[0] if row_v else os.getenv("OLLAMA_VISION_MODEL", "bakllava")
 
     mcol1, mcol2 = st.columns(2)
     mcol1.info(f"**Active LLM:** {active_llm}")
-    
+
     if active_vision:
         mcol2.success(f"**Vision System:** Enabled ({active_vision})")
     else:
@@ -420,7 +420,7 @@ def render(conn):
                         st.write("ℹ️ Vision Inference: **Skipped** (No sample video found in database)")
                 except Exception as e:
                     st.write(f"❌ Vision Inference: **Failed** ({e})")
-            
+
             status_box.update(label="System Health Check Complete", state="complete", expanded=True)
 
     def _ollama_candidate_urls():
@@ -476,7 +476,7 @@ def render(conn):
     if st.button("🖼️ Test Vision Inference", width="stretch", help="Extract one frame from a recent video and ask the model to describe it.", disabled=not active_vision):
         # 1. Find a sample video from recent submissions
         res = conn.execute("SELECT video_path FROM submissions WHERE video_path IS NOT NULL ORDER BY timestamp DESC LIMIT 1").fetchone()
-        
+
         if not res or not os.path.exists(res[0]):
             st.error("No valid video files found in the database to use for testing.")
         else:
@@ -488,11 +488,11 @@ def render(conn):
                     if frames:
                         # Display the frame to verify OpenCV is working
                         st.image(base64.b64decode(frames[0].image_b64), caption=f"Test frame extracted from: {os.path.basename(video_path)}")
-                        
+
                         # Call Ollama with the specific vision model
                         test_prompt = "Describe what you see in this gas station CCTV frame in one short sentence."
                         desc = call_ollama(test_prompt, active_vision, [frames[0].image_b64], is_json=False)
-                        
+
                         st.success(f"**Model Response:** {desc}")
                     else:
                         st.error("OpenCV was unable to extract any frames from the selected video.")
@@ -525,7 +525,7 @@ def render(conn):
                 with suppress(Exception):
                     lock_path.unlink(missing_ok=True)
 
-    pm_col1, pm_col2 = st.columns(2)
+    pm_col1, pm_col2, pm_col3, pm_col4 = st.columns(4)
 
     if pm_col1.button("🛑 Stop All Workers", width="stretch", help="Kills current worker processes and deletes lock files."):
         with st.spinner("Terminating worker processes..."):
@@ -536,19 +536,73 @@ def render(conn):
             time.sleep(1)
             st.rerun()
 
-    if pm_col2.button("🔄 Restart All Workers", type="primary", width="stretch", help="Kills current processes and immediately spawns new ones."):
+    if pm_col2.button("🤖 Restart Bot", width="stretch", help="Restarts only the Telegram Bot process."):
+        with st.spinner("Restarting Telegram Bot..."):
+            # 1. Kill existing
+            _kill_worker(Path("/tmp/gentstationai_bot_worker.lock"))
+
+            # 2. Spawn new
+            project_root = Path(__file__).resolve().parents[1]
+            bot_script = project_root / "core" / "bot_worker.py"
+            bot_log = Path("/tmp/gentstation_bot.log")
+
+            try:
+                bot_log.parent.mkdir(parents=True, exist_ok=True)
+                log_file = open(bot_log, "a", buffering=1)
+                subprocess.Popen(
+                    [sys.executable, "-u", str(bot_script)],
+                    cwd=str(project_root),
+                    stdout=log_file,
+                    stderr=log_file,
+                    start_new_session=True,
+                )
+                log_activity(conn, "BOT_RESTART", "User manually restarted the Telegram Bot")
+                st.success("Bot restart command issued.")
+            except Exception as e:
+                st.error(f"Failed to start Bot: {e}")
+            time.sleep(1)
+            st.rerun()
+
+    if pm_col3.button("🧠 Restart AI", width="stretch", help="Restarts only the AI analysis process."):
+        with st.spinner("Restarting AI worker..."):
+            # 1. Kill existing
+            _kill_worker(Path("/tmp/gentstationai_ai_worker.lock"))
+
+            # 2. Spawn new
+            project_root = Path(__file__).resolve().parents[1]
+            ai_script = project_root / "core" / "ai_worker.py"
+            ai_log = Path("/tmp/gentstation_ai.log")
+
+            try:
+                ai_log.parent.mkdir(parents=True, exist_ok=True)
+                log_file = open(ai_log, "a", buffering=1)
+                subprocess.Popen(
+                    [sys.executable, "-u", str(ai_script)],
+                    cwd=str(project_root),
+                    stdout=log_file,
+                    stderr=log_file,
+                    start_new_session=True,
+                )
+                log_activity(conn, "AI_RESTART", "User manually restarted the AI Worker")
+                st.success("AI Worker restart command issued.")
+            except Exception as e:
+                st.error(f"Failed to start AI Worker: {e}")
+            time.sleep(1)
+            st.rerun()
+
+    if pm_col4.button("🔄 Restart All", type="primary", width="stretch", help="Kills current processes and immediately spawns new ones."):
         with st.spinner("Restarting worker processes..."):
             # 1. Kill and Clean
             _kill_worker(Path("/tmp/gentstationai_bot_worker.lock"))
             _kill_worker(Path("/tmp/gentstationai_ai_worker.lock"))
-            
+
             # 2. Re-spawn (Logic similar to app.py)
             project_root = Path(__file__).resolve().parents[1]
             worker_configs = [
-                (project_root / "bot" / "bot_worker.py", Path("/tmp/gentstation_bot.log")),
+                (project_root / "core" / "bot_worker.py", Path("/tmp/gentstation_bot.log")),
                 (project_root / "core" / "ai_worker.py", Path("/tmp/gentstation_ai.log"))
             ]
-            
+
             for script_path, log_path in worker_configs:
                 if script_path.exists():
                     try:
@@ -569,10 +623,24 @@ def render(conn):
             time.sleep(2)
             st.rerun()
 
+    # --- 1.6 LOG VIEWER ---
+    st.divider()
+    st.subheader("📄 AI Worker Output")
+    ai_log_path = Path("/tmp/gentstation_ai.log")
+    if ai_log_path.exists():
+        with st.expander("🔍 View Recent Processing Logs", expanded=False):
+            try:
+                log_content = ai_log_path.read_text().splitlines()[-100:]
+                st.code("\n".join(log_content), language="text")
+            except Exception as e:
+                st.error(f"Could not read log file: {e}")
+    else:
+        st.info("Log file `/tmp/gentstation_ai.log` not found. Processing may not have started yet.")
+
     # --- Diagnostics ---
     st.divider()
     st.subheader("🛠 Diagnostics")
-    
+
     def _age_text(ts_value):
         if not ts_value: return "N/A"
         try:
@@ -583,12 +651,12 @@ def render(conn):
 
     pending_row = conn.execute("SELECT COUNT(*) FROM submissions WHERE processed = 0 AND video_path IS NOT NULL").fetchone()
     failed_row = conn.execute("SELECT COUNT(*) FROM submissions WHERE processed = -1").fetchone()
-    
+
     dcol1, dcol2, dcol3, dcol4 = st.columns(4)
-    dcol1.metric("Bot Heartbeat", _age_text(bot_last_update_ts))
-    dcol2.metric("AI Heartbeat", _age_text(ai_last_update_ts))
+    dcol1.metric("Bot Last Signal", _age_text(bot_last_update_ts))
+    dcol2.metric("AI Last Signal", _age_text(ai_last_update_ts))
     dcol3.metric("Pending Tasks", pending_row[0] if pending_row else 0)
     dcol4.metric("Failed Tasks", failed_row[0] if failed_row else 0)
 
-    st.caption("Quick restart hints (local development):")
-    st.code("pkill -f bot/bot_worker.py && pkill -f core/ai_worker.py", language="bash")
+    st.caption("💡 **Tip:** If videos are pending but AI Last Signal is old, check `/tmp/gentstation_ai.log` for Ollama connection errors.")
+    st.code("pkill -f core/bot_worker.py && pkill -f core/ai_worker.py", language="bash")

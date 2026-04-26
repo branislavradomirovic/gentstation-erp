@@ -91,9 +91,9 @@ def start_background_workers():
     if not auto_start:
         logger.info("AUTO_START_BACKGROUND_WORKERS is disabled. Skipping worker startup.")
         return
-    
+
     # 1. Start Telegram Bot
-    bot_script = project_root / "bot" / "bot_worker.py"
+    bot_script = project_root / "core" / "bot_worker.py"
     telegram_token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
     if not auto_start_telegram:
         logger.info("AUTO_START_TELEGRAM_BOT is disabled. Skipping Telegram Bot startup.")
@@ -120,13 +120,13 @@ st.markdown("""
     <style>
         /* Hide the default Streamlit auto-navigation */
         [data-testid="stSidebarNav"] { display: none !important; }
-        
+
         /* Hide the sidebar header container (source of top gap) */
-        [data-testid="stSidebarHeader"] { 
-            display: none !important; 
+        [data-testid="stSidebarHeader"] {
+            display: none !important;
             padding: 0 !important;
         }
-        
+
         /* Remove top padding from the main sidebar area */
         [data-testid="stSidebarContent"] {
             padding-top: 0rem !important;
@@ -138,10 +138,10 @@ st.markdown("""
         }
 
         /* INCREASED VERTICAL SPACING between sidebar components */
-        [data-testid="stVerticalBlock"] { 
-            gap: 1.5rem !important; 
+        [data-testid="stVerticalBlock"] {
+            gap: 1.5rem !important;
         }
-        
+
         /* Ensure the logo image stays flush */
         [data-testid="stSidebar"] [data-testid="stImage"] {
             margin-top: 0px !important;
@@ -149,12 +149,12 @@ st.markdown("""
         }
 
         /* UI Polish: Rounded buttons and taller height for breathability */
-        .stButton button { 
+        .stButton button {
             border-radius: 8px;
             height: 2.8em;
             margin-top: 0.2rem;
         }
-        
+
         footer { visibility: hidden; }
 
         .login-disclaimer {
@@ -224,29 +224,143 @@ try:
 except ImportError:
     def send_password_reset_email(*args, **kwargs): st.error("Email service unavailable.")
 
-def _build_db_unavailable_message(error: Exception) -> str:
-    return (
-        "Database connection is unavailable right now. "
-        "Please make sure PostgreSQL is running and reachable at the host configured in `.env` "
-        f"(current error: {error})."
-    )
+def run_boot_sequence():
+    """
+    Shows a system boot sequence UI and ensures all external
+    dependencies (DB, Ollama) and internal workers are ready.
+    """
+    from core.database import DB_HOST, DB_PORT, test_redis_connection
+    from core.video_processor import test_ollama_connection, OLLAMA_BASE_URL
+    from core.comm_service import test_smtp_connection
 
+    st.subheader("🚀 System Boot Sequence")
+
+    db_status = st.empty()
+    redis_status = st.empty()
+    tg_config_status = st.empty()
+    email_status = st.empty()
+    ai_status = st.empty()
+    worker_status = st.empty()
+
+    # 1. Database Connectivity
+    db_status.info(f"⏳ Connecting to PostgreSQL at `{DB_HOST}`...")
+
+    def db_retry_callback(attempt, total, remaining, error):
+        db_status.warning(
+            f"⚠️ **Database connection attempt {attempt}/{total} failed.**\n\n"
+            f"Retrying in **{remaining}s**...\n\n"
+            f"**Current Error:** `{error}`\n\n"
+            "💡 *Reminder: Ensure PostgreSQL is running (e.g., `docker compose up -d postgres`) before starting the app.*"
+        )
+
+    try:
+        _conn = get_connection(on_retry=db_retry_callback)
+        db_status.success(f"✅ Database: **Connected** (`{DB_HOST}:{DB_PORT}`)")
+    except Exception as e:
+        db_status.error(f"❌ Database: **Offline**")
+        st.error(f"Error details: `{e}`")
+        st.divider()
+        st.warning("### 💡 Startup Reminder")
+        st.markdown(f"""
+        PostgreSQL must be running **before** the application starts.
+
+        - **Using Docker?** Run `docker compose up -d postgres`
+        - **Running Locally?** Start your local Postgres server.
+        - **Environment Check:** Verify `DB_HOST` in `.env` (Current: `{DB_HOST}`).
+        """)
+        if st.button("🔄 Retry Connection", use_container_width=True):
+            st.rerun()
+        st.stop()
+
+    # 2. Redis Connectivity
+    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    redis_status.info(f"⏳ Connecting to Redis...")
+
+    def redis_retry_callback(attempt, total, remaining, error):
+        redis_status.warning(
+            f"⚠️ **Redis connection attempt {attempt}/{total} failed.**\n\n"
+            f"Retrying in **{remaining}s**...\n\n"
+            f"**Current Error:** `{error}`\n\n"
+            "💡 *Reminder: Ensure Redis is running (e.g., `docker compose up -d redis`) before starting the app.*"
+        )
+
+    if test_redis_connection(on_retry=redis_retry_callback):
+        redis_status.success(f"✅ Redis: **Online** (`{redis_url}`)")
+    else:
+        redis_status.warning(f"⚠️ Redis: **Offline**. Background tasks may be delayed.")
+        st.caption(f"Check your `REDIS_URL` in `.env`.")
+
+    # 3. Telegram Bot Configuration
+    tg_config_status.info("⏳ Checking Telegram Bot configuration...")
+    tg_token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+    tg_url = (os.getenv("TELEGRAM_BOT_URL") or "").strip()
+
+    if not tg_token:
+        tg_config_status.error("❌ Telegram Bot: **Token Missing**")
+        st.warning("`TELEGRAM_BOT_TOKEN` is not configured in `.env`. Automated reports via Telegram will not function.")
+    elif not tg_url:
+        tg_config_status.warning("⚠️ Telegram Bot: **URL Missing**")
+        st.caption("`TELEGRAM_BOT_URL` is not set. Deep links for registration may be unavailable.")
+    else:
+        tg_config_status.success("✅ Telegram Bot: **Configured**")
+
+    # 4. AI Service Connectivity
+    ai_status.info(f"⏳ Verifying Ollama AI at `{OLLAMA_BASE_URL}`...")
+
+    def ai_retry_callback(attempt, total, remaining, error):
+        ai_status.warning(
+            f"⚠️ **AI Service connection attempt {attempt}/{total} failed.**\n\n"
+            f"Retrying in **{remaining}s**...\n\n"
+            f"**Current Error:** `{error}`\n\n"
+            f"💡 *Reminder: Ensure Ollama is running (`ollama serve`) at `{OLLAMA_BASE_URL}`.*"
+        )
+
+    if test_ollama_connection(on_retry=ai_retry_callback):
+        ai_status.success(f"✅ AI Service: **Ready** (`{OLLAMA_BASE_URL}`)")
+    else:
+        ai_status.warning(f"⚠️ AI Service: **Unreachable**. Automated analysis will be disabled.")
+        st.caption(f"Reminder: Ensure `ollama serve` is running at `{OLLAMA_BASE_URL}`.")
+
+    # 5. Email Service Connectivity
+    email_status.info("⏳ Connecting to SMTP Server...")
+
+    def email_retry_callback(attempt, total, remaining, error):
+        email_status.warning(
+            f"⚠️ **SMTP connection attempt {attempt}/{total} failed.**\n\n"
+            f"Retrying in **{remaining}s**...\n\n"
+            f"**Current Error:** `{error}`\n\n"
+            "💡 *Check your SMTP credentials in `.env`. If using Gmail, ensure you use an App Password.*"
+        )
+
+    if test_smtp_connection(on_retry=email_retry_callback):
+        email_status.success("✅ Email Service: **Online**")
+    else:
+        email_status.warning("⚠️ Email Service: **Offline**. Password resets and notifications will be disabled.")
+
+    # 6. Spawn Internal Workers
+    worker_status.info("⏳ Launching Telegram Bot and AI Worker processes...")
+    start_background_workers()
+    worker_status.success("✅ System Workers: **Operational**")
+
+    # Brief visual confirmation before proceeding
+    if "boot_complete" not in st.session_state:
+        import time
+        time.sleep(1)
+        st.session_state["boot_complete"] = True
+        st.rerun()
+
+    return _conn
 
 conn = None
 try:
-    # Initialize Database
-    try:
+    # If we are starting fresh, show the boot sequence.
+    # Once booted or logged in, we bypass the sequence for snappier navigation.
+    if "user_id" not in st.session_state and "boot_complete" not in st.session_state:
+        conn = run_boot_sequence()
+    else:
         conn = get_connection()
-    except Exception as db_error:
-        st.error(_build_db_unavailable_message(db_error))
-        st.info(
-            "If you are running locally, start PostgreSQL on your machine or run the Docker stack. "
-            "If you are using Docker, verify the `postgres` service is up and healthy."
-        )
-        st.stop()
-
-    # Initialize workers only after the database is reachable.
-    start_background_workers()
+        # Ensure workers are checked if we skipped boot sequence (e.g. page refresh)
+        start_background_workers()
 
     # --- 3. SESSION PERSISTENCE ---
     def restore_session():

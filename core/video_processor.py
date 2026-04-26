@@ -9,6 +9,7 @@ metadata-only analysis when the runtime cannot decode video.
 import base64
 import json
 import os
+import time
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -218,7 +219,7 @@ def _select_model(use_images: bool) -> str:
         from core.database import get_connection
         with closing(get_connection()) as conn:
             cur = conn.cursor()
-            
+
             # 1. Check if Auto-Scale is active
             cur.execute("SELECT value FROM system_settings WHERE key='ai_auto_scale_active'")
             row_scale = cur.fetchone()
@@ -453,16 +454,36 @@ def parse_station_video(video_path: str) -> dict:
         raise RuntimeError(error_msg)
 
 
-def test_ollama_connection() -> bool:
+def test_ollama_connection(on_retry=None) -> bool:
     """Test if Ollama server is running and responding."""
-    try:
-        for base_url in _candidate_base_urls():
-            response = requests.get(f"{base_url}/api/tags", timeout=5)
-            if response.status_code == 200:
-                models = response.json().get("models", [])
-                logger.debug("Ollama running at %s. Available models: %s", base_url, len(models))
+    max_retries = 5
+    retry_delay = 3
+
+    for attempt in range(max_retries):
+        try:
+            connected = False
+            last_err = "No responding URLs"
+            for base_url in _candidate_base_urls():
+                try:
+                    response = requests.get(f"{base_url}/api/tags", timeout=2)
+                    if response.status_code == 200:
+                        connected = True
+                        break
+                except Exception as e:
+                    last_err = str(e)
+
+            if connected:
                 return True
-        return False
-    except Exception as e:
-        logger.debug("Ollama connection test failed: %s", e)
-        return False
+
+            raise RuntimeError(f"Connection refused. {last_err}")
+
+        except Exception as e:
+            if attempt < max_retries - 1:
+                logger.warning("Ollama connection attempt %d failed: %s. Retrying in %ds...", attempt + 1, e, retry_delay)
+                for i in range(retry_delay, 0, -1):
+                    if on_retry:
+                        on_retry(attempt + 1, max_retries, i, e)
+                    time.sleep(1)
+            else:
+                logger.error("Ollama connection failed after %d attempts: %s", max_retries, e)
+                return False

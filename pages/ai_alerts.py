@@ -11,7 +11,7 @@ def render(conn):
     # --- 1. FILTERS ---
     st.subheader("Filters")
     col1, col2, col3 = st.columns(3)
-    
+
     with col1:
         status_filter = st.multiselect(
             "Filter by Status",
@@ -65,12 +65,12 @@ def render(conn):
             icon = {"HIGH": "🚨", "MEDIUM": "⚠️", "LOW": "ℹ️"}.get(row['severity'], "ℹ️")
             st.container(border=True).markdown(f"""
                 **{icon} [{row['status'].upper()}]** at **{row['station_name']}**
-                
+
                 *Timestamp: {row['created_at']}*
-                
+
                 {row['message']}
             """)
-            
+
             b_cols = st.columns(8)
             if row['status'] != 'acknowledged':
                 if b_cols[0].button("Acknowledge", key=f"ack_{row['id']}", width="stretch"):
@@ -79,7 +79,12 @@ def render(conn):
                     log_activity(conn, "ACK_ALERT", f"Acknowledged alert ID {row['id']}")
                     st.rerun()
             if row['status'] != 'resolved':
-                if b_cols[1].button("Resolve", key=f"res_{row['id']}", width="stretch"):
+                if b_cols[1].button(
+                    "Resolve",
+                    key=f"res_{row['id']}",
+                    width="stretch",
+                    help="Mark this incident as resolved and move it to the historical archive."
+                ):
                     conn.execute("UPDATE ai_alerts SET status = 'resolved' WHERE id = ?", (row['id'],))
                     conn.commit()
                     log_activity(conn, "RESOLVE_ALERT", f"Resolved alert ID {row['id']}")
