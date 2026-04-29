@@ -3,6 +3,7 @@ from .telegram_service import send_telegram_message
 from .email_service import send_email
 import json
 
+
 def notify_station_manager(report_text: str, manager: dict, payload: dict) -> bool:
     # manager: {id, name, email, telegram}
     sent = False

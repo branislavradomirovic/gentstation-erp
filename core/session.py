@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from typing import Tuple, Optional
 from core.database import get_connection
 
+
 def create_session_token(user_id: int, ttl_hours: int = 8) -> Tuple[str, str]:
     """
     Creates a secure token, stores in sessions table with expiry.
@@ -14,11 +15,13 @@ def create_session_token(user_id: int, ttl_hours: int = 8) -> Tuple[str, str]:
         token = secrets.token_urlsafe(32)
         created_at = datetime.utcnow()
         expires_at = created_at + timedelta(hours=ttl_hours)
-        cur.execute("INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (%s,%s,%s,%s)", (
-            token, user_id, created_at.isoformat(), expires_at.isoformat()
-        ))
+        cur.execute(
+            "INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (%s,%s,%s,%s)",
+            (token, user_id, created_at.isoformat(), expires_at.isoformat()),
+        )
         conn.commit()
         return token, expires_at.isoformat()
+
 
 def validate_session_token(token: str) -> Optional[int]:
     """
@@ -28,7 +31,9 @@ def validate_session_token(token: str) -> Optional[int]:
         return None
     with get_connection() as conn:
         cur = conn.cursor()
-        row = cur.execute("SELECT user_id, expires_at FROM sessions WHERE token = %s", (token,)).fetchone()
+        row = cur.execute(
+            "SELECT user_id, expires_at FROM sessions WHERE token = %s", (token,)
+        ).fetchone()
         if not row:
             return None
         user_id, expires_at = row
@@ -46,6 +51,7 @@ def validate_session_token(token: str) -> Optional[int]:
         except Exception:
             return None
         return user_id
+
 
 def destroy_session_token(token: str):
     with get_connection() as conn:

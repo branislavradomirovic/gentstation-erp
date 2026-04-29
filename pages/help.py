@@ -26,8 +26,14 @@ def _help_topics():
             ],
             "screenshots": [
                 {"file": "LogIn.png", "label": "Application login screen"},
-                {"file": "Screenshot 2026-04-18 at 16.54.56.png", "label": "Employee directory and Telegram-linked profiles"},
-                {"file": "Screenshot 2026-04-18 at 16.54.46.png", "label": "Station audit history and QR onboarding"},
+                {
+                    "file": "Screenshot 2026-04-18 at 16.54.56.png",
+                    "label": "Employee directory and Telegram-linked profiles",
+                },
+                {
+                    "file": "Screenshot 2026-04-18 at 16.54.46.png",
+                    "label": "Station audit history and QR onboarding",
+                },
             ],
         },
         {
@@ -45,9 +51,18 @@ def _help_topics():
                 "If a metric looks wrong, jump to AI Reports or GM Dashboard to inspect the underlying data.",
             ],
             "screenshots": [
-                {"file": "Screenshot 2026-04-18 at 16.53.28.png", "label": "Dashboard KPI summary and station overview"},
-                {"file": "Screenshot 2026-04-18 at 16.53.44.png", "label": "Dashboard map and operational layout"},
-                {"file": "Screenshot 2026-04-18 at 16.54.26.png", "label": "Regional status and merchandising performance"},
+                {
+                    "file": "Screenshot 2026-04-18 at 16.53.28.png",
+                    "label": "Dashboard KPI summary and station overview",
+                },
+                {
+                    "file": "Screenshot 2026-04-18 at 16.53.44.png",
+                    "label": "Dashboard map and operational layout",
+                },
+                {
+                    "file": "Screenshot 2026-04-18 at 16.54.26.png",
+                    "label": "Regional status and merchandising performance",
+                },
             ],
         },
         {
@@ -65,9 +80,18 @@ def _help_topics():
                 "Assign managers before adding stations if you want the hierarchy to stay clean from the start.",
             ],
             "screenshots": [
-                {"file": "Screenshot 2026-04-18 at 16.54.03.png", "label": "Region directory"},
-                {"file": "Screenshot 2026-04-18 at 16.54.10.png", "label": "Edit or delete a region"},
-                {"file": "Screenshot 2026-04-18 at 16.54.14.png", "label": "Stations in the selected region"},
+                {
+                    "file": "Screenshot 2026-04-18 at 16.54.03.png",
+                    "label": "Region directory",
+                },
+                {
+                    "file": "Screenshot 2026-04-18 at 16.54.10.png",
+                    "label": "Edit or delete a region",
+                },
+                {
+                    "file": "Screenshot 2026-04-18 at 16.54.14.png",
+                    "label": "Stations in the selected region",
+                },
             ],
         },
         {
@@ -85,9 +109,18 @@ def _help_topics():
                 "The QR code is most useful when you are onboarding a new site or replacing a manager.",
             ],
             "screenshots": [
-                {"file": "Screenshot 2026-04-18 at 16.54.20.png", "label": "Stations management list"},
-                {"file": "Screenshot 2026-04-18 at 16.54.37.png", "label": "Edit or delete station"},
-                {"file": "Screenshot 2026-04-18 at 16.54.46.png", "label": "Station audit history and QR code"},
+                {
+                    "file": "Screenshot 2026-04-18 at 16.54.20.png",
+                    "label": "Stations management list",
+                },
+                {
+                    "file": "Screenshot 2026-04-18 at 16.54.37.png",
+                    "label": "Edit or delete station",
+                },
+                {
+                    "file": "Screenshot 2026-04-18 at 16.54.46.png",
+                    "label": "Station audit history and QR code",
+                },
             ],
         },
         {
@@ -104,9 +137,15 @@ def _help_topics():
                 "If someone changes station, update the employee record before the next reporting cycle starts.",
                 "Keeping email and Telegram fields accurate makes support and escalation much easier.",
             ],
-            "screenshots": [
-                {"file": "Screenshot 2026-04-18 at 16.54.56.png", "label": "Employees list and access state"},
-                {"file": "Screenshot 2026-04-18 at 16.55.03.png", "label": "Edit or delete employee"},
+            "screenshots": [  # This screenshot should be updated to reflect the unified 'users' table
+                {
+                    "file": "Screenshot 2026-04-18 at 16.54.56.png",
+                    "label": "Employees list and access state",
+                },
+                {
+                    "file": "Screenshot 2026-04-18 at 16.55.03.png",
+                    "label": "Edit or delete employee",
+                },
             ],
         },
         {
@@ -139,7 +178,10 @@ def _help_topics():
                 "Use the map with AI Alerts to understand whether risk is isolated or spreading.",
             ],
             "screenshots": [
-                {"file": "Screenshot 2026-04-18 at 16.53.44.png", "label": "Station location map"},
+                {
+                    "file": "Screenshot 2026-04-18 at 16.53.44.png",
+                    "label": "Station location map",
+                },
             ],
         },
         {
@@ -157,8 +199,14 @@ def _help_topics():
                 "The JSON payload is useful when you need to compare two reports field by field.",
             ],
             "screenshots": [
-                {"file": "Screenshot 2026-04-18 at 16.55.15.png", "label": "AI reports processing queue"},
-                {"file": "Screenshot 2026-04-18 at 16.55.20.png", "label": "Retry failed submissions and trend charts"},
+                {
+                    "file": "Screenshot 2026-04-18 at 16.55.15.png",
+                    "label": "AI reports processing queue",
+                },
+                {
+                    "file": "Screenshot 2026-04-18 at 16.55.20.png",
+                    "label": "Retry failed submissions and trend charts",
+                },
             ],
         },
         {
@@ -175,7 +223,10 @@ def _help_topics():
                 "Treat repeated alerts at the same station as a sign that process or training may need attention.",
             ],
             "screenshots": [
-                {"file": "Screenshot 2026-04-18 at 16.55.28.png", "label": "AI alerts and incidents"},
+                {
+                    "file": "Screenshot 2026-04-18 at 16.55.28.png",
+                    "label": "AI alerts and incidents",
+                },
             ],
         },
         {
@@ -192,9 +243,18 @@ def _help_topics():
                 "If a station jumps into the top risk bucket, open AI Reports immediately to inspect the cause.",
             ],
             "screenshots": [
-                {"file": "Screenshot 2026-04-18 at 16.55.35.png", "label": "Executive dashboard and KPI view"},
-                {"file": "Screenshot 2026-04-18 at 16.55.39.png", "label": "Risk map and employee performance snapshot"},
-                {"file": "Screenshot 2026-04-18 at 16.55.45.png", "label": "Employee performance snapshot and anomalies"},
+                {
+                    "file": "Screenshot 2026-04-18 at 16.55.35.png",
+                    "label": "Executive dashboard and KPI view",
+                },
+                {
+                    "file": "Screenshot 2026-04-18 at 16.55.39.png",
+                    "label": "Risk map and employee performance snapshot",
+                },
+                {
+                    "file": "Screenshot 2026-04-18 at 16.55.45.png",
+                    "label": "Employee performance snapshot and anomalies",
+                },
             ],
         },
         {
@@ -211,7 +271,10 @@ def _help_topics():
                 "Review locked accounts before assuming a password issue.",
             ],
             "screenshots": [
-                {"file": "Screenshot 2026-04-18 at 16.55.58.png", "label": "Admin user management"},
+                {
+                    "file": "Screenshot 2026-04-18 at 16.55.58.png",
+                    "label": "Admin user management",
+                },
             ],
         },
         {
@@ -228,7 +291,10 @@ def _help_topics():
                 "If you cannot find an action, check whether it was performed by a background worker instead of a human user.",
             ],
             "screenshots": [
-                {"file": "Screenshot 2026-04-18 at 16.56.03.png", "label": "System audit log"},
+                {
+                    "file": "Screenshot 2026-04-18 at 16.56.03.png",
+                    "label": "System audit log",
+                },
             ],
         },
         {
@@ -301,7 +367,9 @@ def _render_topic(topic):
 
 def _render_asset_gallery():
     st.markdown("### Asset Gallery")
-    st.caption("These are the actual screenshots already stored in the `assets/` folder.")
+    st.caption(
+        "These are the actual screenshots already stored in the `assets/` folder."
+    )
     gallery_files = [
         ("LogIn.png", "Login screen"),
         ("Screenshot 2026-04-18 at 16.53.28.png", "Dashboard overview"),
@@ -329,16 +397,29 @@ def render(conn):
     )
 
     topics = _help_topics()
-    search_query = st.text_input("🔍 Search Documentation", placeholder="Type keywords like telegram, risk, settings, or stations").strip()
+    search_query = st.text_input(
+        "🔍 Search Documentation",
+        placeholder="Type keywords like telegram, risk, settings, or stations",
+    ).strip()
 
     if search_query:
         st.subheader(f"Search results for '{search_query}'")
         found_any = False
         for item in topics:
-            haystack = " ".join([item["category"], item["title"], item["summary"], " ".join(item["details"]), " ".join(item["tips"])])
+            haystack = " ".join(
+                [
+                    item["category"],
+                    item["title"],
+                    item["summary"],
+                    " ".join(item["details"]),
+                    " ".join(item["tips"]),
+                ]
+            )
             if search_query.lower() in haystack.lower():
                 found_any = True
-                with st.expander(f"{item['category']} > {item['title']}", expanded=True):
+                with st.expander(
+                    f"{item['category']} > {item['title']}", expanded=True
+                ):
                     _render_topic(item)
 
         if not found_any:
@@ -347,9 +428,17 @@ def render(conn):
                 st.rerun()
         return
 
-    tab_names = ["Overview & submission", "Management Modules", "Dashboards & Reporting", "System Administration", "Contact Support"]
+    tab_names = [
+        "Overview & submission",
+        "Management Modules",
+        "Dashboards & Reporting",
+        "System Administration",
+        "Contact Support",
+    ]
     target_tab_name = st.session_state.pop("help_target_tab", tab_names[0])
-    default_index = tab_names.index(target_tab_name) if target_tab_name in tab_names else 0
+    default_index = (
+        tab_names.index(target_tab_name) if target_tab_name in tab_names else 0
+    )
 
     selected_tab = st.radio(
         "Help Topics",
@@ -376,18 +465,18 @@ def render(conn):
         st.subheader("Support details")
         st.markdown(
             """
-            **Address:**  
-            Nikolajevska 2  
-            Novi Sad, 21000  
+            **Address:**
+            Nikolajevska 2
+            Novi Sad, 21000
             Serbia
 
-            **Customer Care:**  
+            **Customer Care:**
             office@opus.rs
 
-            **Support:**  
+            **Support:**
             support@opus.rs
 
-            **General Inquiries:**  
+            **General Inquiries:**
             +381641323706
             """
         )
@@ -403,8 +492,12 @@ def render(conn):
                     st.error("Please provide a subject and a message.")
                 else:
                     current_user = st.session_state.get("username", "Unknown User")
-                    if send_support_email(from_user=current_user, subject=subject, message=message):
-                        st.success("Your message has been sent. Our support team will get back to you shortly.")
+                    if send_support_email(
+                        from_user=current_user, subject=subject, message=message
+                    ):
+                        st.success(
+                            "Your message has been sent. Our support team will get back to you shortly."
+                        )
                         st.toast("Support request sent!", icon="✅")
         return
 
@@ -420,13 +513,19 @@ def render(conn):
         )
     elif selected_tab == "Management Modules":
         st.header("Operational Management")
-        st.markdown("Use these modules to maintain the company structure, stations, and employee access.")
+        st.markdown(
+            "Use these modules to maintain the company structure, stations, and employee access."
+        )
     elif selected_tab == "Dashboards & Reporting":
         st.header("Analytics & Insights")
-        st.markdown("These pages help managers interpret the AI output, spot risk, and act on anomalies.")
+        st.markdown(
+            "These pages help managers interpret the AI output, spot risk, and act on anomalies."
+        )
     elif selected_tab == "System Administration":
         st.header("Administration")
-        st.markdown("Use these tools when you need to manage access, review the audit trail, or check service health.")
+        st.markdown(
+            "Use these tools when you need to manage access, review the audit trail, or check service health."
+        )
 
     st.markdown("### Visual overview")
     gallery_topics = filtered_items[:2]
@@ -436,11 +535,15 @@ def render(conn):
             with col:
                 first_shot = topic["screenshots"][0] if topic["screenshots"] else None
                 if first_shot:
-                    _render_screenshot_card(HELP_IMAGE_DIR / first_shot["file"], first_shot["label"])
+                    _render_screenshot_card(
+                        HELP_IMAGE_DIR / first_shot["file"], first_shot["label"]
+                    )
                 else:
                     st.info("No screenshot configured for this section yet.")
 
     st.divider()
     for item in filtered_items:
-        with st.expander(item["title"], expanded=selected_tab == "Overview & submission"):
+        with st.expander(
+            item["title"], expanded=selected_tab == "Overview & submission"
+        ):
             _render_topic(item)

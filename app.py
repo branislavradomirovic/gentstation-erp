@@ -1,4 +1,5 @@
 import os
+import json
 import logging
 import warnings
 import streamlit as st
@@ -18,16 +19,17 @@ try:
 except Exception:
     pass
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
+)
 logger = logging.getLogger("gentstation.app")
 
 
 # --- 1. PAGE CONFIGURATION (MUST BE FIRST) ---
 st.set_page_config(
-    page_title="Gas Station Manager",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    page_title="Gas Station Manager", layout="wide", initial_sidebar_state="expanded"
 )
+
 
 def start_background_workers():
     """
@@ -35,8 +37,26 @@ def start_background_workers():
     Uses lock-file PID checks to avoid duplicate launches across reruns.
     """
     project_root = Path(__file__).resolve().parent
-    bot_lock_file = Path("/tmp/gentstationai_bot_worker.lock")
-    ai_lock_file = Path("/tmp/gentstationai_ai_worker.lock")
+
+    # Worker Registry for robust management
+    WORKERS = [
+        {
+            "name": "Telegram Bot",
+            "script": project_root / "core" / "bot_worker.py",
+            "lock": Path("/tmp/gentstationai_bot_worker.lock"),
+            "log": Path("/tmp/gentstation_bot.log"),
+            "enabled_env": "AUTO_START_TELEGRAM_BOT",
+            "requires_env": ["TELEGRAM_BOT_TOKEN"],
+        },
+        {
+            "name": "AI Worker",
+            "script": project_root / "core" / "ai_worker.py",
+            "lock": Path("/tmp/gentstationai_ai_worker.lock"),
+            "log": Path("/tmp/gentstation_ai.log"),
+            "enabled_env": "AUTO_START_AI_WORKER",
+            "requires_env": [],
+        },
+    ]
 
     def _pid_alive(pid: int) -> bool:
         if pid <= 0:
@@ -47,7 +67,9 @@ def start_background_workers():
             return False
         # Treat zombie state as not running.
         try:
-            stat = subprocess.check_output(["ps", "-p", str(pid), "-o", "stat="], text=True).strip()
+            stat = subprocess.check_output(
+                ["ps", "-p", str(pid), "-o", "stat="], text=True
+            ).strip()
             if not stat or stat.upper().startswith("Z"):
                 return False
         except Exception:
@@ -69,12 +91,20 @@ def start_background_workers():
         try:
             log_path.parent.mkdir(parents=True, exist_ok=True)
             log_file = open(log_path, "a", buffering=1)
+
+            # Ensure sub-process has the project root in PYTHONPATH
+            env = os.environ.copy()
+            env["PYTHONPATH"] = (
+                str(project_root) + os.pathsep + env.get("PYTHONPATH", "")
+            )
+
             subprocess.Popen(
                 [sys.executable, "-u", str(script_path)],
                 cwd=str(project_root),
                 stdout=log_file,
                 stderr=log_file,
                 start_new_session=True,
+                env=env,
             )
             return True
         except Exception as e:
@@ -84,39 +114,40 @@ def start_background_workers():
     def _env_bool(name: str, default: str = "1") -> bool:
         return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
-    auto_start = _env_bool("AUTO_START_BACKGROUND_WORKERS", "1")
-    auto_start_telegram = _env_bool("AUTO_START_TELEGRAM_BOT", "1")
-    auto_start_ai = _env_bool("AUTO_START_AI_WORKER", "1")
-
-    if not auto_start:
-        logger.info("AUTO_START_BACKGROUND_WORKERS is disabled. Skipping worker startup.")
+    if not _env_bool("AUTO_START_BACKGROUND_WORKERS", "1"):
+        logger.info(
+            "AUTO_START_BACKGROUND_WORKERS is disabled. Skipping worker startup."
+        )
         return
 
-    # 1. Start Telegram Bot
-    bot_script = project_root / "core" / "bot_worker.py"
-    telegram_token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
-    if not auto_start_telegram:
-        logger.info("AUTO_START_TELEGRAM_BOT is disabled. Skipping Telegram Bot startup.")
-    elif _is_running_from_lock(bot_lock_file):
-        logger.debug("Telegram Bot worker already running.")
-    elif bot_script.exists() and telegram_token:
-        if _spawn_worker(bot_script, Path("/tmp/gentstation_bot.log")):
-            logger.info("Started Telegram Bot worker: %s", bot_script)
-    elif bot_script.exists():
-        logger.info("Skipping Telegram Bot startup (TELEGRAM_BOT_TOKEN is not configured).")
+    for cfg in WORKERS:
+        # 1. Check if enabled via env
+        if not _env_bool(cfg["enabled_env"], "1"):
+            logger.info("%s startup is disabled via env.", cfg["name"])
+            continue
 
-    # 2. Start AI Worker
-    ai_script = project_root / "core" / "ai_worker.py"
-    if not auto_start_ai:
-        logger.info("AUTO_START_AI_WORKER is disabled. Skipping AI worker startup.")
-    elif _is_running_from_lock(ai_lock_file):
-        logger.debug("AI worker already running.")
-    elif ai_script.exists():
-        if _spawn_worker(ai_script, Path("/tmp/gentstation_ai.log")):
-            logger.info("Started AI worker: %s", ai_script)
+        # 2. Check for required environment variables (e.g., Tokens)
+        missing_reqs = [r for r in cfg["requires_env"] if not os.getenv(r)]
+        if missing_reqs:
+            logger.warning(
+                "Skipping %s: Missing %s", cfg["name"], ", ".join(missing_reqs)
+            )
+            continue
+
+        # 3. Health Check: Is it already running?
+        if _is_running_from_lock(cfg["lock"]):
+            logger.debug("%s is already running.", cfg["name"])
+            continue
+
+        # 4. Spawn if script exists
+        if cfg["script"].exists():
+            if _spawn_worker(cfg["script"], cfg["log"]):
+                logger.info("Successfully launched %s.", cfg["name"])
+
 
 # --- 2. GLOBAL CSS INJECTION (Optimized for Spacing & Alignment) ---
-st.markdown("""
+st.markdown(
+    """
     <style>
         /* Hide the default Streamlit auto-navigation */
         [data-testid="stSidebarNav"] { display: none !important; }
@@ -168,11 +199,14 @@ st.markdown("""
             backdrop-filter: blur(5px);
         }
     </style>
-""", unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
 
 # --- DARK MODE INJECTION ---
 if st.session_state.get("dark_mode"):
-    st.markdown("""
+    st.markdown(
+        """
         <style>
             [data-testid="stAppViewContainer"] {
                 background-color: #0E1117;
@@ -189,11 +223,17 @@ if st.session_state.get("dark_mode"):
                 color: #FAFAFA !important;
             }
         </style>
-    """, unsafe_allow_html=True)
+    """,
+        unsafe_allow_html=True,
+    )
 
 # Core imports
 from core.database import get_connection, ensure_schema
-from core.auth import login_user_streamlit, logout_user_streamlit, hash_password as hash_password_bcrypt
+from core.auth import (
+    login_user_streamlit,
+    logout_user_streamlit,
+    hash_password as hash_password_bcrypt,
+)
 from core.session import validate_session_token
 from core.activity_logger import log_activity
 from core.config import LOGIN_DISCLAIMER_HTML, FOOTER_DISCLAIMER_TEXT
@@ -207,7 +247,6 @@ import pages.stations as stations
 import pages.map_view as map_view
 import pages.employees as employees
 import pages.admin_users as admin_users
-import pages.gm_dashboard as gm_dashboard
 import pages.ai_reports as ai_reports
 import pages.ai_alerts as ai_alerts
 import pages.ai_monitoring as ai_monitoring
@@ -216,13 +255,17 @@ import pages.settings as settings
 import pages.help as page_help
 
 # UI imports
-from ui.sidebar import display_sidebar, PAGE_CONFIG
+from ui.sidebar import display_sidebar
+from core.access_control import PAGE_CONFIG, has_access
 
 # Communication service for password reset
 try:
     from core.comm_service import send_password_reset_email
 except ImportError:
-    def send_password_reset_email(*args, **kwargs): st.error("Email service unavailable.")
+
+    def send_password_reset_email(*args, **kwargs):
+        st.error("Email service unavailable.")
+
 
 def run_boot_sequence():
     """
@@ -241,6 +284,7 @@ def run_boot_sequence():
     email_status = st.empty()
     ai_status = st.empty()
     worker_status = st.empty()
+    bot_worker_status_display = st.empty()
 
     # 1. Database Connectivity
     db_status.info(f"⏳ Connecting to PostgreSQL at `{DB_HOST}`...")
@@ -261,13 +305,15 @@ def run_boot_sequence():
         st.error(f"Error details: `{e}`")
         st.divider()
         st.warning("### 💡 Startup Reminder")
-        st.markdown(f"""
+        st.markdown(
+            f"""
         PostgreSQL must be running **before** the application starts.
 
         - **Using Docker?** Run `docker compose up -d postgres`
         - **Running Locally?** Start your local Postgres server.
         - **Environment Check:** Verify `DB_HOST` in `.env` (Current: `{DB_HOST}`).
-        """)
+        """
+        )
         if st.button("🔄 Retry Connection", use_container_width=True):
             st.rerun()
         st.stop()
@@ -297,10 +343,14 @@ def run_boot_sequence():
 
     if not tg_token:
         tg_config_status.error("❌ Telegram Bot: **Token Missing**")
-        st.warning("`TELEGRAM_BOT_TOKEN` is not configured in `.env`. Automated reports via Telegram will not function.")
+        st.warning(
+            "`TELEGRAM_BOT_TOKEN` is not configured in `.env`. Automated reports via Telegram will not function."
+        )
     elif not tg_url:
         tg_config_status.warning("⚠️ Telegram Bot: **URL Missing**")
-        st.caption("`TELEGRAM_BOT_URL` is not set. Deep links for registration may be unavailable.")
+        st.caption(
+            "`TELEGRAM_BOT_URL` is not set. Deep links for registration may be unavailable."
+        )
     else:
         tg_config_status.success("✅ Telegram Bot: **Configured**")
 
@@ -318,8 +368,12 @@ def run_boot_sequence():
     if test_ollama_connection(on_retry=ai_retry_callback):
         ai_status.success(f"✅ AI Service: **Ready** (`{OLLAMA_BASE_URL}`)")
     else:
-        ai_status.warning(f"⚠️ AI Service: **Unreachable**. Automated analysis will be disabled.")
-        st.caption(f"Reminder: Ensure `ollama serve` is running at `{OLLAMA_BASE_URL}`.")
+        ai_status.warning(
+            f"⚠️ AI Service: **Unreachable**. Automated analysis will be disabled."
+        )
+        st.caption(
+            f"Reminder: Ensure `ollama serve` is running at `{OLLAMA_BASE_URL}`."
+        )
 
     # 5. Email Service Connectivity
     email_status.info("⏳ Connecting to SMTP Server...")
@@ -335,21 +389,47 @@ def run_boot_sequence():
     if test_smtp_connection(on_retry=email_retry_callback):
         email_status.success("✅ Email Service: **Online**")
     else:
-        email_status.warning("⚠️ Email Service: **Offline**. Password resets and notifications will be disabled.")
+        email_status.warning(
+            "⚠️ Email Service: **Offline**. Password resets and notifications will be disabled."
+        )
 
     # 6. Spawn Internal Workers
     worker_status.info("⏳ Launching Telegram Bot and AI Worker processes...")
     start_background_workers()
     worker_status.success("✅ System Workers: **Operational**")
 
+    # 7. Check Telegram Bot Worker Status
+    bot_status_row = _conn.execute(
+        "SELECT value FROM system_settings WHERE key='telegram_bot_status'"
+    ).fetchone()
+    if bot_status_row and bot_status_row[0]:
+        try:
+            status_info = json.loads(bot_status_row[0])
+            if status_info.get("status") == "online":
+                bot_worker_status_display.success("✅ Telegram Bot Worker: **Online**")
+            else:
+                bot_worker_status_display.warning(
+                    f"⚠️ Telegram Bot Worker: **{status_info.get('status', 'Offline')}**"
+                )
+        except json.JSONDecodeError:
+            bot_worker_status_display.warning(
+                "⚠️ Telegram Bot Worker: **Status Unknown**"
+            )
+    else:
+        bot_worker_status_display.warning(
+            "⚠️ Telegram Bot Worker: **Offline** (No status record)"
+        )
+
     # Brief visual confirmation before proceeding
     if "boot_complete" not in st.session_state:
         import time
+
         time.sleep(1)
         st.session_state["boot_complete"] = True
         st.rerun()
 
     return _conn
+
 
 conn = None
 try:
@@ -369,15 +449,23 @@ try:
         if token and "user_id" not in st.session_state:
             uid = validate_session_token(token)
             if uid:
-                # Using standard parameter replacement to avoid '? vs %s' confusion
+                # Fetch all user-related data from the single users table
                 row = conn.execute(
-                    "SELECT id, username, email, role, dark_mode_enabled FROM users WHERE id = %s", (uid,)
+                    "SELECT id, username, email, role, dark_mode_enabled, name, surname, station_id, region_id, telegram_chat_id FROM users WHERE id = %s",
+                    (uid,),
                 ).fetchone()
                 if row:
                     st.session_state["user_id"] = row[0]
                     st.session_state["username"] = row[1]
+                    st.session_state["email"] = row[2]
                     st.session_state["user_role"] = row[3]
                     st.session_state["dark_mode"] = bool(row[4])
+                    st.session_state["name"] = row[5]
+                    st.session_state["surname"] = row[6]
+                    st.session_state["user_name_full"] = f"{row[5]} {row[6]}".strip()
+                    st.session_state["user_station_id"] = row[7]
+                    st.session_state["user_region_id"] = row[8]
+                    st.session_state["user_telegram_chat_id"] = row[9]
                 else:
                     if "session_token" in st.session_state:
                         del st.session_state["session_token"]
@@ -392,7 +480,7 @@ try:
             <style>
                 /* Pull login content to the top of the viewport. */
                 [data-testid="stAppViewContainer"] .main .block-container {
-                    padding-top: 0.4rem !important;
+                    padding-top: 0.1rem !important; /* Adjusted for higher placement */
                     margin-top: 0 !important;
                 }
             </style>
@@ -414,9 +502,14 @@ try:
 
             # --- SYSTEM STATUS WIDGET ---
             try:
-                sys_row = conn.execute("SELECT value FROM system_settings WHERE key='maintenance_mode'").fetchone()
-                if sys_row and sys_row[0] == '1':
-                    st.warning("🛠️ **MAINTENANCE MODE**\n\nLogin restricted to Administrators.", icon="⚠️")
+                sys_row = conn.execute(
+                    "SELECT value FROM system_settings WHERE key='maintenance_mode'"
+                ).fetchone()
+                if sys_row and sys_row[0] == "1":
+                    st.warning(
+                        "🛠️ **MAINTENANCE MODE**\n\nLogin restricted to Administrators.",
+                        icon="⚠️",
+                    )
                 else:
                     st.caption("🟢 System Status: **Operational**")
             except Exception:
@@ -441,12 +534,14 @@ try:
 
             # --- FORGOT PASSWORD ---
             if st.button("Forgot Password?", type="secondary"):
-                st.session_state['show_forgot_pw'] = True
+                st.session_state["show_forgot_pw"] = True
 
-            if st.session_state.get('show_forgot_pw'):
+            if st.session_state.get("show_forgot_pw"):
                 with st.form("forgot_pw_form"):
                     st.subheader("Reset Your Password")
-                    email_to_reset = st.text_input("Enter your registered email address")
+                    email_to_reset = st.text_input(
+                        "Enter your registered email address"
+                    )
                     if st.form_submit_button("Send Reset Link", width="stretch"):
                         if email_to_reset:
                             send_password_reset_email(conn, email_to_reset)
@@ -461,11 +556,24 @@ try:
     # --- 5. AUTHENTICATED APP SHELL ---
     selected_page = display_sidebar(conn)
 
+    # --- 5.1 FORCE PASSWORD CHANGE OVERRIDE ---
+    if st.session_state.get("force_password_change"):
+        if selected_page != "Settings":
+            st.warning(
+                "🔒 **Security Requirement:** You must change your temporary password before accessing other features."
+            )
+            selected_page = "Settings"
+
     # --- Maintenance Mode Banner ---
     try:
-        m_row = conn.execute("SELECT value FROM system_settings WHERE key='maintenance_mode'").fetchone()
-        if m_row and m_row[0] == '1':
-            st.warning("🚨 **MAINTENANCE MODE ACTIVE** - System access is restricted to General Managers. Some features may be unavailable.", icon="⚠️")
+        m_row = conn.execute(
+            "SELECT value FROM system_settings WHERE key='maintenance_mode'"
+        ).fetchone()
+        if m_row and m_row[0] == "1":
+            st.warning(
+                "🚨 **MAINTENANCE MODE ACTIVE** - System access is restricted to General Managers. Some features may be unavailable.",
+                icon="⚠️",
+            )
     except Exception:
         pass
 
@@ -474,31 +582,38 @@ try:
         selected_page = "Dashboard"
 
     # --- 6. ROUTING LOGIC ---
-    try:
-        PAGE_HANDLERS = {
+    def get_page_registry():
+        """Returns a mapping of page IDs to their respective render functions."""
+        return {
             "Dashboard": dashboard.render,
             "Personal Dashboard": role_center.render,
             "Shifts": shifts.render,
             "Regions": regions.render,
             "Stations": stations.render,
             "Map View": map_view.render,
-            "Employees": employees.render,
+            "Employees": employees.render,  # Keep employees for now, will be removed if GM Dashboard is fully integrated
             "AI Reports": ai_reports.render,
             "AI Alerts": ai_alerts.render,
             "AI Monitoring": ai_monitoring.render,
             "Audit Log": audit_log.render,
-            "GM Dashboard": gm_dashboard.render,
             "Admin Users": admin_users.render,
             "Settings": settings.render,
-            "Help": page_help.render
+            "Help": page_help.render,
         }
 
-        if selected_page in PAGE_HANDLERS:
-            required_roles = PAGE_CONFIG.get(selected_page, {}).get("roles", [])
-            if st.session_state.get("user_role") in required_roles:
-                PAGE_HANDLERS[selected_page](conn)
+    try:
+        registry = get_page_registry()
+        user_role = st.session_state.get("user_role")
+        username = st.session_state.get("username")
+
+        if selected_page in registry:
+            if has_access(selected_page, user_role, username):
+                registry[selected_page](conn)
                 st.divider()
-                st.markdown(f"<div style='text-align: center; opacity: 0.7;'>{FOOTER_DISCLAIMER_TEXT}</div>", unsafe_allow_html=True)
+                st.markdown(
+                    f"<div style='text-align: center; opacity: 0.7;'>{FOOTER_DISCLAIMER_TEXT}</div>",
+                    unsafe_allow_html=True,
+                )
             else:
                 st.error("Access Denied.")
         else:

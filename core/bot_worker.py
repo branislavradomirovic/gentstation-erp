@@ -49,14 +49,27 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any, Optional
 
+try:
+    import psutil
+except ImportError:
+    psutil = None
+
 from dotenv import load_dotenv
+
 try:
     from redis.asyncio import Redis
 except ImportError:
     Redis = None
 from telegram import Update
 from telegram.error import NetworkError, RetryAfter, TelegramError, TimedOut
-from telegram.ext import Application, ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import (
+    Application,
+    ApplicationBuilder,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
 # Keep your existing DB layer.
 from core.database import get_connection
@@ -65,7 +78,9 @@ from core.database import get_connection
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
@@ -83,7 +98,9 @@ MAX_VIDEO_SIZE_MB = int(os.getenv("MAX_VIDEO_SIZE_MB", "300"))
 RATE_LIMIT_MAX_FILES = int(os.getenv("RATE_LIMIT_MAX_FILES", "5"))
 RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60"))
 LOCK_FILE = Path(os.getenv("LOCK_FILE", "/tmp/gentstationai_bot_worker.lock"))
-UPLOADS_DIR = Path(os.getenv("UPLOADS_DIR", str(Path(__file__).resolve().parents[1] / "uploads")))
+UPLOADS_DIR = Path(
+    os.getenv("UPLOADS_DIR", str(Path(__file__).resolve().parents[1] / "uploads"))
+)
 QUEUE_STREAM = os.getenv("QUEUE_STREAM", "telegram:submissions")
 QUEUE_GROUP = os.getenv("QUEUE_GROUP", "telegram-workers")
 BOT_MODE = os.getenv("BOT_MODE", "bot").strip().lower()  # bot | worker | both
@@ -120,6 +137,7 @@ class SubmissionJob:
     original_file_name: str
     size_bytes: int
     created_ts: float
+    file_unique_id: Optional[str] = None
 
     def to_redis_mapping(self) -> dict[str, str]:
         d = asdict(self)
@@ -142,6 +160,9 @@ class SubmissionJob:
             original_file_name=str(_get("original_file_name", "")),
             size_bytes=int(_get("size_bytes", 0)),
             created_ts=float(_get("created_ts", time.time())),
+            file_unique_id=(
+                str(_get("file_unique_id")) if _get("file_unique_id") else None
+            ),
         )
 
 
@@ -220,7 +241,11 @@ def _is_video_document(message) -> bool:
         return False
     mime_type = (document.mime_type or "").lower()
     name = (document.file_name or "").lower()
-    return mime_type.startswith(ALLOWED_MIME_PREFIXES) or mime_type in ALLOWED_MIME_TYPES or name.endswith(tuple(ALLOWED_VIDEO_SUFFIXES))
+    return (
+        mime_type.startswith(ALLOWED_MIME_PREFIXES)
+        or mime_type in ALLOWED_MIME_TYPES
+        or name.endswith(tuple(ALLOWED_VIDEO_SUFFIXES))
+    )
 
 
 def _guess_suffix(filename: str | None, fallback: str = ".mp4") -> str:
@@ -240,14 +265,16 @@ def _validate_video_file(file_name: str | None, mime_type: str | None) -> bool:
 # ---------------------------------------------------------------------------
 # Sync DB wrappers run in a thread to keep the asyncio loop responsive
 # ---------------------------------------------------------------------------
-async def db_fetch_employee_by_chat(chat_id: str) -> Optional[tuple[int, Optional[int]]]:
+async def db_fetch_employee_by_chat(
+    chat_id: str,
+) -> Optional[tuple[int, Optional[int]]]:
     def _work():
         conn = None
         try:
             conn = get_connection()
             cur = conn.cursor()
-            row = cur.execute(
-                "SELECT id, station_id FROM employees WHERE telegram_chat_id = %s",
+            row = cur.execute(  # Fetch from users table
+                "SELECT id, station_id FROM users WHERE telegram_chat_id = %s",
                 (chat_id,),
             ).fetchone()
             return row
@@ -265,8 +292,8 @@ async def db_link_employee_chat(employee_id: int, chat_id: str) -> int:
         try:
             conn = get_connection()
             cur = conn.cursor()
-            cur.execute(
-                "UPDATE employees SET telegram_chat_id = %s WHERE id = %s",
+            cur.execute(  # Update users table
+                "UPDATE users SET telegram_chat_id = %s WHERE id = %s",
                 (chat_id, employee_id),
             )
             conn.commit()
@@ -292,10 +319,10 @@ async def db_insert_submission(job: SubmissionJob) -> None:
             cur = conn.cursor()
             cur.execute(
                 """
-                INSERT INTO submissions (station_id, employee_id, video_path, processed, status)
-                VALUES (%s, %s, %s, 0, 'pending')
+                INSERT INTO submissions (station_id, employee_id, video_path, processed, status, file_unique_id)
+                VALUES (%s, %s, %s, 0, 'pending', %s)
                 """,
-                (job.station_id, job.employee_id, job.file_path),
+                (job.station_id, job.employee_id, job.file_path, job.file_unique_id),
             )
             conn.commit()
         except Exception:
@@ -311,57 +338,90 @@ async def db_insert_submission(job: SubmissionJob) -> None:
     await asyncio.to_thread(_work)
 
 
-async def update_bot_status(status: str, details: str | None = None) -> None:
-    payload = {"status": status, "last_update_ts": _now(), "pid": os.getpid()}
+async def update_bot_status(
+    status: str, details: str | None = None, redis_health: Optional[bool] = None
+) -> None:
+    """
+    Updates the bot status in system_settings and optionally logs Redis/Worker health.
+    Consolidates multiple DB operations into a single transaction for efficiency.
+    """
+    now_ts = _now()
+    payload = {"status": status, "last_update_ts": now_ts, "pid": os.getpid()}
     if details:
         payload["details"] = details
 
-    def _work() -> None:
+    # Collect worker metrics if it's an 'online' heartbeat
+    metrics = {}
+    if status == "online" and psutil:
+        try:
+            proc = psutil.Process(os.getpid())
+            metrics["memory_mb"] = round(proc.memory_info().rss / (1024 * 1024), 2)
+            metrics["cpu_percent"] = proc.cpu_percent(interval=None)
+            payload["metrics"] = metrics
+        except Exception:
+            pass
+
+    def _db_work() -> None:
         conn = None
         try:
             conn = get_connection()
             cur = conn.cursor()
+
+            # 1. Update primary status key in system_settings
             cur.execute(
-                """
-                INSERT INTO system_settings (key, value)
-                VALUES (%s, %s)
-                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
-                """,
+                "INSERT INTO system_settings (key, value) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
                 (BOT_STATUS_KEY, _safe_json(payload)),
             )
+
+            # 2. Log Redis health if health check result is provided
+            if redis_health is not None:
+                cur.execute(
+                    "INSERT INTO redis_health_logs (is_online, details) VALUES (%s, %s)",
+                    (redis_health, details),
+                )
+
+            # 3. Log Worker resource health if metrics were successfully collected
+            if metrics:
+                cur.execute(
+                    "INSERT INTO worker_health_logs (worker_name, cpu_percent, memory_mb) VALUES (%s, %s, %s)",
+                    (
+                        "telegram_bot",
+                        metrics.get("cpu_percent", 0),
+                        metrics.get("memory_mb", 0),
+                    ),
+                )
+
+            # 4. Enforce memory safety limits
+            restart_needed = False
+            if metrics.get("memory_mb", 0) > 0:
+                cur.execute(
+                    "SELECT value FROM system_settings WHERE key='bot_worker_memory_limit'"
+                )
+                row = cur.fetchone()
+                limit = int(row[0]) if row and row[0] else 1024
+                if metrics["memory_mb"] > limit:
+                    logger.error(
+                        "FATAL: Bot memory limit exceeded (%s MB > %s MB). Restarting process.",
+                        metrics["memory_mb"],
+                        limit,
+                    )
+                    restart_needed = True
+
             conn.commit()
+            if restart_needed:
+                release_lock()
+                os._exit(1)
+
         except Exception as e:
-            logger.debug("Could not update bot status: %s", e)
+            if conn:
+                conn.rollback()
+            logger.debug("Bot status DB update failed: %s", e)
         finally:
             if conn:
-                with suppress(Exception):
-                    conn.close()
+                conn.close()
 
-    await asyncio.to_thread(_work)
+    await asyncio.to_thread(_db_work)
 
-
-async def db_record_redis_health(is_online: bool, details: str | None = None) -> None:
-    """Records Redis health status to the database."""
-    def _work() -> None:
-        conn = None
-        try:
-            conn = get_connection()
-            cur = conn.cursor()
-            cur.execute(
-                """
-                INSERT INTO redis_health_logs (is_online, details)
-                VALUES (%s, %s)
-                """,
-                (is_online, details),
-            )
-            conn.commit()
-        except Exception as e:
-            logger.debug("Could not record Redis health: %s", e)
-        finally:
-            if conn:
-                with suppress(Exception):
-                    conn.close()
-    await asyncio.to_thread(_work)
 
 # ---------------------------------------------------------------------------
 # Redis queue
@@ -369,7 +429,9 @@ async def db_record_redis_health(is_online: bool, details: str | None = None) ->
 async def get_redis() -> Redis:
     global redis_client
     if Redis is None:
-        raise ImportError("The 'redis' library is not installed. Please run: pip install redis")
+        raise ImportError(
+            "The 'redis' library is not installed. Please run: pip install redis"
+        )
     if redis_client is None:
         redis_client = Redis.from_url(REDIS_URL, decode_responses=True)
     return redis_client
@@ -377,7 +439,9 @@ async def get_redis() -> Redis:
 
 async def ensure_stream_group(redis: Redis) -> None:
     try:
-        await redis.xgroup_create(name=QUEUE_STREAM, groupname=QUEUE_GROUP, id="0", mkstream=True)
+        await redis.xgroup_create(
+            name=QUEUE_STREAM, groupname=QUEUE_GROUP, id="0", mkstream=True
+        )
     except Exception as e:
         # BUSYGROUP means it already exists.
         if "BUSYGROUP" not in str(e):
@@ -387,7 +451,9 @@ async def ensure_stream_group(redis: Redis) -> None:
 async def enqueue_job(job: SubmissionJob) -> None:
     redis = await get_redis()
     await ensure_stream_group(redis)
-    await redis.xadd(QUEUE_STREAM, job.to_redis_mapping(), maxlen=100000, approximate=True)
+    await redis.xadd(
+        QUEUE_STREAM, job.to_redis_mapping(), maxlen=100000, approximate=True
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -430,29 +496,35 @@ async def heartbeat_loop() -> None:
     while not shutdown_event.is_set():
         try:
             if bot_running_event.is_set():
-                await update_bot_status("online")
-                # Also ping Redis and record its health
+                # Perform health checks
+                redis_online = False
+                redis_err = None
                 try:
                     redis_client_for_ping = await get_redis()
                     await redis_client_for_ping.ping()
-                    await db_record_redis_health(True)
+                    redis_online = True
                 except Exception as redis_e:
-                    logger.warning("Redis ping failed in heartbeat: %s", redis_e)
-                    await db_record_redis_health(False, str(redis_e))
-                failure_count = 0  # reset on success
+                    redis_err = str(redis_e)
+
+                # Execute consolidated status and health update
+                await update_bot_status(
+                    "online", details=redis_err, redis_health=redis_online
+                )
+                failure_count = 0
         except Exception as e:
             failure_count += 1
-            logger.error("Heartbeat error (%s/%s): %s", failure_count, FAILURE_THRESHOLD, e)
-
-            # If too many consecutive failures → mark unhealthy
+            logger.error(
+                "Heartbeat error (%s/%s): %s", failure_count, FAILURE_THRESHOLD, e
+            )
             if failure_count >= FAILURE_THRESHOLD:
-                try:
-                    await update_bot_status("unhealthy", f"Heartbeat failed {failure_count} times")
-                except Exception:
-                    pass
+                await update_bot_status(
+                    "unhealthy", details=f"Consecutive failures: {failure_count}"
+                )
 
         try:
-            await asyncio.wait_for(shutdown_event.wait(), timeout=BOT_HEARTBEAT_INTERVAL)
+            await asyncio.wait_for(
+                shutdown_event.wait(), timeout=BOT_HEARTBEAT_INTERVAL
+            )
         except asyncio.TimeoutError:
             pass
 
@@ -469,7 +541,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.args:
         emp_id_raw = context.args[0]
         if not emp_id_raw.isdigit():
-            await update.effective_message.reply_text("❌ Invalid registration link. Please request a new invite.")
+            await update.effective_message.reply_text(
+                "❌ Invalid registration link. Please request a new invite."
+            )
             return
 
         emp_id = int(emp_id_raw)
@@ -480,10 +554,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"✅ Registration successful. Employee ID {emp_id} is now linked to this chat."
                 )
             else:
-                await update.effective_message.reply_text("❌ Employee ID not found in database.")
+                await update.effective_message.reply_text(
+                    "❌ Employee ID not found in database."
+                )
         except Exception as e:
-            logger.exception("Error linking Telegram chat %s to employee %s: %s", chat_id, emp_id, e)
-            await update.effective_message.reply_text("⚠️ Database error while linking account. Please try again.")
+            logger.exception(
+                "Error linking Telegram chat %s to employee %s: %s", chat_id, emp_id, e
+            )
+            await update.effective_message.reply_text(
+                "⚠️ Database error while linking account. Please try again."
+            )
     else:
         await update.effective_message.reply_text(
             "Welcome. Please use the link from your registration email to link your account."
@@ -498,42 +578,72 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
 
     if not await check_rate_limit(chat_id):
-        await message.reply_text("⚠️ You are sending files too quickly. Please wait a moment and try again.")
+        await message.reply_text(
+            "⚠️ You are sending files too quickly. Please wait a moment and try again."
+        )
         return
 
     try:
         emp = await db_fetch_employee_by_chat(chat_id)
     except Exception as e:
         logger.exception("Error fetching employee link for chat %s: %s", chat_id, e)
-        await message.reply_text("⚠️ Could not verify your account link. Please try again shortly.")
+        await message.reply_text(
+            "⚠️ Could not verify your account link. Please try again shortly."
+        )
         return
 
     if not emp:
-        await message.reply_text("❌ Your Telegram is not linked. Please use the link from your email.")
+        await message.reply_text(
+            "❌ Your Telegram is not linked. Please use the link from your email."
+        )
         return
 
     emp_id, station_id = emp
     if not station_id:
-        await message.reply_text("❌ Your profile has no station assigned yet. Please contact an administrator.")
+        await message.reply_text(
+            "❌ Your profile has no station assigned yet. Please contact an administrator."
+        )
         return
 
     if message.video:
         media = message.video
-        original_name = getattr(media, "file_name", None) or f"video_{message.message_id}.mp4"
+        original_name = (
+            getattr(media, "file_name", None) or f"video_{message.message_id}.mp4"
+        )
     elif _is_video_document(message):
         media = message.document
-        original_name = getattr(media, "file_name", None) or f"document_{message.message_id}.mp4"
+        original_name = (
+            getattr(media, "file_name", None) or f"document_{message.message_id}.mp4"
+        )
     else:
-        await message.reply_text("❌ Please send a video file (mp4/mov/mkv/webm) to queue it for AI analysis.")
+        await message.reply_text(
+            "❌ Please send a video file (mp4/mov/mkv/webm) to queue it for AI analysis."
+        )
         return
 
-    if not _validate_video_file(getattr(media, "file_name", None), getattr(media, "mime_type", None)):
-        await message.reply_text("❌ Unsupported file type. Please send a video file (mp4/mov/mkv/webm).")
+    if not _validate_video_file(
+        getattr(media, "file_name", None), getattr(media, "mime_type", None)
+    ):
+        await message.reply_text(
+            "❌ Unsupported file type. Please send a video file (mp4/mov/mkv/webm)."
+        )
         return
+
+    file_unique_id = getattr(media, "file_unique_id", None)
+    if file_unique_id:
+        redis_conn = await get_redis()
+        dedupe_key = f"gsai:dedupe:{file_unique_id}"
+        if await redis_conn.get(dedupe_key):
+            await message.reply_text(
+                "ℹ️ This video has already been submitted and is currently being processed."
+            )
+            return
 
     media_size = int(getattr(media, "file_size", 0) or 0)
     if media_size > MAX_VIDEO_SIZE_MB * 1024 * 1024:
-        await message.reply_text(f"❌ File is too large. Max allowed size is {MAX_VIDEO_SIZE_MB} MB.")
+        await message.reply_text(
+            f"❌ File is too large. Max allowed size is {MAX_VIDEO_SIZE_MB} MB."
+        )
         return
 
     UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
@@ -549,7 +659,9 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with suppress(Exception):
             if file_path.exists():
                 file_path.unlink()
-        await message.reply_text("⚠️ Could not download your video. Please try sending it again.")
+        await message.reply_text(
+            "⚠️ Could not download your video. Please try sending it again."
+        )
         return
 
     job = SubmissionJob(
@@ -561,22 +673,38 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
         original_file_name=str(getattr(media, "file_name", "") or ""),
         size_bytes=media_size,
         created_ts=_now(),
+        file_unique_id=file_unique_id,
     )
 
     try:
         # Insert the submission record first, then enqueue the processing job.
         await db_insert_submission(job)
         await enqueue_job(job)
-        logger.info("Queued job %s for station %s and employee %s", job.job_id, station_id, emp_id)
+
+        if file_unique_id:
+            await redis_conn.setex(
+                dedupe_key, 86400, "1"
+            )  # Prevent duplicates for 24 hours
+
+        logger.info(
+            "Queued job %s for station %s and employee %s",
+            job.job_id,
+            station_id,
+            emp_id,
+        )
     except Exception as e:
         logger.exception("Error queuing submission %s: %s", job.job_id, e)
         with suppress(Exception):
             if file_path.exists():
                 file_path.unlink()
-        await message.reply_text("⚠️ I received the file, but could not queue it for analysis.")
+        await message.reply_text(
+            "⚠️ I received the file, but could not queue it for analysis."
+        )
         return
 
-    await message.reply_text("✅ Video received and queued for AI analysis. You will see the results in the Dashboard shortly.")
+    await message.reply_text(
+        "✅ Video received and queued for AI analysis. You will see the results in the Dashboard shortly."
+    )
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
@@ -592,12 +720,15 @@ async def update_job_status(job_id: str, status: str) -> None:
         try:
             conn = get_connection()
             cur = conn.cursor()
-            cur.execute("UPDATE submissions SET status=%s WHERE video_path=%s", (status, job_id))
+            cur.execute(
+                "UPDATE submissions SET status=%s WHERE video_path=%s", (status, job_id)
+            )
             conn.commit()
         finally:
             if conn:
                 with suppress(Exception):
                     conn.close()
+
     await asyncio.to_thread(_work)
 
 
@@ -619,7 +750,9 @@ async def process_job(redis: Redis, stream_id: str, job: SubmissionJob) -> None:
 async def worker_loop() -> None:
     redis = await get_redis()
     await ensure_stream_group(redis)
-    consumer_name = os.getenv("QUEUE_CONSUMER") or f"{socket.gethostname()}-{os.getpid()}"
+    consumer_name = (
+        os.getenv("QUEUE_CONSUMER") or f"{socket.gethostname()}-{os.getpid()}"
+    )
 
     while not shutdown_event.is_set():
         try:
@@ -641,7 +774,9 @@ async def worker_loop() -> None:
                         await process_job(redis, stream_id, job)
                         await redis.xack(QUEUE_STREAM, QUEUE_GROUP, stream_id)
                     except Exception as e:
-                        logger.exception("Worker failed for stream id %s: %s", stream_id, e)
+                        logger.exception(
+                            "Worker failed for stream id %s: %s", stream_id, e
+                        )
                         # Leave unacked for retry / inspection. You can add DLQ handling here.
         except asyncio.CancelledError:
             break
@@ -687,7 +822,9 @@ async def run_bot_once() -> None:
 
     await app.initialize()
     await app.start()
-    await app.updater.start_polling(drop_pending_updates=True)
+    await app.updater.start_polling(
+        drop_pending_updates=False
+    )  # Changed to False to prevent missing messages
     logger.info("Telegram bot is running.")
 
     try:
@@ -714,7 +851,9 @@ async def run_bot_with_retry() -> None:
             if shutdown_event.is_set():
                 break
 
-            logger.warning("Bot stopped unexpectedly. Restarting in %s sec...", retry_delay)
+            logger.warning(
+                "Bot stopped unexpectedly. Restarting in %s sec...", retry_delay
+            )
 
         except (NetworkError, TimedOut, RetryAfter) as e:
             logger.error("Network error: %s", e)
@@ -764,13 +903,19 @@ async def main() -> None:
     UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
     if Redis is None:
-        logger.error("FATAL: The 'redis' library is missing. Background workers cannot start.")
+        logger.error(
+            "FATAL: The 'redis' library is missing. Background workers cannot start."
+        )
         await update_bot_status("error", "Library Missing: redis")
         return
 
     if not acquire_lock():
         logger.error("Lock file could not be acquired; another instance is active.")
+        # Do not overwrite the status of the already running instance
         return
+
+    # Immediate status update to signal the process is alive
+    await update_bot_status("starting", f"Process {os.getpid()} acquired lock")
 
     loop = asyncio.get_running_loop()
     _install_signal_handlers(loop)
@@ -789,7 +934,9 @@ async def main() -> None:
         elif BOT_MODE == "both":
             await run_both()
         else:
-            raise ValueError(f"Unsupported BOT_MODE={BOT_MODE!r}. Use bot, worker, or both.")
+            raise ValueError(
+                f"Unsupported BOT_MODE={BOT_MODE!r}. Use bot, worker, or both."
+            )
     except KeyboardInterrupt:
         shutdown_event.set()
     except Exception as e:

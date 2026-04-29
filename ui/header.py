@@ -15,8 +15,9 @@ HELP_TAB_MAP = {
     "Admin Users": "System Administration",
     "Audit Log": "System Administration",
     "Settings": "System Administration",
-    "Help": None # No help button on the help page itself
+    "Help": None,  # No help button on the help page itself
 }
+
 
 def render_page_header(title: str):
     """
@@ -30,7 +31,9 @@ def render_page_header(title: str):
     try:
         # Use a transient connection for the header check to avoid affecting passed connections
         conn = get_connection()
-        row = conn.execute("SELECT COUNT(*) FROM ai_alerts WHERE status IN ('new', 'acknowledged')").fetchone()
+        row = conn.execute(
+            "SELECT COUNT(*) FROM ai_alerts WHERE status IN ('new', 'acknowledged')"
+        ).fetchone()
         if row:
             alert_count = row[0]
         conn.close()
@@ -59,13 +62,24 @@ def render_page_header(title: str):
 
     if alert_col:
         with alert_col:
-            if st.button(f"🔔 {alert_count}", key="header_alert_btn", width="stretch", type="primary", help="Unresolved Alerts"):
+            if st.button(
+                f"🔔 {alert_count}",
+                key="header_alert_btn",
+                width="stretch",
+                type="primary",
+                help="Unresolved Alerts",
+            ):
                 st.session_state["active_page"] = "AI Alerts"
                 st.rerun()
 
     if help_col:
         with help_col:
-            if st.button("❓ Help", key=f"help_btn_{page_id}", width="stretch", help=f"Help: {page_id}"):
+            if st.button(
+                "❓ Help",
+                key=f"help_btn_{page_id}",
+                width="stretch",
+                help=f"Help: {page_id}",
+            ):
                 st.session_state["active_page"] = "Help"
                 st.session_state["help_target_tab"] = help_tab_name
                 st.rerun()

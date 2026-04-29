@@ -2,9 +2,11 @@
 import os
 import requests
 from dotenv import load_dotenv
+
 load_dotenv()
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+
 
 def send_telegram_message(chat_id: str, text: str) -> bool:
     if not TOKEN or not chat_id:

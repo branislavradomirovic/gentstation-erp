@@ -12,28 +12,148 @@ from contextlib import suppress
 import pandas as pd
 import requests
 from datetime import datetime
+
 try:
+    import psutil
     import redis
 except ImportError:
     redis = None
 from core.video_processor import sample_frames, call_ollama
 from core.activity_logger import log_activity
-from core.database import get_pool_stats, get_system_uptime
+from core.database import (
+    get_pool_stats,
+    get_system_uptime,
+    test_redis_connection,
+    DB_HOST,
+)
+from core.video_processor import test_ollama_connection, OLLAMA_BASE_URL
 from ui.header import render_page_header
+from pages.settings import test_bot_worker_status  # Re-use the status check
 
 logger = logging.getLogger("gentstation.ai_monitoring")
+
 
 def render(conn):
     render_page_header("🖥️ AI & Service Monitoring")
 
     # --- System Uptime ---
-    uptime_seconds = get_system_uptime()
-    days = int(uptime_seconds // 86400)
-    hours = int((uptime_seconds % 86400) // 3600)
-    minutes = int((uptime_seconds % 3600) // 60)
+    # --- 1. COMPREHENSIVE SERVICE HEALTH ---
+    st.subheader("🏥 Global Service Health")
+    h_col1, h_col2, h_col3, h_col4 = st.columns(4)
 
-    uptime_str = f"{days}d {hours}h {minutes}m" if days > 0 else f"{hours}h {minutes}m {int(uptime_seconds % 60)}s"
-    st.info(f"⏱️ **System Uptime:** {uptime_str}")
+    def status_badge(is_online, label_on="ONLINE", label_off="OFFLINE"):
+        color = "#28a745" if is_online else "#dc3545"
+        label = label_on if is_online else label_off
+        return f'<span style="background-color:{color}; color:white; padding:4px 12px; border-radius:15px; font-size:0.85rem; font-weight:bold;">{label}</span>'
+
+    with h_col1:
+        st.markdown(f"**Database**\n\n`{DB_HOST}`")
+        st.markdown(status_badge(conn is not None), unsafe_allow_html=True)
+
+    with h_col2:
+        redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+        st.markdown(f"**Redis**\n\n`{redis_url.split('/')[-1]}`")
+        st.markdown(status_badge(test_redis_connection()), unsafe_allow_html=True)
+
+    with h_col3:
+        ai_host = OLLAMA_BASE_URL.replace("http://", "").replace("https://", "")
+        st.markdown(f"**AI Service**\n\n`{ai_host}`")
+        st.markdown(
+            status_badge(test_ollama_connection(), "READY", "UNREACHABLE"),
+            unsafe_allow_html=True,
+        )
+
+    with h_col4:
+        st.markdown("**Bot Worker**\n\n`Telegram`")
+        st.markdown(status_badge(test_bot_worker_status(conn)), unsafe_allow_html=True)
+
+    st.markdown("---")
+
+    # --- 2. WORKER CONTROLS (RESTART) ---
+    st.subheader("⚙️ Background Service Controls")
+    st.write("Force-restart workers if they appear stale or offline.")
+
+    c_ctrl1, c_col2, c_col3 = st.columns([1, 1, 1])
+
+    def _restart_service(lock_name, task_name):
+        lock_path = Path(f"/tmp/{lock_name}")
+        if lock_path.exists():
+            try:
+                pid = int(lock_path.read_text().strip())
+                with suppress(Exception):
+                    os.kill(pid, signal.SIGTERM)
+                time.sleep(0.5)
+                with suppress(Exception):
+                    os.kill(pid, signal.SIGKILL)
+                lock_path.unlink(missing_ok=True)
+                st.toast(
+                    f"Terminated {task_name}. System will auto-spawn a new instance.",
+                    icon="🔄",
+                )
+            except Exception as e:
+                st.error(f"Restart failed: {e}")
+        else:
+            st.info(f"No active lock for {task_name}. Spawning now...")
+
+        # Clear any jobs that might have been stuck in 'processing' by the terminated worker
+        reset_stuck_jobs()
+
+        if "boot_complete" in st.session_state:
+            del st.session_state["boot_complete"]
+        time.sleep(1)
+        st.rerun()
+
+    if c_ctrl1.button("🔄 Restart AI Worker", width="stretch"):
+        _restart_service("gentstationai_ai_worker.lock", "AI Worker")
+    if c_col2.button("🔄 Restart Bot Worker", width="stretch"):
+        _restart_service("gentstationai_bot_worker.lock", "Bot Worker")
+    if c_col3.button("🧹 Deep Clean All", type="secondary", width="stretch"):
+        st.session_state.active_page = "Settings"  # Redirect to deep clean in settings
+        st.rerun()
+
+    st.markdown("---")
+
+    # --- New Real-Time Metrics Widget ---
+    st.subheader("⚡ Real-Time Worker Metrics")
+    m_col1, m_col2 = st.columns(2)
+
+    def get_latest_metrics(worker_name):
+        row = conn.execute(
+            """
+            SELECT cpu_percent, memory_mb, timestamp
+            FROM worker_health_logs
+            WHERE worker_name = %s
+            ORDER BY timestamp DESC LIMIT 1
+        """,
+            (worker_name,),
+        ).fetchone()
+        return row if row else (0.0, 0.0, None)
+
+    ai_cpu, ai_mem, ai_ts = get_latest_metrics("ai_worker")
+    bot_cpu, bot_mem, bot_ts = get_latest_metrics("telegram_bot")
+
+    with m_col1:
+        with st.container(border=True):
+            st.markdown("**🧠 AI Worker Resources**")
+            c1, c2 = st.columns(2)
+            c1.metric("CPU", f"{ai_cpu}%")
+            c2.metric("Memory", f"{int(ai_mem)} MB")
+            if ai_ts:
+                st.caption(f"Last sync: {ai_ts.strftime('%H:%M:%S')}")
+
+    with m_col2:
+        with st.container(border=True):
+            st.markdown("**🤖 Bot Worker Resources**")
+            c1, c2 = st.columns(2)
+            c1.metric("CPU", f"{bot_cpu}%")
+            c2.metric("Memory", f"{int(bot_mem)} MB")
+            if bot_ts:
+                st.caption(f"Last sync: {bot_ts.strftime('%H:%M:%S')}")
+
+    if st.button("🔄 Refresh Real-Time Data", width="stretch"):
+        st.rerun()
+
+    st.markdown("---")
 
     st.write("Real-time operational status of AI components and background services.")
 
@@ -65,13 +185,16 @@ def render(conn):
             st.warning(f"⚪ {title}: Offline")
 
         if ts:
-            updated_str = datetime.fromtimestamp(float(ts)).strftime('%Y-%m-%d %H:%M:%S')
+            updated_str = datetime.fromtimestamp(float(ts)).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
             st.caption(f"Last update: {updated_str}")
         return status_info
 
-    # --- Redis Status ---
-    st.divider()
-    st.subheader("📦 Infrastructure Services")
+    # --- Worker Status & Control ---
+    st.subheader("⚙️ Worker Status & Control")
+
+    w_col1, w_col2 = st.columns(2)
 
     r_col1, r_col2 = st.columns(2)
 
@@ -79,11 +202,18 @@ def render(conn):
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     if redis is None:
         r_col1.error("🔴 Redis: Library Missing")
+        r_col1.caption("Please install the `redis` library.")
         r_col1.caption("Please run: pip install redis")
     else:
         # Try to fetch last known active time from DB
-        last_active_row = conn.execute("SELECT value FROM system_settings WHERE key=%s", ("redis_last_active",)).fetchone()
-        last_active_ts = float(last_active_row[0]) if last_active_row and last_active_row[0] else None
+        last_active_row = conn.execute(
+            "SELECT value FROM system_settings WHERE key=%s", ("redis_last_active",)
+        ).fetchone()
+        last_active_ts = (
+            float(last_active_row[0])
+            if last_active_row and last_active_row[0]
+            else None
+        )
 
         try:
             r = redis.from_url(redis_url, socket_connect_timeout=2)
@@ -93,40 +223,46 @@ def render(conn):
             now_ts = time.time()
             conn.execute(
                 "INSERT INTO system_settings (key, value) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
-                ("redis_last_active", str(now_ts))
+                ("redis_last_active", str(now_ts)),
             )
             conn.commit()
 
             r_col1.success("✅ Redis: Online")
             r_col1.caption(f"Connected to {redis_url}")
-            r_col1.caption(f"Last active: {datetime.fromtimestamp(now_ts).strftime('%Y-%m-%d %H:%M:%S')}")
+            r_col1.caption(
+                f"Last active: {datetime.fromtimestamp(now_ts).strftime('%Y-%m-%d %H:%M:%S')}"
+            )
         except Exception as e:
             r_col1.error(f"🔴 Redis: Offline")
             r_col1.caption(f"Error: {e}")
             if last_active_ts:
-                r_col1.caption(f"Last active: {datetime.fromtimestamp(last_active_ts).strftime('%Y-%m-%d %H:%M:%S')}")
+                r_col1.caption(
+                    f"Last active: {datetime.fromtimestamp(last_active_ts).strftime('%Y-%m-%d %H:%M:%S')}"
+                )
 
-    # Redis Health History Chart
-    st.subheader("Redis Health History (Last 24h)")
-    try:
-        history_df = pd.read_sql_query(
-            """
-            SELECT timestamp, is_online
-            FROM redis_health_logs
-            WHERE timestamp >= NOW() - INTERVAL '24 HOURS'
-            ORDER BY timestamp ASC
-            """,
-            conn
-        )
-        if not history_df.empty:
-            # Convert boolean to int for charting (1 = Online, 0 = Offline)
-            history_df['is_online_int'] = history_df['is_online'].astype(int)
-            st.line_chart(history_df.set_index('timestamp')['is_online_int'])
-            st.caption("Chart shows 1 for Online, 0 for Offline.")
-        else:
-            st.info("No Redis health history available yet. Ensure the Telegram bot worker is running.")
-    except Exception as e:
-        st.warning(f"Could not load Redis health history: {e}")
+    with st.expander("Redis Health History (Last 24h)", expanded=False):
+        try:
+            # Use the connection passed to the render function
+            history_df = pd.read_sql_query(
+                """
+                SELECT timestamp, is_online
+                FROM redis_health_logs
+                WHERE timestamp >= NOW() - INTERVAL '24 HOURS'
+                ORDER BY timestamp ASC
+                """,
+                conn,
+            )
+            if not history_df.empty:
+                # Convert boolean to int for charting (1 = Online, 0 = Offline)
+                history_df["is_online_int"] = history_df["is_online"].astype(int)
+                st.line_chart(history_df.set_index("timestamp")["is_online_int"])
+                st.caption("Chart shows 1 for Online, 0 for Offline.")
+            else:
+                st.info(
+                    "No Redis health history available yet. Ensure the Telegram bot worker is running."
+                )
+        except Exception as e:
+            st.warning(f"Could not load Redis health history: {e}")
 
     # AI Inference Latency Chart
     st.subheader("AI Inference Latency (Last 24h)")
@@ -138,86 +274,108 @@ def render(conn):
             WHERE timestamp >= NOW() - INTERVAL '24 HOURS'
             ORDER BY timestamp ASC
             """,
-            conn
+            conn,
         )
         if not latency_df.empty:
             # Display a multiline chart grouped by model
-            chart_data = latency_df.pivot(index='timestamp', columns='model_name', values='latency_seconds')
+            chart_data = latency_df.pivot(
+                index="timestamp", columns="model_name", values="latency_seconds"
+            )
+            st.write("**Latency (seconds)**")
             st.area_chart(chart_data)
-            st.caption("Latency in seconds. Higher values indicate slower model response times.")
+            st.caption(
+                "Latency in seconds. Higher values indicate slower model response times."
+            )
         else:
-            st.info("No inference latency data recorded yet. Processing more videos will populate this chart.")
+            st.info(
+                "No inference latency data recorded yet. Processing more videos will populate this chart."
+            )
     except Exception as e:
         st.warning(f"Could not load latency history: {e}")
 
     # Worker Health Charts
-    st.subheader("⚙️ Worker Resource Usage (Last 24h)")
-    try:
-        health_df = pd.read_sql_query(
-            """
-            SELECT timestamp, worker_name, cpu_percent, memory_mb
-            FROM worker_health_logs
-            WHERE timestamp >= NOW() - INTERVAL '24 HOURS'
-            ORDER BY timestamp ASC
-            """,
-            conn
-        )
-        if not health_df.empty:
-            hcol1, hcol2 = st.columns(2)
+    with st.expander("Worker Resource Usage", expanded=False):
+        try:
+            health_df = pd.read_sql_query(
+                """
+                SELECT timestamp, worker_name, cpu_percent, memory_mb
+                FROM worker_health_logs
+                WHERE timestamp >= NOW() - INTERVAL '24 HOURS'
+                ORDER BY timestamp ASC
+                """,
+                conn,
+            )
+            if not health_df.empty:
+                hcol1, hcol2 = st.columns(2)
 
-            with hcol1:
-                st.write("**CPU Usage (%)**")
-                cpu_chart = health_df.pivot(index='timestamp', columns='worker_name', values='cpu_percent')
-                st.line_chart(cpu_chart)
+                with hcol1:
+                    st.write("**CPU Usage (%)**")
+                    cpu_chart = health_df.pivot(
+                        index="timestamp", columns="worker_name", values="cpu_percent"
+                    )
+                    st.line_chart(cpu_chart)
 
-            with hcol2:
-                st.write("**Memory Usage (MB)**")
-                mem_chart = health_df.pivot(index='timestamp', columns='worker_name', values='memory_mb')
-                st.line_chart(mem_chart)
+                with hcol2:
+                    st.write("**Memory Usage (MB)**")
+                    mem_chart = health_df.pivot(
+                        index="timestamp", columns="worker_name", values="memory_mb"
+                    )
+                    st.line_chart(mem_chart)
 
-            st.caption("Monitoring real-time overhead of AI inference and Telegram bot activity.")
-        else:
-            st.info("No worker health data recorded yet.")
-    except Exception as e:
-        st.warning(f"Could not load worker health history: {e}")
+                st.caption(
+                    "Monitoring real-time overhead of AI inference and Telegram bot activity."
+                )
+            else:
+                st.info("No worker health data recorded yet.")
+        except Exception as e:
+            st.warning(f"Could not load worker health history: {e}")
 
     # AI Success/Failure Rate Chart
-    st.subheader("AI Processing Volume (Last 24h)")
-    try:
-        volume_df = pd.read_sql_query(
-            """
-            SELECT
-                date_trunc('hour', processed_ts) as hour,
-                COUNT(*) FILTER (WHERE processed = 1) as success,
-                COUNT(*) FILTER (WHERE processed = -1) as failure
-            FROM submissions
-            WHERE processed_ts >= NOW() - INTERVAL '24 HOURS'
-            GROUP BY 1
-            ORDER BY 1 ASC
-            """,
-            conn
-        )
-        if not volume_df.empty:
-            volume_df = volume_df.set_index('hour')
-            st.bar_chart(volume_df)
-            st.caption("Hourly breakdown of completed (Success) vs. exhausted (Failure) AI jobs.")
-        else:
-            st.info("No processing volume data found for the last 24 hours.")
-    except Exception as e:
-        st.warning(f"Could not load processing volume: {e}")
+    with st.expander("AI Processing Volume", expanded=False):
+        st.write("**Hourly Processing Volume**")
+        try:
+            volume_df = pd.read_sql_query(
+                """
+                SELECT
+                    date_trunc('hour', processed_ts) as hour,
+                    COUNT(*) FILTER (WHERE processed = 1) as success,
+                    COUNT(*) FILTER (WHERE processed = -1) as failure
+                FROM submissions
+                WHERE processed_ts >= NOW() - INTERVAL '24 HOURS'
+                GROUP BY 1
+                ORDER BY 1 ASC
+                """,
+                conn,
+            )
+            if not volume_df.empty:
+                volume_df = volume_df.set_index("hour")
+                st.bar_chart(volume_df)
+                st.caption(
+                    "Hourly breakdown of completed (Success) vs. exhausted (Failure) AI jobs."
+                )
+            else:
+                st.info("No processing volume data found for the last 24 hours.")
+        except Exception as e:
+            st.warning(f"Could not load processing volume: {e}")
 
-    # DB Pool Stats
+    # --- Infrastructure Services ---
+    st.markdown("---")
+    st.subheader("📦 Infrastructure Services")
     stats = get_pool_stats()
     if stats:
         r_col2.success("✅ Database Health")
-        usage_pct = (stats['used'] / stats['maxconn']) * 100
-        r_col2.metric("Connections In Use", f"{stats['used']} / {stats['maxconn']}", f"{usage_pct:.1f}% load")
-        r_col2.progress(stats['used'] / stats['maxconn'])
+        usage_pct = (stats["used"] / stats["maxconn"]) * 100
+        r_col2.metric(
+            "Connections In Use",
+            f"{stats['used']} / {stats['maxconn']}",
+            f"{usage_pct:.1f}% load",
+        )
+        r_col2.progress(stats["used"] / stats["maxconn"])
     else:
         r_col2.error("🔴 Database Pool: Error")
 
-    # --- Query Statistics ---
-    st.divider()
+    # --- Database Query Performance ---
+    st.markdown("---")
     st.subheader("📊 Database Query Performance")
 
     qcol1, qcol2 = st.columns([2, 1])
@@ -237,7 +395,7 @@ def render(conn):
             ORDER BY "Hits" DESC
             LIMIT 10
             """,
-            conn
+            conn,
         )
 
         with qcol1:
@@ -245,412 +403,63 @@ def render(conn):
             if not query_stats_df.empty:
                 st.dataframe(query_stats_df, hide_index=True, width="stretch")
             else:
-                st.info("No slow queries recorded in the last 24 hours. Performance looks good!")
+                st.info(
+                    "No slow queries recorded in the last 24 hours. Performance looks good!"
+                )
 
         with qcol2:
             st.write("**Recent Slow Incidents**")
             recent_slow = pd.read_sql_query(
                 "SELECT timestamp, duration_seconds FROM slow_query_logs ORDER BY timestamp DESC LIMIT 5",
-                conn
+                conn,
             )
             if not recent_slow.empty:
-                st.line_chart(recent_slow.set_index('timestamp'))
+                st.line_chart(recent_slow.set_index("timestamp"))
     except Exception as e:
         st.warning(f"Could not load query statistics: {e}")
 
-    # --- Telegram Bot Status ---
-    st.divider()
-    st.subheader("🤖 Telegram Bot")
-    bot_row = conn.execute("SELECT value FROM system_settings WHERE key='telegram_bot_status'").fetchone()
-    bot_status_info = render_worker_status("Telegram Bot Worker", bot_row, stale_after_seconds=90)
-
-    bot_status = bot_status_info.get("status", "offline")
-    bot_last_update_ts = bot_status_info.get("last_update_ts")
-    bot_details = bot_status_info.get("details")
-    bot_stale = False
-    if bot_last_update_ts:
-        try:
-            bot_stale = (time.time() - float(bot_last_update_ts)) > 90
-        except Exception:
-            bot_stale = False
-
-    token_configured = bool((os.getenv("TELEGRAM_BOT_TOKEN") or "").strip())
-    if not token_configured:
-        st.caption("Why offline: `TELEGRAM_BOT_TOKEN` is missing in `.env`.")
-    elif bot_status == "error":
-        st.caption(f"Worker reported error: {bot_details or 'N/A'}")
-    elif bot_stale:
-        st.caption("Heartbeat is stale. Worker process may be stuck.")
-
-    # --- AI Worker Status ---
-    st.divider()
-    st.subheader("🧠 AI Worker")
-    ai_status_row = conn.execute("SELECT value FROM system_settings WHERE key='ai_processing_status'").fetchone()
-    ai_status_info = {}
-    if ai_status_row and ai_status_row[0]:
-        try:
-            ai_status_info = json.loads(ai_status_row[0])
-        except json.JSONDecodeError:
-            ai_status_info = {"status": "unknown"}
-
-    ai_status = ai_status_info.get("status", "idle")
-    ai_last_update_ts = ai_status_info.get("last_update_ts")
-    ai_stale = False
-    if ai_last_update_ts:
-        try:
-            ai_stale = (time.time() - float(ai_last_update_ts)) > 180
-        except Exception:
-            ai_stale = False
-
-    if ai_stale and ai_last_update_ts:
-        st.error(f"🔴 AI Worker: Stale Heartbeat")
-        st.caption(f"The worker was last active {int(time.time() - float(ai_last_update_ts))}s ago.")
-    elif ai_status == "processing":
-        total = ai_status_info.get("total", 0)
-        current = ai_status_info.get("current", 0)
-        progress_val = (current / total) if total > 0 else 0
-        st.info("AI processing is currently in progress...")
-        st.progress(progress_val, text=f"Processing task {current} of {total}")
-        st.html("<meta http-equiv='refresh' content='10'>")
-
-    # Show Reset button if either processing or stale
-    if ai_status == "processing" or (ai_stale and ai_last_update_ts):
-        if st.button("🔄 Reset AI Status to Idle", key="reset_ai_manual", width="stretch"):
-            conn.execute("UPDATE system_settings SET value = %s WHERE key = 'ai_processing_status'", (json.dumps({"status": "idle", "last_update_ts": time.time()}),))
-            conn.commit()
-            log_activity(conn, "AI_STATUS_RESET", "User manually cleared stuck AI status")
-            st.success("Status reset. If the worker was genuinely stuck, it will now resume.")
-            time.sleep(1)
-            st.rerun()
-    else:
-        last_run_ts = ai_status_info.get("last_run_ts")
-        if last_run_ts:
-            last_run_str = datetime.fromtimestamp(last_run_ts).strftime('%Y-%m-%d %H:%M:%S')
-            st.success(f"✅ AI Worker is idle. Last batch finished at {last_run_str}.")
-        else:
-            st.success("✅ AI Worker is idle.")
-
-    if st.button("🚀 Force AI Processing Batch", type="primary", width="stretch"):
-        conn.execute(
-            """
-            INSERT INTO system_settings (key, value)
-            VALUES (%s, '1')
-            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
-            """,
-            ("force_ai_processing",)
-        )
-        conn.commit()
-        log_activity(conn, "AI_FORCE_RUN", "User manually triggered AI processing batch")
-        st.success("Batch processing signal sent!")
-        time.sleep(1)
-        st.rerun()
-
-    # --- Ollama Status ---
-    st.divider()
-    st.subheader("🦙 Ollama Connectivity")
-
-    # Active Model Display
-    row_m = conn.execute("SELECT value FROM system_settings WHERE key='ollama_model_override'").fetchone()
-    row_v = conn.execute("SELECT value FROM system_settings WHERE key='ollama_vision_model_override'").fetchone()
-
-    active_llm = row_m[0] if row_m else os.getenv("OLLAMA_MODEL", "qwen2.5:14b-instruct")
-    active_vision = row_v[0] if row_v else os.getenv("OLLAMA_VISION_MODEL", "bakllava")
-
-    mcol1, mcol2 = st.columns(2)
-    mcol1.info(f"**Active LLM:** {active_llm}")
-
-    if active_vision:
-        mcol2.success(f"**Vision System:** Enabled ({active_vision})")
-    else:
-        mcol2.warning("**Vision System:** Disabled (Using Metadata Only)")
-    st.write("")
-
-    # Auto-Scale status indicator
-    row_as_active = conn.execute("SELECT value FROM system_settings WHERE key='ai_auto_scale_active'").fetchone()
-    if row_as_active and row_as_active[0] == '1':
-        st.warning(f"📉 **Auto-Scale Active:** System has switched to a smaller model due to high memory pressure.")
-        if st.button("♻️ Restore Primary Model", width="stretch"):
-            conn.execute("UPDATE system_settings SET value = '0' WHERE key = 'ai_auto_scale_active'")
-            conn.commit()
-            log_activity(conn, "AUTO_SCALE_RESET", "User manually restored primary AI model")
-            st.success("Primary model restored. Next job will use default configuration.")
-            time.sleep(1)
-            st.rerun()
-
-    if st.button("🩺 Run Full System Health Check", width="stretch", type="primary"):
-        with st.status("Executing AI Pipeline Diagnostics...") as status_box:
-            # 1. Connectivity Check
-            st.write("Probing Ollama API connectivity...")
-            base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-            try:
-                resp = requests.get(f"{base_url}/api/tags", timeout=5)
-                if resp.status_code == 200:
-                    st.write("✅ API Connectivity: **OK**")
-                else:
-                    st.write(f"❌ API Connectivity: **Failed** (HTTP {resp.status_code})")
-            except Exception as e:
-                st.write(f"❌ API Connectivity: **Error** ({e})")
-
-            # 2. LLM Inference Check
-            st.write(f"Testing Primary LLM ({active_llm})...")
-            try:
-                llm_start = time.time()
-                llm_response = call_ollama("Verify system health. Respond with exactly 'READY'.", active_llm, is_json=False)
-                llm_time = time.time() - llm_start
-                if "READY" in llm_response.upper():
-                    st.write(f"✅ LLM Inference: **Functional** (Latency: {llm_time:.1f}s)")
-                else:
-                    st.write(f"⚠️ LLM Inference: **Partial** (Unexpected response: '{llm_response}')")
-            except Exception as e:
-                st.write(f"❌ LLM Inference: **Failed** ({e})")
-
-            # 3. Vision Inference Check
-            if active_vision:
-                st.write(f"Testing Vision Model ({active_vision})...")
-                try:
-                    res = conn.execute("SELECT video_path FROM submissions WHERE video_path IS NOT NULL ORDER BY timestamp DESC LIMIT 1").fetchone()
-                    if res and os.path.exists(res[0]):
-                        frames = sample_frames(res[0], 1)
-                        if frames:
-                            v_resp = call_ollama("What is this? (1-3 words)", active_vision, [frames[0].image_b64], is_json=False)
-                            st.write(f"✅ Vision Inference: **Functional** (Response: '{v_resp}')")
-                        else:
-                            st.write("❌ Vision Inference: **Failed** (Frame extraction failed)")
-                    else:
-                        st.write("ℹ️ Vision Inference: **Skipped** (No sample video found in database)")
-                except Exception as e:
-                    st.write(f"❌ Vision Inference: **Failed** ({e})")
-
-            status_box.update(label="System Health Check Complete", state="complete", expanded=True)
-
-    def _ollama_candidate_urls():
-        base = (os.getenv("OLLAMA_BASE_URL", "http://localhost:11434") or "").rstrip("/")
-        local_only = os.getenv("OLLAMA_LOCAL_ONLY", "1").strip().lower() in {"1", "true", "yes", "on"}
-        seen = set()
-        urls = []
-        def add(url):
-            url = (url or "").rstrip("/")
-            if url and url not in seen:
-                seen.add(url)
-                urls.append(url)
-        add(base)
-        add("http://localhost:11434")
-        if not local_only:
-            add("http://host.docker.internal:11434")
-        return urls
-
-    if st.button("🔎 Test Ollama Connectivity", width="stretch"):
-        checked = []
-        success_url = None
-        models = []
-        for base_url in _ollama_candidate_urls():
-            tags_url = f"{base_url}/api/tags"
-            try:
-                resp = requests.get(tags_url, timeout=5)
-                if resp.status_code == 200:
-                    payload = resp.json() if resp.content else {}
-                    models = payload.get("models", []) or []
-                    success_url = base_url
-                    break
-                checked.append(f"{tags_url} -> HTTP {resp.status_code}")
-            except Exception as e:
-                checked.append(f"{tags_url} -> {e}")
-
-        if success_url:
-            st.success(f"✅ Ollama is reachable at: {success_url}")
-            if models:
-                model_rows = []
-                for m in models:
-                    model_rows.append({
-                        "Model": m.get("name") or m.get("model") or "unknown",
-                        "Size": m.get("size", "-"),
-                        "Modified": m.get("modified_at", "-"),
-                    })
-                st.dataframe(model_rows, width="stretch", hide_index=True)
-            else:
-                st.info("Connected to Ollama, but no models are currently available.")
-        else:
-            st.error("❌ Could not connect to Ollama.")
-            st.code("\n".join(checked), language="text")
-
-    if st.button("🖼️ Test Vision Inference", width="stretch", help="Extract one frame from a recent video and ask the model to describe it.", disabled=not active_vision):
-        # 1. Find a sample video from recent submissions
-        res = conn.execute("SELECT video_path FROM submissions WHERE video_path IS NOT NULL ORDER BY timestamp DESC LIMIT 1").fetchone()
-
-        if not res or not os.path.exists(res[0]):
-            st.error("No valid video files found in the database to use for testing.")
-        else:
-            video_path = res[0]
-            with st.spinner(f"Extracting frame and calling {active_vision}..."):
-                try:
-                    # Extract exactly 1 frame
-                    frames = sample_frames(video_path, 1)
-                    if frames:
-                        # Display the frame to verify OpenCV is working
-                        st.image(base64.b64decode(frames[0].image_b64), caption=f"Test frame extracted from: {os.path.basename(video_path)}")
-
-                        # Call Ollama with the specific vision model
-                        test_prompt = "Describe what you see in this gas station CCTV frame in one short sentence."
-                        desc = call_ollama(test_prompt, active_vision, [frames[0].image_b64], is_json=False)
-
-                        st.success(f"**Model Response:** {desc}")
-                    else:
-                        st.error("OpenCV was unable to extract any frames from the selected video.")
-                except Exception as e:
-                    st.error(f"Vision test failed: {e}")
-
-    # --- Process Management ---
-    st.divider()
-    st.subheader("🛠️ Process Management")
-    st.write("Manually stop or restart background services. This will clear lock files and attempt to spawn new process instances.")
-
-    def _kill_worker(lock_path):
-        if lock_path.exists():
-            try:
-                pid_text = lock_path.read_text().strip()
-                if pid_text:
-                    pid = int(pid_text)
-                    # Try SIGTERM first
-                    os.kill(pid, signal.SIGTERM)
-                    time.sleep(1)
-                    # Check if still alive, then SIGKILL
-                    try:
-                        os.kill(pid, 0)
-                        os.kill(pid, signal.SIGKILL)
-                    except OSError:
-                        pass
-            except Exception as e:
-                logger.debug(f"Process kill error for {lock_path}: {e}")
-            finally:
-                with suppress(Exception):
-                    lock_path.unlink(missing_ok=True)
-
-    pm_col1, pm_col2, pm_col3, pm_col4 = st.columns(4)
-
-    if pm_col1.button("🛑 Stop All Workers", width="stretch", help="Kills current worker processes and deletes lock files."):
-        with st.spinner("Terminating worker processes..."):
-            _kill_worker(Path("/tmp/gentstationai_bot_worker.lock"))
-            _kill_worker(Path("/tmp/gentstationai_ai_worker.lock"))
-            log_activity(conn, "WORKER_STOP", "User stopped all background workers via UI")
-            st.success("All workers stopped and locks cleared.")
-            time.sleep(1)
-            st.rerun()
-
-    if pm_col2.button("🤖 Restart Bot", width="stretch", help="Restarts only the Telegram Bot process."):
-        with st.spinner("Restarting Telegram Bot..."):
-            # 1. Kill existing
-            _kill_worker(Path("/tmp/gentstationai_bot_worker.lock"))
-
-            # 2. Spawn new
-            project_root = Path(__file__).resolve().parents[1]
-            bot_script = project_root / "core" / "bot_worker.py"
-            bot_log = Path("/tmp/gentstation_bot.log")
-
-            try:
-                bot_log.parent.mkdir(parents=True, exist_ok=True)
-                log_file = open(bot_log, "a", buffering=1)
-                subprocess.Popen(
-                    [sys.executable, "-u", str(bot_script)],
-                    cwd=str(project_root),
-                    stdout=log_file,
-                    stderr=log_file,
-                    start_new_session=True,
-                )
-                log_activity(conn, "BOT_RESTART", "User manually restarted the Telegram Bot")
-                st.success("Bot restart command issued.")
-            except Exception as e:
-                st.error(f"Failed to start Bot: {e}")
-            time.sleep(1)
-            st.rerun()
-
-    if pm_col3.button("🧠 Restart AI", width="stretch", help="Restarts only the AI analysis process."):
-        with st.spinner("Restarting AI worker..."):
-            # 1. Kill existing
-            _kill_worker(Path("/tmp/gentstationai_ai_worker.lock"))
-
-            # 2. Spawn new
-            project_root = Path(__file__).resolve().parents[1]
-            ai_script = project_root / "core" / "ai_worker.py"
-            ai_log = Path("/tmp/gentstation_ai.log")
-
-            try:
-                ai_log.parent.mkdir(parents=True, exist_ok=True)
-                log_file = open(ai_log, "a", buffering=1)
-                subprocess.Popen(
-                    [sys.executable, "-u", str(ai_script)],
-                    cwd=str(project_root),
-                    stdout=log_file,
-                    stderr=log_file,
-                    start_new_session=True,
-                )
-                log_activity(conn, "AI_RESTART", "User manually restarted the AI Worker")
-                st.success("AI Worker restart command issued.")
-            except Exception as e:
-                st.error(f"Failed to start AI Worker: {e}")
-            time.sleep(1)
-            st.rerun()
-
-    if pm_col4.button("🔄 Restart All", type="primary", width="stretch", help="Kills current processes and immediately spawns new ones."):
-        with st.spinner("Restarting worker processes..."):
-            # 1. Kill and Clean
-            _kill_worker(Path("/tmp/gentstationai_bot_worker.lock"))
-            _kill_worker(Path("/tmp/gentstationai_ai_worker.lock"))
-
-            # 2. Re-spawn (Logic similar to app.py)
-            project_root = Path(__file__).resolve().parents[1]
-            worker_configs = [
-                (project_root / "core" / "bot_worker.py", Path("/tmp/gentstation_bot.log")),
-                (project_root / "core" / "ai_worker.py", Path("/tmp/gentstation_ai.log"))
-            ]
-
-            for script_path, log_path in worker_configs:
-                if script_path.exists():
-                    try:
-                        log_path.parent.mkdir(parents=True, exist_ok=True)
-                        log_file = open(log_path, "a", buffering=1)
-                        subprocess.Popen(
-                            [sys.executable, "-u", str(script_path)],
-                            cwd=str(project_root),
-                            stdout=log_file,
-                            stderr=log_file,
-                            start_new_session=True,
-                        )
-                    except Exception as e:
-                        st.error(f"Failed to start {script_path.name}: {e}")
-
-            log_activity(conn, "WORKER_RESTART", "User restarted all background workers via UI")
-            st.success("Restart commands issued successfully.")
-            time.sleep(2)
-            st.rerun()
-
-    # --- 1.6 LOG VIEWER ---
-    st.divider()
-    st.subheader("📄 AI Worker Output")
-    ai_log_path = Path("/tmp/gentstation_ai.log")
-    if ai_log_path.exists():
-        with st.expander("🔍 View Recent Processing Logs", expanded=False):
-            try:
-                log_content = ai_log_path.read_text().splitlines()[-100:]
-                st.code("\n".join(log_content), language="text")
-            except Exception as e:
-                st.error(f"Could not read log file: {e}")
-    else:
-        st.info("Log file `/tmp/gentstation_ai.log` not found. Processing may not have started yet.")
-
     # --- Diagnostics ---
-    st.divider()
+    st.markdown("---")
     st.subheader("🛠 Diagnostics")
 
+    # Fetch latest heartbeats for metrics
+    ai_status_row = conn.execute(
+        "SELECT value FROM system_settings WHERE key='ai_processing_status'"
+    ).fetchone()
+    ai_last_update_ts = None
+    if ai_status_row and ai_status_row[0]:
+        try:
+            ai_last_update_ts = json.loads(ai_status_row[0]).get("last_update_ts")
+        except Exception:
+            pass
+
+    bot_status_row = conn.execute(
+        "SELECT value FROM system_settings WHERE key='telegram_bot_status'"
+    ).fetchone()
+    bot_last_update_ts = None
+    if bot_status_row and bot_status_row[0]:
+        try:
+            bot_last_update_ts = json.loads(bot_status_row[0]).get("last_update_ts")
+        except Exception:
+            pass
+
     def _age_text(ts_value):
-        if not ts_value: return "N/A"
+        if not ts_value:
+            return "N/A"
         try:
             age_sec = max(0, int(time.time() - float(ts_value)))
-            if age_sec < 60: return f"{age_sec}s ago"
+            if age_sec < 60:
+                return f"{age_sec}s ago"
             return f"{age_sec // 60}m {age_sec % 60}s ago"
-        except: return "Error"
+        except:
+            return "Error"
 
-    pending_row = conn.execute("SELECT COUNT(*) FROM submissions WHERE processed = 0 AND video_path IS NOT NULL").fetchone()
-    failed_row = conn.execute("SELECT COUNT(*) FROM submissions WHERE processed = -1").fetchone()
+    pending_row = conn.execute(
+        "SELECT COUNT(*) FROM submissions WHERE processed = 0 AND video_path IS NOT NULL"
+    ).fetchone()
+    failed_row = conn.execute(
+        "SELECT COUNT(*) FROM submissions WHERE processed = -1"
+    ).fetchone()
 
     dcol1, dcol2, dcol3, dcol4 = st.columns(4)
     dcol1.metric("Bot Last Signal", _age_text(bot_last_update_ts))
@@ -658,5 +467,9 @@ def render(conn):
     dcol3.metric("Pending Tasks", pending_row[0] if pending_row else 0)
     dcol4.metric("Failed Tasks", failed_row[0] if failed_row else 0)
 
-    st.caption("💡 **Tip:** If videos are pending but AI Last Signal is old, check `/tmp/gentstation_ai.log` for Ollama connection errors.")
-    st.code("pkill -f core/bot_worker.py && pkill -f core/ai_worker.py", language="bash")
+    st.caption(
+        "💡 **Tip:** If videos are pending but AI Last Signal is old, check worker logs for Ollama connection errors."
+    )
+    st.code(
+        "pkill -f core/bot_worker.py && pkill -f core/ai_worker.py", language="bash"
+    )

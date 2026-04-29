@@ -6,16 +6,19 @@ import logging
 import os
 import subprocess
 import sys
+import random
 import time
+
 try:
     import psutil
 except ImportError:
     psutil = None
-import random
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 from contextlib import suppress, closing
+
+import redis
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
@@ -27,7 +30,9 @@ from core.comm_service import send_ai_report_email
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
 logger = logging.getLogger("gentstation.ai_worker")
 
 
@@ -39,6 +44,9 @@ POLL_INTERVAL_SECONDS = int(os.getenv("AI_WORKER_POLL_INTERVAL_SECONDS", "10"))
 EMPTY_BACKOFF_MAX_SECONDS = int(os.getenv("AI_WORKER_EMPTY_BACKOFF_MAX_SECONDS", "60"))
 AI_MAX_RETRIES = int(os.getenv("AI_WORKER_MAX_RETRIES", "3"))
 AI_MEMORY_LIMIT_MB = int(os.getenv("AI_WORKER_MEMORY_LIMIT_MB", "2048"))
+
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+DEDUPE_KEY_PREFIX = "gsai:dedupe:"
 
 
 # ---------------------------------------------------------------------------
@@ -57,7 +65,9 @@ def _pid_alive(pid: int) -> bool:
         return False
 
     try:
-        stat = subprocess.check_output(["ps", "-p", str(pid), "-o", "stat="], text=True).strip()
+        stat = subprocess.check_output(
+            ["ps", "-p", str(pid), "-o", "stat="], text=True
+        ).strip()
         if not stat or stat.startswith("Z"):
             return False
     except Exception:
@@ -115,69 +125,99 @@ class SubmissionJob:
     video_path: str
     station_id: int
     retry_count: int = 0
+    file_unique_id: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# Redis client for AI worker (synchronous)
+# ---------------------------------------------------------------------------
+_sync_redis_client: Optional[redis.Redis] = None
+
+
+def get_sync_redis() -> redis.Redis:
+    global _sync_redis_client
+    if _sync_redis_client is None:
+        _sync_redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+    return _sync_redis_client
 
 
 # ---------------------------------------------------------------------------
 # DB helpers
 # ---------------------------------------------------------------------------
-def record_worker_health(worker_name: str):
-    """Captures CPU and Memory usage for the current process and saves to DB."""
-    if psutil is None:
-        logger.debug("psutil not installed; skipping health recording.")
-        return
-    try:
-        process = psutil.Process(os.getpid())
-        cpu = process.cpu_percent(interval=None)
-        mem = process.memory_info().rss / (1024 * 1024)  # Convert to MB
-
-        with closing(_get_connection()) as conn:
-            cur = conn.cursor()
-
-            # Fetch override from DB if exists
-            cur.execute("SELECT value FROM system_settings WHERE key='ai_worker_memory_limit'")
-            row = cur.fetchone()
-            limit = int(row[0]) if row and row[0] else AI_MEMORY_LIMIT_MB
-
-            cur.execute(
-                "INSERT INTO worker_health_logs (worker_name, cpu_percent, memory_mb) VALUES (%s, %s, %s)",
-                (worker_name, cpu, mem)
-            )
-            conn.commit()
-
-            # Safety check: Auto-restart if threshold exceeded
-            if mem > limit:
-                logger.error("FATAL: Memory limit exceeded (Current: %.1f MB | Limit: %d MB). Terminating for auto-restart.", mem, limit)
-                release_lock()
-                os._exit(1) # Immediate exit to trigger restart via app.py
-
-    except Exception as e:
-        logger.debug("Failed to record worker health: %s", e)
-
-def update_ai_status(status: str, total: int = 0, current: int = 0):
-    """Updates the AI status JSON in system_settings for the Monitoring UI."""
+def update_ai_status(
+    status: str, total: int = 0, current: int = 0, details: str = None
+):
+    """
+    Consolidated status update:
+    1. Updates ai_processing_status in system_settings
+    2. Records CPU/Memory metrics in worker_health_logs
+    3. Enforces memory safety limits
+    """
+    now_ts = time.time()
     payload = {
         "status": status,
         "total": total,
         "current": current,
-        "last_update_ts": time.time()
+        "last_update_ts": now_ts,
+        "details": details,
     }
     if status == "idle":
-        payload["last_run_ts"] = time.time()
-    record_worker_health("ai_worker")
+        payload["last_run_ts"] = now_ts
+
+    # Collect metrics
+    cpu, mem = 0.0, 0.0
+    if psutil:
+        with suppress(Exception):
+            process = psutil.Process(os.getpid())
+            cpu = process.cpu_percent(interval=None)
+            mem = process.memory_info().rss / (1024 * 1024)
+            payload["metrics"] = {"cpu": cpu, "mem": mem}
 
     with closing(_get_connection()) as conn:
-        cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO system_settings (key, value) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
-            ("ai_processing_status", json.dumps(payload))
-        )
-        conn.commit()
+        try:
+            cur = conn.cursor()
+
+            # 1. Update Status
+            cur.execute(
+                "INSERT INTO system_settings (key, value) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+                ("ai_processing_status", json.dumps(payload)),
+            )
+
+            # 2. Record Health
+            cur.execute(
+                "INSERT INTO worker_health_logs (worker_name, cpu_percent, memory_mb) VALUES (%s, %s, %s)",
+                ("ai_worker", cpu, mem),
+            )
+
+            # 3. Check Limits
+            cur.execute(
+                "SELECT value FROM system_settings WHERE key='ai_worker_memory_limit'"
+            )
+            row = cur.fetchone()
+            limit = int(row[0]) if row and row[0] else AI_MEMORY_LIMIT_MB
+            if mem > limit:
+                logger.error(
+                    "FATAL: Memory limit exceeded (Current: %.1f MB | Limit: %d MB). Terminating for auto-restart.",
+                    mem,
+                    limit,
+                )
+                release_lock()
+                os._exit(1)
+
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            logger.error("Failed to update AI status: %s", e)
+
 
 def get_force_run_flag() -> bool:
     try:
         with closing(_get_connection()) as conn:
             cur = conn.cursor()
-            cur.execute("SELECT value FROM system_settings WHERE key=%s", ("force_ai_processing",))
+            cur.execute(
+                "SELECT value FROM system_settings WHERE key=%s",
+                ("force_ai_processing",),
+            )
             row = cur.fetchone()
 
             if row and str(row[0]).strip() == "1":
@@ -214,14 +254,13 @@ def get_pending_count():
 
 
 def claim_job() -> Optional[SubmissionJob]:
-    conn = None
     try:
         conn = _get_connection()
         cur = conn.cursor()
 
         cur.execute(
             """
-            SELECT id, video_path, station_id, retry_count
+            SELECT id, video_path, station_id, retry_count, file_unique_id
             FROM submissions
             WHERE status='pending'
             FOR UPDATE SKIP LOCKED
@@ -231,13 +270,21 @@ def claim_job() -> Optional[SubmissionJob]:
 
         row = cur.fetchone()
         if not row:
+            logger.debug("No pending jobs found in submissions table.")
             conn.rollback()
             return None
 
-        sub_id, path, station_id, retries = row
+        sub_id, path, station_id, retries, file_unique_id = row
         backend_pid = conn.get_backend_pid()
 
-        logger.info("Claiming job %s (Station: %s) [Attempt %s/%s] [DB PID: %s]", sub_id, station_id, retries + 1, AI_MAX_RETRIES, backend_pid)
+        logger.info(
+            "Claiming job %s (Station: %s) [Attempt %s/%s] [DB PID: %s]",
+            sub_id,
+            station_id,
+            retries + 1,
+            AI_MAX_RETRIES,
+            backend_pid,
+        )
         cur.execute(
             """
             UPDATE submissions
@@ -249,7 +296,34 @@ def claim_job() -> Optional[SubmissionJob]:
         )
 
         conn.commit()
-        return SubmissionJob(sub_id, path, station_id, retries)
+        job = SubmissionJob(sub_id, path, station_id, retries, file_unique_id)
+
+        # Secondary deduplication check using Redis
+        if job.file_unique_id:
+            try:
+                sync_redis_client = get_sync_redis()
+                dedupe_key = f"{DEDUPE_KEY_PREFIX}{job.file_unique_id}"
+                if sync_redis_client.exists(dedupe_key):
+                    logger.info(
+                        "Job %s (file_unique_id: %s) already has a Redis dedupe key. Marking as done to prevent reprocessing.",
+                        job.sub_id,
+                        job.file_unique_id,
+                    )
+                    # Mark this submission as done/skipped and don't process it further
+                    cur.execute(
+                        "UPDATE submissions SET status='done', processed=1, processed_ts=NOW(), error_message='Skipped: Duplicate file_unique_id detected by AI worker' WHERE id=%s",
+                        (sub_id,),
+                    )
+                    conn.commit()
+                    return None  # Skip this job
+                else:
+                    # If for some reason the bot didn't set it, the AI worker can as a fallback
+                    sync_redis_client.setex(dedupe_key, 86400, "1")  # 24 hours TTL
+            except Exception as redis_e:
+                logger.warning(
+                    "Redis dedupe check failed for job %s: %s", job.sub_id, redis_e
+                )
+        return job
 
     except Exception as e:
         if conn:
@@ -296,12 +370,20 @@ def mark_failed(sub_id, error):
             (error, AI_MAX_RETRIES, AI_MAX_RETRIES, AI_MAX_RETRIES, sub_id),
         )
         res = cur.fetchone()
-        new_count, new_status = res if res else (0, 'unknown')
+        new_count, new_status = res if res else (0, "unknown")
         conn.commit()
 
-        level = logging.ERROR if new_status == 'failed' else logging.WARNING
-        logger.log(level, "Job %s failed (Attempt %s/%s). Status moved to: %s [DB PID: %s]. Error: %s",
-                   sub_id, new_count, AI_MAX_RETRIES, new_status, db_pid, error)
+        level = logging.ERROR if new_status == "failed" else logging.WARNING
+        logger.log(
+            level,
+            "Job %s failed (Attempt %s/%s). Status moved to: %s [DB PID: %s]. Error: %s",
+            sub_id,
+            new_count,
+            AI_MAX_RETRIES,
+            new_status,
+            db_pid,
+            error,
+        )
 
 
 def reset_stuck_jobs(timeout=1800):
@@ -334,11 +416,12 @@ def record_inference_latency(sub_id: int, model: str, latency: float):
             cur = conn.cursor()
             cur.execute(
                 "INSERT INTO ai_inference_latency (submission_id, model_name, latency_seconds) VALUES (%s, %s, %s)",
-                (sub_id, model, latency)
+                (sub_id, model, latency),
             )
             conn.commit()
     except Exception as e:
         logger.warning("Could not record latency: %s", e)
+
 
 def process_job(job: SubmissionJob):
     start = time.time()
@@ -347,7 +430,9 @@ def process_job(job: SubmissionJob):
     # Help debug path issues by logging the absolute path being checked
     if not os.path.exists(job.video_path):
         abs_path = os.path.abspath(job.video_path)
-        raise FileNotFoundError(f"Video not found at: {job.video_path} (Resolved to: {abs_path})")
+        raise FileNotFoundError(
+            f"Video not found at: {job.video_path} (Resolved to: {abs_path})"
+        )
 
     result = parse_station_video(job.video_path)
     latency = time.time() - start
@@ -356,13 +441,22 @@ def process_job(job: SubmissionJob):
     try:
         with closing(_get_connection()) as conn:
             db_pid = conn.get_backend_pid()
-            mark_done(job.sub_id, result) # Moved inside to reuse/log pid context if desired
-            record_inference_latency(job.sub_id, result.get("_model_used", "unknown"), latency)
+            mark_done(
+                job.sub_id, result
+            )  # Moved inside to reuse/log pid context if desired
+            record_inference_latency(
+                job.sub_id, result.get("_model_used", "unknown"), latency
+            )
             send_ai_report_email(conn, job.station_id, result)
     except Exception as e:
         logger.warning("Email failed: %s", e)
 
-    logger.info("Processed job %s in %.2fs [Final DB PID: %s]", job.sub_id, time.time() - start, db_pid)
+    logger.info(
+        "Processed job %s in %.2fs [Final DB PID: %s]",
+        job.sub_id,
+        time.time() - start,
+        db_pid,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -372,6 +466,8 @@ def main():
     if not acquire_lock():
         logger.error("Worker already running")
         return
+
+    update_ai_status("starting", 0, 0)
 
     backoff = POLL_INTERVAL_SECONDS
     redis_fail_count = 0
@@ -385,11 +481,16 @@ def main():
             if not test_redis_connection(timeout=5):
                 redis_fail_count += 1
                 if redis_fail_count >= 5:
-                    logger.error("Redis connection failed 5 times. Terminating for auto-restart.")
+                    logger.error(
+                        "Redis connection failed 5 times. Terminating for auto-restart."
+                    )
                     release_lock()
                     os._exit(1)
 
-                logger.warning("Redis is offline (%d/5). Background workers require Redis for coordination. Backing off for 60s...", redis_fail_count)
+                logger.warning(
+                    "Redis is offline (%d/5). Background workers require Redis for coordination. Backing off for 60s...",
+                    redis_fail_count,
+                )
                 time.sleep(60)
                 continue
 
@@ -415,7 +516,9 @@ def main():
 
                 processed_count += 1
                 backoff = POLL_INTERVAL_SECONDS
-                update_ai_status("processing", total=total_in_batch, current=processed_count)
+                update_ai_status(
+                    "processing", total=total_in_batch, current=processed_count
+                )
 
                 try:
                     process_job(job)

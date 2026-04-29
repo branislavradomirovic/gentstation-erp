@@ -14,6 +14,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+import numpy as np
 from contextlib import closing
 
 import requests
@@ -32,9 +33,52 @@ except Exception:  # pragma: no cover - optional dependency
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:14b-instruct")
 OLLAMA_VISION_MODEL = os.getenv("OLLAMA_VISION_MODEL", "bakllava").strip()
-OLLAMA_LOCAL_ONLY = os.getenv("OLLAMA_LOCAL_ONLY", "1").strip().lower() in {"1", "true", "yes", "on"}
+OLLAMA_LOCAL_ONLY = os.getenv("OLLAMA_LOCAL_ONLY", "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 FRAME_SAMPLES = int(os.getenv("VIDEO_FRAME_SAMPLES", "6"))
-MAX_FRAME_DIMENSION = int(os.getenv("VIDEO_MAX_FRAME_DIMENSION", "768"))
+MAX_FRAME_DIMENSION = int(os.getenv("VIDEO_MAX_FRAME_DIMENSION", "640"))
+
+DEFAULT_PROMPT_TEMPLATE = """
+You are an expert Fuel Retail Operations Auditor analyzing gas-station CCTV.
+
+VIDEO METADATA:
+- File: {file_name}
+- Size: {file_size_bytes} bytes
+- Decoder: {decoder}
+- FPS: {fps}
+- Frames: {frame_count}
+- Duration: {duration_s} seconds
+
+SAMPLED FRAMES:
+{frame_lines}
+
+{analysis_mode}
+
+Assess the following KPIs on a 1-10 scale, where 10 is best:
+- cleanliness_score
+- safety_score
+- staff_score
+- merchandising_score
+
+Return ONLY valid JSON with exactly these keys:
+{{
+  "cleanliness_score": <int from 1-10>,
+  "safety_score": <int from 1-10>,
+  "staff_score": <int from 1-10>,
+  "merchandising_score": <int from 1-10>,
+  "hazards": ["<specific hazard 1>", "<specific hazard 2>"],
+  "stock_issues": ["<empty shelf location>", "<low stock item>"],
+  "customer_activity": "<low|medium|high>",
+  "confidence": <float from 0.0-1.0>,
+  "summary": "<2-3 sentence executive summary>"
+}}
+
+If the image evidence is weak or partially obscured, lower confidence accordingly.
+"""
 
 
 @dataclass
@@ -105,7 +149,9 @@ def _encode_frame_to_base64(frame) -> str:
     return base64.b64encode(buffer.tobytes()).decode("utf-8")
 
 
-def sample_frames(video_path: str, sample_count: int = FRAME_SAMPLES) -> List[VideoFrame]:
+def sample_frames(
+    video_path: str, sample_count: int = FRAME_SAMPLES
+) -> List[VideoFrame]:
     if cv2 is None:
         return []
 
@@ -119,9 +165,27 @@ def sample_frames(video_path: str, sample_count: int = FRAME_SAMPLES) -> List[Vi
 
     try:
         if frame_count > 0:
+            # Skip the first and last 5% to avoid static/transitions
+            start_offset = int(frame_count * 0.05)
+            end_offset = int(frame_count * 0.95)
+            effective_frames = end_offset - start_offset
+
             indices = sorted(
                 {
-                    min(frame_count - 1, max(0, int(round(i * (frame_count - 1) / max(1, sample_count - 1)))))
+                    min(
+                        end_offset,
+                        max(
+                            start_offset,
+                            start_offset
+                            + int(
+                                round(
+                                    i
+                                    * (effective_frames - 1)
+                                    / max(1, sample_count - 1)
+                                )
+                            ),
+                        ),
+                    )
                     for i in range(sample_count)
                 }
             )
@@ -130,6 +194,12 @@ def sample_frames(video_path: str, sample_count: int = FRAME_SAMPLES) -> List[Vi
                 ok, frame = cap.read()
                 if not ok or frame is None:
                     continue
+
+                # Check for "dead" frames (too dark/empty)
+                mean_brightness = np.mean(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
+                if mean_brightness < 10:  # Threshold for near-black frames
+                    continue
+
                 frame = _resize_frame(frame, MAX_FRAME_DIMENSION)
                 timestamp_s = (idx / fps) if fps else float(idx)
                 frames.append(
@@ -163,11 +233,28 @@ def sample_frames(video_path: str, sample_count: int = FRAME_SAMPLES) -> List[Vi
     return frames[:sample_count]
 
 
-def _build_prompt(metadata: Dict[str, Any], frames: List[VideoFrame], use_images: bool) -> str:
-    frame_lines = "\n".join(
-        f"- Frame {frame.index} at {frame.timestamp_s:.2f}s"
-        for frame in frames
-    ) or "- No extractable frames were available."
+def _build_prompt(
+    metadata: Dict[str, Any], frames: List[VideoFrame], use_images: bool
+) -> str:
+    template = DEFAULT_PROMPT_TEMPLATE
+    try:
+        from core.database import get_connection
+
+        with closing(get_connection()) as conn:
+            row = conn.execute(
+                "SELECT value FROM system_settings WHERE key='ai_custom_prompt'"
+            ).fetchone()
+            if row and row[0]:
+                template = row[0]
+    except Exception:
+        pass
+
+    frame_lines = (
+        "\n".join(
+            f"- Frame {frame.index} at {frame.timestamp_s:.2f}s" for frame in frames
+        )
+        or "- No extractable frames were available."
+    )
 
     analysis_mode = (
         "These sampled frames are attached to the request."
@@ -175,70 +262,55 @@ def _build_prompt(metadata: Dict[str, Any], frames: List[VideoFrame], use_images
         else "Frame extraction was unavailable, so you are analyzing the metadata and any available video context only."
     )
 
-    return f"""
-You are an expert Fuel Retail Operations Auditor analyzing gas-station CCTV.
-
-VIDEO METADATA:
-- File: {metadata.get("file_name")}
-- Size: {metadata.get("file_size_bytes")} bytes
-- Decoder: {metadata.get("decoder")}
-- FPS: {metadata.get("fps", "unknown")}
-- Frames: {metadata.get("frame_count", "unknown")}
-- Duration: {metadata.get("duration_s", "unknown")} seconds
-
-SAMPLED FRAMES:
-{frame_lines}
-
-{analysis_mode}
-
-Assess the following KPIs on a 1-10 scale, where 10 is best:
-- cleanliness_score
-- safety_score
-- staff_score
-- merchandising_score
-
-Return ONLY valid JSON with exactly these keys:
-{{
-  "cleanliness_score": <int from 1-10>,
-  "safety_score": <int from 1-10>,
-  "staff_score": <int from 1-10>,
-  "merchandising_score": <int from 1-10>,
-  "hazards": ["<specific hazard 1>", "<specific hazard 2>"],
-  "stock_issues": ["<empty shelf location>", "<low stock item>"],
-  "customer_activity": "<low|medium|high>",
-  "confidence": <float from 0.0-1.0>,
-  "summary": "<2-3 sentence executive summary>"
-}}
-
-If the image evidence is weak or partially obscured, lower confidence accordingly.
-"""
+    return template.format(
+        file_name=metadata.get("file_name"),
+        file_size_bytes=metadata.get("file_size_bytes"),
+        decoder=metadata.get("decoder"),
+        fps=metadata.get("fps", "unknown"),
+        frame_count=metadata.get("frame_count", "unknown"),
+        duration_s=metadata.get("duration_s", "unknown"),
+        frame_lines=frame_lines,
+        analysis_mode=analysis_mode,
+    )
 
 
 def _select_model(use_images: bool) -> str:
     try:
         from core.database import get_connection
+
         with closing(get_connection()) as conn:
             cur = conn.cursor()
 
             # 1. Check if Auto-Scale is active
-            cur.execute("SELECT value FROM system_settings WHERE key='ai_auto_scale_active'")
+            cur.execute(
+                "SELECT value FROM system_settings WHERE key='ai_auto_scale_active'"
+            )
             row_scale = cur.fetchone()
-            if row_scale and row_scale[0] == '1':
-                cur.execute("SELECT value FROM system_settings WHERE key='ai_auto_scale_down_model'")
+            if row_scale and row_scale[0] == "1":
+                cur.execute(
+                    "SELECT value FROM system_settings WHERE key='ai_auto_scale_down_model'"
+                )
                 row_failover = cur.fetchone()
                 if row_failover and row_failover[0]:
                     return row_failover[0]
 
             # 2. Check for standard overrides
             if use_images:
-                cur.execute("SELECT value FROM system_settings WHERE key='ollama_vision_model_override'")
+                cur.execute(
+                    "SELECT value FROM system_settings WHERE key='ollama_vision_model_override'"
+                )
                 row = cur.fetchone()
-                if row and row[0]: return row[0]
-                if OLLAMA_VISION_MODEL: return OLLAMA_VISION_MODEL
+                if row and row[0]:
+                    return row[0]
+                if OLLAMA_VISION_MODEL:
+                    return OLLAMA_VISION_MODEL
 
-            cur.execute("SELECT value FROM system_settings WHERE key='ollama_model_override'")
+            cur.execute(
+                "SELECT value FROM system_settings WHERE key='ollama_model_override'"
+            )
             row = cur.fetchone()
-            if row and row[0]: return row[0]
+            if row and row[0]:
+                return row[0]
     except Exception as e:
         logger.debug("Could not fetch model override from DB: %s", e)
 
@@ -279,7 +351,9 @@ def _candidate_base_urls():
     return candidates
 
 
-def call_ollama(prompt: str, model: str, images: Optional[List[str]] = None, is_json: bool = True) -> str:
+def call_ollama(
+    prompt: str, model: str, images: Optional[List[str]] = None, is_json: bool = True
+) -> str:
     payload = {
         "model": model,
         "prompt": prompt,
@@ -302,7 +376,9 @@ def call_ollama(prompt: str, model: str, images: Optional[List[str]] = None, is_
             )
 
             if response.status_code != 200:
-                raise RuntimeError(f"Ollama API error {response.status_code}: {response.text}")
+                raise RuntimeError(
+                    f"Ollama API error {response.status_code}: {response.text}"
+                )
 
             response_data = response.json()
             return (response_data.get("response") or "").strip()
@@ -332,7 +408,9 @@ def _parse_result(response_text: str) -> Dict[str, Any]:
 
         json_match = re.search(r"\{.*\}", response_text, re.DOTALL)
         if not json_match:
-            raise RuntimeError(f"Failed to parse Ollama response as JSON: {response_text[:500]}")
+            raise RuntimeError(
+                f"Failed to parse Ollama response as JSON: {response_text[:500]}"
+            )
         result = json.loads(json_match.group())
 
     required_fields = [
@@ -350,7 +428,12 @@ def _parse_result(response_text: str) -> Dict[str, Any]:
         if field not in result:
             raise ValueError(f"Missing required field in response: {field}")
 
-    for score_field in ["cleanliness_score", "safety_score", "staff_score", "merchandising_score"]:
+    for score_field in [
+        "cleanliness_score",
+        "safety_score",
+        "staff_score",
+        "merchandising_score",
+    ]:
         score = result[score_field]
         if not isinstance(score, (int, float)) or not (1 <= score <= 10):
             result[score_field] = max(1, min(10, int(score)))
@@ -396,12 +479,20 @@ def parse_station_video(video_path: str) -> dict:
     elif cv2 is None:
         logger.debug("OpenCV is not installed; using metadata-only analysis.")
     elif not OLLAMA_VISION_MODEL:
-        logger.debug("OLLAMA_VISION_MODEL is not configured; using metadata-only analysis.")
+        logger.debug(
+            "OLLAMA_VISION_MODEL is not configured; using metadata-only analysis."
+        )
 
     use_images = bool(frames) and vision_ready
-    model = _select_model(use_images) # Still use internal selector for production logic
+    model = _select_model(
+        use_images
+    )  # Still use internal selector for production logic
 
-    logger.debug("Using model: %s (%s)", model, "frames attached" if use_images else "metadata fallback")
+    logger.debug(
+        "Using model: %s (%s)",
+        model,
+        "frames attached" if use_images else "metadata fallback",
+    )
 
     prompt = _build_prompt(metadata, frames, use_images)
 
@@ -428,9 +519,7 @@ def parse_station_video(video_path: str) -> dict:
         raise RuntimeError(error_msg)
 
     except requests.exceptions.Timeout:
-        error_msg = (
-            "Ollama request timed out. The video may be too large or the model may be slow."
-        )
+        error_msg = "Ollama request timed out. The video may be too large or the model may be slow."
         logger.error(error_msg)
         raise RuntimeError(error_msg)
 
@@ -479,11 +568,18 @@ def test_ollama_connection(on_retry=None) -> bool:
 
         except Exception as e:
             if attempt < max_retries - 1:
-                logger.warning("Ollama connection attempt %d failed: %s. Retrying in %ds...", attempt + 1, e, retry_delay)
+                logger.warning(
+                    "Ollama connection attempt %d failed: %s. Retrying in %ds...",
+                    attempt + 1,
+                    e,
+                    retry_delay,
+                )
                 for i in range(retry_delay, 0, -1):
                     if on_retry:
                         on_retry(attempt + 1, max_retries, i, e)
                     time.sleep(1)
             else:
-                logger.error("Ollama connection failed after %d attempts: %s", max_retries, e)
+                logger.error(
+                    "Ollama connection failed after %d attempts: %s", max_retries, e
+                )
                 return False

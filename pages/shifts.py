@@ -4,15 +4,8 @@ import pandas as pd
 import streamlit as st
 
 from core.activity_logger import log_activity
+from core.database import fetch_df
 from ui.header import render_page_header
-
-
-def fetch_df(conn, query, params=None):
-    cur = conn.cursor()
-    cur.execute(query, params or ())
-    rows = cur.fetchall()
-    columns = [desc[0] for desc in cur.description] if cur.description else []
-    return pd.DataFrame(rows, columns=columns)
 
 
 def _fmt_name(name, surname):
@@ -21,21 +14,19 @@ def _fmt_name(name, surname):
 
 
 def _get_current_user(conn):
-    uid = st.session_state.get("user_id")
-    if not uid:
+    if "user_id" not in st.session_state:
         return None
-    return conn.execute(
-        """
-        SELECT u.id, u.username, u.email, u.role,
-               e.id AS employee_id, e.name, e.surname, e.station_id, e.region_id
-        FROM users u
-        LEFT JOIN employees e
-          ON e.email = COALESCE(u.email, u.username)
-        WHERE u.id = %s
-        LIMIT 1
-        """,
-        (uid,),
-    ).fetchone()
+    return (
+        st.session_state.user_id,
+        st.session_state.username,
+        st.session_state.get("email"),
+        st.session_state.user_role,
+        st.session_state.user_id,
+        st.session_state.get("name"),
+        st.session_state.get("surname"),
+        st.session_state.get("user_station_id"),
+        st.session_state.get("user_region_id"),
+    )
 
 
 def _scope_clause(user_role, employee_row):
@@ -44,7 +35,7 @@ def _scope_clause(user_role, employee_row):
     if not employee_row:
         return "es.employee_id IS NULL", ()
     if user_role in ("Region Director", "Region Manager"):
-        return "e.region_id = %s", (employee_row[8],)
+        return "u.region_id = %s", (employee_row[8],)  # employee_row[8] is u.region_id
     if user_role in ("Gas Station Manager", "Gas Station Supervisor"):
         return "es.station_id = %s", (employee_row[7],)
     return "es.employee_id = %s", (employee_row[4],)
@@ -53,9 +44,9 @@ def _scope_clause(user_role, employee_row):
 def _employee_options(conn, user_role, employee_row):
     if user_role == "General Manager":
         sql = """
-            SELECT e.id, e.name || ' ' || COALESCE(e.surname, '') AS fullname, s.name AS station_name
-            FROM employees e
-            LEFT JOIN stations s ON s.id = e.station_id
+            SELECT u.id, u.name || ' ' || COALESCE(u.surname, '') AS fullname, s.name AS station_name
+            FROM users u
+            LEFT JOIN stations s ON s.id = u.station_id
             ORDER BY e.name, e.surname
         """
         return fetch_df(conn, sql)
@@ -67,10 +58,10 @@ def _employee_options(conn, user_role, employee_row):
         return fetch_df(
             conn,
             """
-            SELECT e.id, e.name || ' ' || COALESCE(e.surname, '') AS fullname, s.name AS station_name
-            FROM employees e
-            LEFT JOIN stations s ON s.id = e.station_id
-            WHERE e.region_id = %s
+            SELECT u.id, u.name || ' ' || COALESCE(u.surname, '') AS fullname, s.name AS station_name
+            FROM users u
+            LEFT JOIN stations s ON s.id = u.station_id
+            WHERE u.region_id = %s
             ORDER BY e.name, e.surname
             """,
             (employee_row[8],),
@@ -80,10 +71,10 @@ def _employee_options(conn, user_role, employee_row):
         return fetch_df(
             conn,
             """
-            SELECT e.id, e.name || ' ' || COALESCE(e.surname, '') AS fullname, s.name AS station_name
-            FROM employees e
-            LEFT JOIN stations s ON s.id = e.station_id
-            WHERE e.station_id = %s
+            SELECT u.id, u.name || ' ' || COALESCE(u.surname, '') AS fullname, s.name AS station_name
+            FROM users u
+            LEFT JOIN stations s ON s.id = u.station_id
+            WHERE u.station_id = %s
             ORDER BY e.name, e.surname
             """,
             (employee_row[7],),
@@ -92,10 +83,10 @@ def _employee_options(conn, user_role, employee_row):
     return fetch_df(
         conn,
         """
-        SELECT e.id, e.name || ' ' || COALESCE(e.surname, '') AS fullname, s.name AS station_name
-        FROM employees e
-        LEFT JOIN stations s ON s.id = e.station_id
-        WHERE e.id = %s
+            SELECT u.id, u.name || ' ' || COALESCE(u.surname, '') AS fullname, s.name AS station_name
+            FROM users u
+            LEFT JOIN stations s ON s.id = u.station_id
+            WHERE u.id = %s
         """,
         (employee_row[4],),
     )
@@ -145,7 +136,7 @@ def _load_shift_data(conn, user_role, employee_row):
                es.status,
                es.notes
         FROM employee_shifts es
-        LEFT JOIN employees e ON e.id = es.employee_id
+        LEFT JOIN users e ON e.id = es.employee_id
         LEFT JOIN stations st ON st.id = es.station_id
     """
     if scope_where:
@@ -186,7 +177,17 @@ def _upcoming_scheduled_shift(conn, employee_id):
     ).fetchone()
 
 
-def _start_shift(conn, employee_id, station_id, shift_id=None, scheduled_start=None, scheduled_end=None, shift_type="standard", notes=None, break_duration_minutes=None):
+def _start_shift(
+    conn,
+    employee_id,
+    station_id,
+    shift_id=None,
+    scheduled_start=None,
+    scheduled_end=None,
+    shift_type="standard",
+    notes=None,
+    break_duration_minutes=None,
+):
     if shift_id:
         conn.execute(
             """
@@ -202,7 +203,14 @@ def _start_shift(conn, employee_id, station_id, shift_id=None, scheduled_start=N
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = %s
             """,
-            (station_id, scheduled_start, scheduled_end, shift_type, break_duration_minutes, shift_id),
+            (
+                station_id,
+                scheduled_start,
+                scheduled_end,
+                shift_type,
+                break_duration_minutes,
+                shift_id,
+            ),
         )
         return shift_id
 
@@ -214,12 +222,29 @@ def _start_shift(conn, employee_id, station_id, shift_id=None, scheduled_start=N
         ) VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'active', %s, %s)
         RETURNING id
         """,
-        (employee_id, station_id, shift_type, scheduled_start, scheduled_end, notes, break_duration_minutes),
+        (
+            employee_id,
+            station_id,
+            shift_type,
+            scheduled_start,
+            scheduled_end,
+            notes,
+            break_duration_minutes,
+        ),
     )
     return cur.fetchone()[0]
 
 
-def _create_scheduled_shift(conn, employee_id, station_id, scheduled_start, scheduled_end, shift_type="standard", notes=None, break_duration_minutes=None):
+def _create_scheduled_shift(
+    conn,
+    employee_id,
+    station_id,
+    scheduled_start,
+    scheduled_end,
+    shift_type="standard",
+    notes=None,
+    break_duration_minutes=None,
+):
     cur = conn.execute(
         """
         INSERT INTO employee_shifts (
@@ -228,7 +253,16 @@ def _create_scheduled_shift(conn, employee_id, station_id, scheduled_start, sche
         ) VALUES (%s, %s, %s, %s, %s, %s, 'scheduled', %s, %s)
         RETURNING id
         """,
-        (employee_id, station_id, shift_type, scheduled_start, scheduled_end, scheduled_start, notes, break_duration_minutes),
+        (
+            employee_id,
+            station_id,
+            shift_type,
+            scheduled_start,
+            scheduled_end,
+            scheduled_start,
+            notes,
+            break_duration_minutes,
+        ),
     )
     return cur.fetchone()[0]
 
@@ -290,21 +324,41 @@ def render(conn):
     )
 
     if user_row:
-        st.caption(f"Signed in as **{_fmt_name(user_row[5], user_row[6])}** | Role: **{user_role}**")
+        st.caption(
+            f"Signed in as **{_fmt_name(user_row[5], user_row[6])}** | Role: **{user_role}**"
+        )
 
     today = date.today()
     shift_df = _load_shift_data(conn, user_role, employee_row)
-    if focus_employee_id is not None and not shift_df.empty and "employee_id" in shift_df:
+    if (
+        focus_employee_id is not None
+        and not shift_df.empty
+        and "employee_id" in shift_df
+    ):
         shift_df = shift_df[shift_df["employee_id"] == focus_employee_id]
-    elif focus_station_id is not None and not shift_df.empty and "station_id" in shift_df:
+    elif (
+        focus_station_id is not None and not shift_df.empty and "station_id" in shift_df
+    ):
         shift_df = shift_df[shift_df["station_id"] == focus_station_id]
 
     total_shifts = len(shift_df)
-    active_shifts = int((shift_df["status"] == "active").sum()) if not shift_df.empty and "status" in shift_df else 0
-    completed_shifts = int((shift_df["status"] == "completed").sum()) if not shift_df.empty and "status" in shift_df else 0
+    active_shifts = (
+        int((shift_df["status"] == "active").sum())
+        if not shift_df.empty and "status" in shift_df
+        else 0
+    )
+    completed_shifts = (
+        int((shift_df["status"] == "completed").sum())
+        if not shift_df.empty and "status" in shift_df
+        else 0
+    )
     scheduled_today = 0
     if not shift_df.empty and "scheduled_start_at" in shift_df:
-        scheduled_today = int(pd.to_datetime(shift_df["scheduled_start_at"], errors="coerce").dt.date.eq(today).sum())
+        scheduled_today = int(
+            pd.to_datetime(shift_df["scheduled_start_at"], errors="coerce")
+            .dt.date.eq(today)
+            .sum()
+        )
 
     metric_cols = st.columns(4)
     metric_cols[0].metric("Shifts Visible", total_shifts)
@@ -334,7 +388,11 @@ def render(conn):
 
             if bstart and is_on_break:
                 try:
-                    bstart_dt = bstart if hasattr(bstart, "timestamp") else datetime.fromisoformat(str(bstart))
+                    bstart_dt = (
+                        bstart
+                        if hasattr(bstart, "timestamp")
+                        else datetime.fromisoformat(str(bstart))
+                    )
                     remaining = bstart_dt + pd.Timedelta(minutes=bdur) - datetime.now()
                 except Exception:
                     remaining = None
@@ -346,25 +404,46 @@ def render(conn):
             col_a, col_b = st.columns([1, 1])
             with col_a:
                 if not is_on_break:
-                    if st.button("Take Break", key="take_break_my_shift", width="stretch"):
+                    if st.button(
+                        "Take Break", key="take_break_my_shift", width="stretch"
+                    ):
                         # use DB-persisted break
                         _start_break(conn, active_shift[0], duration_minutes=bdur)
                         conn.commit()
-                        log_activity(conn, "BREAK_START", f"Employee {employee_row[4]} started break on shift {active_shift[0]}")
+                        log_activity(
+                            conn,
+                            "BREAK_START",
+                            f"Employee {employee_row[4]} started break on shift {active_shift[0]}",
+                        )
                         st.toast("Break started.", icon="✅")
                         st.rerun()
                 else:
-                    if st.button("End Break", key="end_break_my_shift", width="stretch"):
+                    if st.button(
+                        "End Break", key="end_break_my_shift", width="stretch"
+                    ):
                         _end_break(conn, active_shift[0])
                         conn.commit()
-                        log_activity(conn, "BREAK_END", f"Employee {employee_row[4]} ended break on shift {active_shift[0]}")
+                        log_activity(
+                            conn,
+                            "BREAK_END",
+                            f"Employee {employee_row[4]} ended break on shift {active_shift[0]}",
+                        )
                         st.toast("Break ended.", icon="✅")
                         st.rerun()
             with col_b:
-                if st.button("Clock Out", key="clock_out_my_shift", type="primary", width="stretch"):
+                if st.button(
+                    "Clock Out",
+                    key="clock_out_my_shift",
+                    type="primary",
+                    width="stretch",
+                ):
                     _clock_out_shift(conn, active_shift[0])
                     conn.commit()
-                    log_activity(conn, "CLOCK_OUT", f"Employee {employee_row[4]} clocked out of shift {active_shift[0]}")
+                    log_activity(
+                        conn,
+                        "CLOCK_OUT",
+                        f"Employee {employee_row[4]} clocked out of shift {active_shift[0]}",
+                    )
                     st.toast("Clock-out saved.", icon="✅")
                     st.rerun()
         else:
@@ -373,7 +452,12 @@ def render(conn):
                 st.info(
                     f"Upcoming shift #{scheduled_shift[0]} is scheduled for **{scheduled_shift[1]}** at station **{scheduled_shift[3] or 'N/A'}**."
                 )
-                if st.button("Clock In", key="clock_in_scheduled_shift", type="primary", width="stretch"):
+                if st.button(
+                    "Clock In",
+                    key="clock_in_scheduled_shift",
+                    type="primary",
+                    width="stretch",
+                ):
                     _start_shift(
                         conn,
                         employee_row[4],
@@ -385,16 +469,31 @@ def render(conn):
                         notes=scheduled_shift[5],
                     )
                     conn.commit()
-                    log_activity(conn, "CLOCK_IN", f"Employee {employee_row[4]} clocked into shift {scheduled_shift[0]}")
+                    log_activity(
+                        conn,
+                        "CLOCK_IN",
+                        f"Employee {employee_row[4]} clocked into shift {scheduled_shift[0]}",
+                    )
                     st.toast("Clock-in saved.", icon="🟢")
                     st.rerun()
             else:
                 st.info("No active or scheduled shift is running right now.")
-                if st.button("Clock In", key="clock_in_my_shift", type="primary", width="stretch"):
+                if st.button(
+                    "Clock In", key="clock_in_my_shift", type="primary", width="stretch"
+                ):
                     station_id = employee_row[7]
-                    shift_id = _start_shift(conn, employee_row[4], station_id, notes="Clocked in from personal view")
+                    shift_id = _start_shift(
+                        conn,
+                        employee_row[4],
+                        station_id,
+                        notes="Clocked in from personal view",
+                    )
                     conn.commit()
-                    log_activity(conn, "CLOCK_IN", f"Employee {employee_row[4]} clocked into shift {shift_id}")
+                    log_activity(
+                        conn,
+                        "CLOCK_IN",
+                        f"Employee {employee_row[4]} clocked into shift {shift_id}",
+                    )
                     st.toast("Clock-in saved.", icon="🟢")
                     st.rerun()
 
@@ -415,7 +514,12 @@ def render(conn):
 
     st.divider()
 
-    if user_role == "General Manager" or user_role in ("Region Director", "Region Manager", "Gas Station Manager", "Gas Station Supervisor"):
+    if user_role == "General Manager" or user_role in (
+        "Region Director",
+        "Region Manager",
+        "Gas Station Manager",
+        "Gas Station Supervisor",
+    ):
         st.subheader("Schedule a Shift")
         employees_df = _employee_options(conn, user_role, employee_row)
         stations_df = _station_options(conn, user_role, employee_row)
@@ -427,20 +531,32 @@ def render(conn):
                 col_a, col_b = st.columns(2)
                 employee_ids = employees_df["id"].tolist()
                 station_ids = stations_df["id"].tolist()
-                employee_index = employee_ids.index(focus_employee_id) if focus_employee_id in employee_ids else 0
-                station_index = station_ids.index(focus_station_id) if focus_station_id in station_ids else 0
+                employee_index = (
+                    employee_ids.index(focus_employee_id)
+                    if focus_employee_id in employee_ids
+                    else 0
+                )
+                station_index = (
+                    station_ids.index(focus_station_id)
+                    if focus_station_id in station_ids
+                    else 0
+                )
 
                 employee_label = col_a.selectbox(
                     "Employee",
                     options=employee_ids,
                     index=employee_index,
-                    format_func=lambda x: employees_df.loc[employees_df["id"] == x, "fullname"].values[0],
+                    format_func=lambda x: employees_df.loc[
+                        employees_df["id"] == x, "fullname"
+                    ].values[0],
                 )
                 station_label = col_b.selectbox(
                     "Station",
                     options=station_ids,
                     index=station_index,
-                    format_func=lambda x: stations_df.loc[stations_df["id"] == x, "name"].values[0],
+                    format_func=lambda x: stations_df.loc[
+                        stations_df["id"] == x, "name"
+                    ].values[0],
                 )
 
                 col_c, col_d = st.columns(2)
@@ -448,16 +564,30 @@ def render(conn):
                 start_time = col_d.time_input("Start time", value=dt_time(8, 0))
                 col_e, col_f = st.columns(2)
                 end_time = col_e.time_input("End time", value=dt_time(16, 0))
-                shift_type = col_f.selectbox("Shift type", ["standard", "morning", "afternoon", "night", "custom"])
+                shift_type = col_f.selectbox(
+                    "Shift type",
+                    ["standard", "morning", "afternoon", "night", "custom"],
+                )
                 # fetch system default for break duration if present
                 try:
-                    srow = conn.execute("SELECT value FROM system_settings WHERE key=%s", ("default_break_minutes",)).fetchone()
+                    srow = conn.execute(
+                        "SELECT value FROM system_settings WHERE key=%s",
+                        ("default_break_minutes",),
+                    ).fetchone()
                     default_break = int(srow[0]) if srow and srow[0] else 15
                 except Exception:
                     default_break = 15
 
-                break_minutes = st.number_input("Break duration (minutes)", min_value=1, max_value=240, value=default_break)
-                notes = st.text_area("Notes", placeholder="Optional handover notes, coverage instructions, or special conditions.")
+                break_minutes = st.number_input(
+                    "Break duration (minutes)",
+                    min_value=1,
+                    max_value=240,
+                    value=default_break,
+                )
+                notes = st.text_area(
+                    "Notes",
+                    placeholder="Optional handover notes, coverage instructions, or special conditions.",
+                )
 
                 if st.form_submit_button("Create Shift", width="stretch"):
                     scheduled_start = datetime.combine(shift_date, start_time)
@@ -476,7 +606,11 @@ def render(conn):
                             break_duration_minutes=int(break_minutes),
                         )
                         conn.commit()
-                        log_activity(conn, "CREATE_SHIFT", f"Created shift {shift_id} for employee {employee_label}")
+                        log_activity(
+                            conn,
+                            "CREATE_SHIFT",
+                            f"Created shift {shift_id} for employee {employee_label}",
+                        )
                         st.success("Shift created successfully.")
                         st.rerun()
 

@@ -3,6 +3,7 @@ import streamlit as st
 import pandas as pd
 from ui.header import render_page_header
 
+
 def render(conn):
     render_page_header("🛡 System Audit Log")
     col1, col2, col3 = st.columns(3)

@@ -3,85 +3,7 @@ from pathlib import Path
 import streamlit as st
 
 from core.auth import logout_user_streamlit
-
-# Centralized definition for pages, their icons, and access roles.
-PAGE_CONFIG = {
-    "Dashboard": {
-        "id": "Dashboard",
-        "icon": "🏠",
-        "roles": ["General Manager", "Region Director", "Region Manager", "Gas Station Manager", "Gas Station Supervisor", "Employee"],
-    },
-    "Personal Dashboard": {
-        "id": "Personal Dashboard",
-        "icon": "🧭",
-        "roles": ["General Manager", "Region Director", "Region Manager", "Gas Station Manager", "Gas Station Supervisor", "Employee"],
-    },
-    "Shifts": {
-        "id": "Shifts",
-        "icon": "🕒",
-        "roles": ["General Manager", "Region Director", "Region Manager", "Gas Station Manager", "Gas Station Supervisor", "Employee"],
-    },
-    "Regions": {
-        "id": "Regions",
-        "icon": "🌍",
-        "roles": ["General Manager"],
-    },
-    "Stations": {
-        "id": "Stations",
-        "icon": "⛽",
-        "roles": ["General Manager", "Region Director", "Region Manager"],
-    },
-    "Map View": {
-        "id": "Map View",
-        "icon": "🗺️",
-        "roles": ["General Manager", "Region Director", "Region Manager"],
-    },
-    "Employees": {
-        "id": "Employees",
-        "icon": "👥",
-        "roles": ["General Manager"],
-    },
-    "AI Reports": {
-        "id": "AI Reports",
-        "icon": "📈",
-        "roles": ["General Manager", "Region Director", "Region Manager", "Gas Station Manager"],
-    },
-    "AI Alerts": {
-        "id": "AI Alerts",
-        "icon": "🚨",
-        "roles": ["General Manager", "Region Director", "Region Manager", "Gas Station Manager"],
-    },
-    "AI Monitoring": {
-        "id": "AI Monitoring",
-        "icon": "🖥️",
-        "roles": ["General Manager", "Region Director"],
-    },
-    "Audit Log": {
-        "id": "Audit Log",
-        "icon": "🛡️",
-        "roles": ["General Manager"],
-    },
-    "GM Dashboard": {
-        "id": "GM Dashboard",
-        "icon": "📊",
-        "roles": ["General Manager"],
-    },
-    "Admin Users": {
-        "id": "Admin Users",
-        "icon": "👤",
-        "roles": ["General Manager"],
-    },
-    "Settings": {
-        "id": "Settings",
-        "icon": "⚙️",
-        "roles": ["General Manager", "Region Director", "Region Manager", "Gas Station Manager", "Gas Station Supervisor", "Employee"],
-    },
-    "Help": {
-        "id": "Help",
-        "icon": "❓",
-        "roles": ["General Manager", "Region Director", "Region Manager", "Gas Station Manager", "Gas Station Supervisor", "Employee"],
-    },
-}
+from core.access_control import PAGE_CONFIG, has_access
 
 
 def get_logo_path():
@@ -159,11 +81,8 @@ def display_sidebar(conn):
             unsafe_allow_html=True,
         )
 
-        def _is_visible(pid: str) -> bool:
-            return user_role in PAGE_CONFIG.get(pid, {}).get("roles", [])
-
         def _nav_button(pid: str, label: str, key_suffix: str = ""):
-            if not _is_visible(pid):
+            if not has_access(pid, user_role):
                 return
             icon = PAGE_CONFIG[pid].get("icon", "")
             is_active = st.session_state.active_page == pid
@@ -184,7 +103,11 @@ def display_sidebar(conn):
             {
                 "title": "🕒 Time Management",
                 "pages": [
-                    ("Personal Dashboard", "Personal Dashboard", "time_personal_dashboard"),
+                    (
+                        "Personal Dashboard",
+                        "Personal Dashboard",
+                        "time_personal_dashboard",
+                    ),
                     ("Shifts", "Shifts & Attendance", "time_shifts_attendance"),
                 ],
             },
@@ -200,7 +123,6 @@ def display_sidebar(conn):
             {
                 "title": "🤖 AI Management",
                 "pages": [
-                    ("GM Dashboard", "GM Dashboard", "ai_gm_dashboard"),
                     ("AI Reports", "AI Reports", "ai_reports"),
                     ("AI Alerts", "AI Alerts", "ai_alerts"),
                     ("AI Monitoring", "AI Monitoring", "ai_monitoring"),
@@ -211,16 +133,21 @@ def display_sidebar(conn):
                 "pages": [
                     ("Settings", "General Settings", "setting_root"),
                     ("Admin Users", "Admin Users", "setting_admin_users"),
+                    ("Audit Log", "System Audit Log", "setting_audit_log"),
                     ("Help", "Help", "setting_help"),
                 ],
             },
         ]
 
         for group in menu_groups:
-            visible_pages = [item for item in group["pages"] if _is_visible(item[0])]
+            visible_pages = [
+                item for item in group["pages"] if has_access(item[0], user_role)
+            ]
             if not visible_pages:
                 continue
-            expanded = st.session_state.active_page in [pid for pid, _, _ in visible_pages]
+            expanded = st.session_state.active_page in [
+                pid for pid, _, _ in visible_pages
+            ]
             with st.expander(group["title"], expanded=expanded):
                 for pid, label, key_suffix in visible_pages:
                     _nav_button(pid, label, key_suffix)

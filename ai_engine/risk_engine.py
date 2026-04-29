@@ -29,8 +29,9 @@ WEIGHTS = {
     "incidents": 0.6,  # per incident multiplier
     "attendance": 0.3,
     "traffic": 0.2,
-    "sales_anomaly": 0.8
+    "sales_anomaly": 0.8,
 }
+
 
 def compute_station_risk_from_metrics(metrics: Dict[str, Any]) -> float:
     """
@@ -41,7 +42,9 @@ def compute_station_risk_from_metrics(metrics: Dict[str, Any]) -> float:
     safety = metrics.get("safety", metrics.get("safety_score", 7)) or 7
     cleanliness = metrics.get("cleanliness_score", metrics.get("cleanliness", 7)) or 7
     staff = metrics.get("staff", metrics.get("staff_score", 7)) or 7
-    merchandising = metrics.get("merchandising_score", metrics.get("merchandising", 7)) or 7
+    merchandising = (
+        metrics.get("merchandising_score", metrics.get("merchandising", 7)) or 7
+    )
     efficiency = metrics.get("efficiency", 7) or 7
     sentiment = metrics.get("sentiment", 0.0) or 0.0
     incidents = metrics.get("safety_violations") or metrics.get("incidents") or []
@@ -56,12 +59,12 @@ def compute_station_risk_from_metrics(metrics: Dict[str, Any]) -> float:
     sentiment_risk = max(0, -sentiment)  # negative sentiment increases risk
 
     base_risk = (
-        safety_risk * WEIGHTS["safety"] +
-        cleanliness_risk * WEIGHTS["cleanliness"] +
-        staff_risk * WEIGHTS["staff"] +
-        merchandising_risk * WEIGHTS["merchandising"] +
-        efficiency_risk * WEIGHTS["efficiency"] +
-        sentiment_risk * WEIGHTS["sentiment"]
+        safety_risk * WEIGHTS["safety"]
+        + cleanliness_risk * WEIGHTS["cleanliness"]
+        + staff_risk * WEIGHTS["staff"]
+        + merchandising_risk * WEIGHTS["merchandising"]
+        + efficiency_risk * WEIGHTS["efficiency"]
+        + sentiment_risk * WEIGHTS["sentiment"]
     )
 
     incident_risk = num_incidents * WEIGHTS["incidents"]
@@ -82,10 +85,15 @@ def _ensure_dict(payload: Any) -> Dict[str, Any]:
     except Exception:
         return {}
 
+
 def record_ai_alert(conn, station_id: int, severity: str, message: str):
     now = datetime.utcnow().isoformat()
-    conn.execute("INSERT INTO ai_alerts (station_id, severity, message, created_at) VALUES (?,?,?,?)", (station_id, severity, message, now))
+    conn.execute(
+        "INSERT INTO ai_alerts (station_id, severity, message, created_at) VALUES (?,?,?,?)",
+        (station_id, severity, message, now),
+    )
     conn.commit()
+
 
 def run_risk_cycle(threshold: float = 60.0) -> Dict[int, Dict[str, Any]]:
     """
@@ -98,22 +106,28 @@ def run_risk_cycle(threshold: float = 60.0) -> Dict[int, Dict[str, Any]]:
     cur = conn.cursor()
 
     # Fetch last processed submission per station
-    rows = cur.execute("""
+    rows = cur.execute(
+        """
         SELECT s.station_id, s.data_json, s.timestamp FROM submissions s
         INNER JOIN (
-            SELECT station_id, MAX(timestamp) as max_ts 
-            FROM submissions 
+            SELECT station_id, MAX(timestamp) as max_ts
+            FROM submissions
             WHERE processed = 1 AND data_json IS NOT NULL
             GROUP BY station_id
         ) sub ON sub.station_id = s.station_id AND sub.max_ts = s.timestamp
         WHERE s.station_id IS NOT NULL
-    """).fetchall()
+    """
+    ).fetchall()
 
     results = {}
     for station_id, kpi_json, created_at in rows:
         metrics = _ensure_dict(kpi_json)
         risk = compute_station_risk_from_metrics(metrics)
-        results[station_id] = {"risk": risk, "metrics": metrics, "last_seen": created_at}
+        results[station_id] = {
+            "risk": risk,
+            "metrics": metrics,
+            "last_seen": created_at,
+        }
 
         # Persist alert if above threshold
         if risk >= threshold:
@@ -122,8 +136,11 @@ def run_risk_cycle(threshold: float = 60.0) -> Dict[int, Dict[str, Any]]:
 
     return results
 
+
 # Optional: compute station-level anomalies from historical metric series
-def detect_kpi_anomalies(station_id: int, metric_key: str, current_value: float, window: int = 20) -> Tuple[bool, Optional[Dict[str, float]]]:
+def detect_kpi_anomalies(
+    station_id: int, metric_key: str, current_value: float, window: int = 20
+) -> Tuple[bool, Optional[Dict[str, float]]]:
     """
     Compare current_value with historical average for metric_key (read from ai_reports.kpi_json).
     If relative deviation > 0.5, flag anomaly.
@@ -131,7 +148,10 @@ def detect_kpi_anomalies(station_id: int, metric_key: str, current_value: float,
     """
     conn = get_connection()
     cur = conn.cursor()
-    rows = cur.execute("SELECT data_json FROM submissions WHERE station_id = ? AND processed = 1 AND data_json IS NOT NULL ORDER BY timestamp DESC LIMIT ?", (station_id, window)).fetchall()
+    rows = cur.execute(
+        "SELECT data_json FROM submissions WHERE station_id = ? AND processed = 1 AND data_json IS NOT NULL ORDER BY timestamp DESC LIMIT ?",
+        (station_id, window),
+    ).fetchall()
     vals = []
     for (kjson,) in rows:
         j = _ensure_dict(kjson)

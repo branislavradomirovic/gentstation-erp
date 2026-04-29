@@ -4,16 +4,19 @@ from pathlib import Path
 
 DB_PATH = Path(__file__).resolve().parents[1] / "company.db"
 
+
 def get_connection():
     conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
     conn.execute("PRAGMA foreign_keys = ON;")
     ensure_schema(conn)
     return conn
 
+
 def ensure_schema(conn):
     cursor = conn.cursor()
     # Submissions table (incoming video/audio reports)
-    cursor.execute("""
+    cursor.execute(
+        """
     CREATE TABLE IF NOT EXISTS submissions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         station_id INTEGER,
@@ -25,17 +28,21 @@ def ensure_schema(conn):
         processed INTEGER DEFAULT 0,
         FOREIGN KEY(employee_id) REFERENCES employees(id) ON DELETE RESTRICT
     );
-    """)
+    """
+    )
 
     # employees, regions, stations minimal schema (if missing)
-    cursor.execute("""
+    cursor.execute(
+        """
     CREATE TABLE IF NOT EXISTS regions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT,
         email TEXT
     );
-    """)
-    cursor.execute("""
+    """
+    )
+    cursor.execute(
+        """
     CREATE TABLE IF NOT EXISTS stations (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT,
@@ -47,8 +54,10 @@ def ensure_schema(conn):
         category TEXT,
         FOREIGN KEY(region_id) REFERENCES regions(id) ON DELETE SET NULL
     );
-    """)
-    cursor.execute("""
+    """
+    )
+    cursor.execute(
+        """
     CREATE TABLE IF NOT EXISTS employees (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT,
@@ -60,8 +69,10 @@ def ensure_schema(conn):
         region_id INTEGER,
         telegram_chat_id TEXT
     );
-    """)
-    cursor.execute("""
+    """
+    )
+    cursor.execute(
+        """
     CREATE TABLE IF NOT EXISTS director_regions (
         employee_id INTEGER,
         region_id INTEGER,
@@ -69,8 +80,10 @@ def ensure_schema(conn):
         FOREIGN KEY(employee_id) REFERENCES employees(id) ON DELETE CASCADE,
         FOREIGN KEY(region_id) REFERENCES regions(id) ON DELETE CASCADE
     );
-    """)
-    cursor.execute("""
+    """
+    )
+    cursor.execute(
+        """
     CREATE TABLE IF NOT EXISTS activity_logs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         timestamp TEXT DEFAULT (datetime('now')),
@@ -79,9 +92,11 @@ def ensure_schema(conn):
         details TEXT,
         ip_address TEXT
     );
-    """)
+    """
+    )
 
-    cursor.execute("""
+    cursor.execute(
+        """
     CREATE TABLE IF NOT EXISTS ai_alerts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         station_id INTEGER,
@@ -91,16 +106,20 @@ def ensure_schema(conn):
         status TEXT DEFAULT 'new', -- new, acknowledged, resolved
         FOREIGN KEY(station_id) REFERENCES stations(id) ON DELETE CASCADE
     );
-    """)
+    """
+    )
 
-    cursor.execute("""
+    cursor.execute(
+        """
     CREATE TABLE IF NOT EXISTS system_settings (
         key TEXT PRIMARY KEY,
         value TEXT
     );
-    """)
+    """
+    )
 
-    cursor.execute("""
+    cursor.execute(
+        """
     CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         username TEXT UNIQUE NOT NULL,
@@ -114,14 +133,17 @@ def ensure_schema(conn):
         locked_until TEXT,
         dark_mode_enabled INTEGER DEFAULT 0
     );
-    """)
+    """
+    )
 
     # --- SCHEMA MIGRATIONS ---
     # Add dark_mode_enabled to users if it doesn't exist
     cursor.execute("PRAGMA table_info(users)")
     columns = [info[1] for info in cursor.fetchall()]
     if "dark_mode_enabled" not in columns:
-        cursor.execute("ALTER TABLE users ADD COLUMN dark_mode_enabled INTEGER DEFAULT 0")
+        cursor.execute(
+            "ALTER TABLE users ADD COLUMN dark_mode_enabled INTEGER DEFAULT 0"
+        )
     # Add status to ai_alerts if it doesn't exist
     cursor.execute("PRAGMA table_info(ai_alerts)")
     columns = [info[1] for info in cursor.fetchall()]
@@ -135,7 +157,8 @@ def ensure_schema(conn):
         cursor.execute("ALTER TABLE submissions ADD COLUMN data_json TEXT")
 
     # Sessions table to store session tokens
-    cursor.execute("""
+    cursor.execute(
+        """
     CREATE TABLE IF NOT EXISTS sessions (
         token TEXT PRIMARY KEY,
         user_id INTEGER,
@@ -143,6 +166,7 @@ def ensure_schema(conn):
         expires_at TEXT,
         FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
     );
-    """)
+    """
+    )
 
     conn.commit()

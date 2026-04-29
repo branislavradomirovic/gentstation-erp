@@ -7,16 +7,17 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
 def get_hierarchy_emails(station_id):
     emails = {
         "supervisor": None,
         "station_mgr": None,
         "region_mgr": None,
         "directors": [],
-        "gm": None
+        "gm": None,
     }
-    
-    conn = sqlite3.connect('company.db')
+
+    conn = sqlite3.connect("company.db")
     cursor = conn.cursor()
 
     # FORCE TYPE CONVERSION: Telegram/SQLite ID mismatch is the #1 cause of this
@@ -26,63 +27,82 @@ def get_hierarchy_emails(station_id):
         clean_s_id = station_id
 
     # 1. Get Manager & Supervisor for THIS station
-    staff = cursor.execute("""
-        SELECT email, role FROM employees 
+    staff = cursor.execute(
+        """
+        SELECT email, role FROM users
         WHERE station_id = %s AND role IN ('Gas Station Supervisor', 'Gas Station Manager')
         ORDER BY role DESC
-    """, (clean_s_id,)).fetchall()
-    
+    """,
+        (clean_s_id,),
+    ).fetchall()
+
     for email, role in staff:
-        if role == 'Gas Station Supervisor' and not emails["supervisor"]: 
+        if role == "Gas Station Supervisor" and not emails["supervisor"]:
             emails["supervisor"] = email
-        if role == 'Gas Station Manager' and not emails["station_mgr"]: 
+        if role == "Gas Station Manager" and not emails["station_mgr"]:
             emails["station_mgr"] = email
 
     # DEBUG PRINT: This will show in your terminal when you run hourly_summarizer.py
-    print(f"🔍 SQL Match Result for Station {clean_s_id}: Manager={emails['station_mgr']}, Supervisor={emails['supervisor']}")
+    print(
+        f"🔍 SQL Match Result for Station {clean_s_id}: Manager={emails['station_mgr']}, Supervisor={emails['supervisor']}"
+    )
 
     # 2. Get Region Info
-    region_data = cursor.execute("""
+    region_data = cursor.execute(
+        """
         SELECT r.id, r.name FROM regions r
         JOIN stations s ON s.region_id = r.id
         WHERE s.id = %s
-    """, (clean_s_id,)).fetchone()
+    """,
+        (clean_s_id,),
+    ).fetchone()
 
     region_name = "Unknown"
     if region_data:
         region_id, region_name = region_data
-        
+
         # Region Manager
-        reg_mgr = cursor.execute("SELECT email FROM employees WHERE region_id = %s AND role = 'Region Manager'", (region_id,)).fetchone()
-        if reg_mgr: emails["region_mgr"] = reg_mgr[0]
+        reg_mgr = cursor.execute(
+            "SELECT email FROM users WHERE region_id = %s AND role = 'Region Manager'",
+            (region_id,),
+        ).fetchone()
+        if reg_mgr:
+            emails["region_mgr"] = reg_mgr[0]
 
         # Directors
-        directors = cursor.execute("""
-            SELECT e.email FROM employees e
-            JOIN director_regions dr ON e.id = dr.employee_id
-            WHERE dr.region_id = %s AND e.role = 'Region Director'
-        """, (region_id,)).fetchall()
+        directors = cursor.execute(
+            """
+            SELECT u.email FROM users u
+            JOIN director_regions dr ON u.id = dr.user_id
+            WHERE dr.region_id = %s AND u.role = 'Region Director'
+        """,
+            (region_id,),
+        ).fetchall()
         emails["directors"] = [d[0] for d in directors]
 
     # 3. General Manager
-    gm = cursor.execute("SELECT email FROM employees WHERE role = 'General Manager' LIMIT 1").fetchone()
-    if gm: emails["gm"] = gm[0]
+    gm = cursor.execute(
+        "SELECT email FROM users WHERE role = 'General Manager' LIMIT 1"
+    ).fetchone()
+    if gm:
+        emails["gm"] = gm[0]
 
     conn.close()
     return emails, region_name if region_data else "Unknown"
 
+
 def send_complex_reports(report_text, station_id):
     sender = os.getenv("SENDER_EMAIL")
     password = os.getenv("SENDER_PASSWORD")
-    
+
     # Get Hierarchy
     hierarchy, region_name = get_hierarchy_emails(station_id)
-    
+
     # --- FIXED: STRICT RECIPIENT LIST (Only Manager) ---
     to_list = []
     if hierarchy.get("station_mgr"):
         to_list.append(hierarchy["station_mgr"])
-    
+
     # Remove duplicates and Nones
     to_list = list(set([e for e in to_list if e]))
 
@@ -92,10 +112,12 @@ def send_complex_reports(report_text, station_id):
 
     # Create Email
     msg = MIMEMultipart()
-    msg['From'] = f"GentStation AI Revizija <{sender}>"
-    msg['To'] = ", ".join(to_list)
+    msg["From"] = f"GentStation AI Revizija <{sender}>"
+    msg["To"] = ", ".join(to_list)
     # --- FIXED: SUBJECT IN SERBIAN ---
-    msg['Subject'] = f"🚨 AI Operativna Revizija: Stanica ID {station_id} ({region_name})"
+    msg["Subject"] = (
+        f"🚨 AI Operativna Revizija: Stanica ID {station_id} ({region_name})"
+    )
 
     # Format the AI output
     formatted_report = report_text.replace("\n", "<br>")
@@ -120,8 +142,8 @@ def send_complex_reports(report_text, station_id):
     </body>
     </html>
     """
-    
-    msg.attach(MIMEText(body, 'html'))
+
+    msg.attach(MIMEText(body, "html"))
 
     try:
         server = smtplib.SMTP("smtp.gmail.com", 587)

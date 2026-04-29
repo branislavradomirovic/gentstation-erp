@@ -4,6 +4,7 @@ import logging
 
 logger = logging.getLogger("gentstation.activity_logger")
 
+
 def get_client_ip():
     """Best-effort retrieval of client IP address from headers."""
     headers = {}
@@ -14,6 +15,7 @@ def get_client_ip():
         else:
             # Fallback for very old versions, using a dynamic lookup to avoid static analysis warnings
             import importlib
+
             try:
                 mod_name = "streamlit.web.server.websocket_headers"
                 mod = importlib.import_module(mod_name)
@@ -34,15 +36,16 @@ def get_client_ip():
         pass
     return None
 
+
 def log_activity(conn, action, details):
-    user = st.session_state.get("user_name", "System")
+    user = st.session_state.get("username", "System")  # Use username from session state
     ip = get_client_ip()
 
     try:
         # Attempt insert with ip_address column
         conn.execute(
             "INSERT INTO activity_logs (user_name, action, details, ip_address) VALUES (%s, %s, %s, %s)",
-            (user, action, details, ip)
+            (user, action, details, ip),
         )
         conn.commit()
     except Exception:
@@ -51,7 +54,7 @@ def log_activity(conn, action, details):
             final_details = f"{details} [IP: {ip}]" if ip else details
             conn.execute(
                 "INSERT INTO activity_logs (user_name, action, details) VALUES (%s, %s, %s)",
-                (user, action, final_details)
+                (user, action, final_details),
             )
             conn.commit()
         except Exception as e:
