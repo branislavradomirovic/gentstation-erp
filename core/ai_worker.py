@@ -8,6 +8,7 @@ import subprocess
 import sys
 import random
 import time
+import psycopg2
 
 try:
     import psutil
@@ -19,8 +20,12 @@ from typing import Any, Optional
 from contextlib import suppress, closing
 
 import redis
+from dotenv import load_dotenv
+
+os.environ.setdefault("SKIP_SCHEMA_INIT", "1")
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
+load_dotenv()
 
 from core.database import get_connection, test_redis_connection
 from core.video_processor import parse_station_video
@@ -107,12 +112,27 @@ atexit.register(release_lock)
 
 def _get_connection():
     conn = get_connection()
+    with suppress(Exception):
+        conn.rollback()
     conn.autocommit = False
     # Log the backend PID for database session troubleshooting
     try:
         logger.debug("Database connection acquired (PID: %s)", conn.get_backend_pid())
     except Exception:
         pass
+    return conn
+
+
+def _status_conn():
+    conn = psycopg2.connect(
+        host=os.getenv("DB_HOST", "localhost"),
+        port=int(os.getenv("DB_PORT", "5432")),
+        database=os.getenv("DB_NAME", "gentstation"),
+        user=os.getenv("DB_USER", "gentstation_user"),
+        password=os.getenv("DB_PASSWORD", "secure_password"),
+        connect_timeout=5,
+    )
+    conn.autocommit = True
     return conn
 
 
@@ -173,7 +193,7 @@ def update_ai_status(
             mem = process.memory_info().rss / (1024 * 1024)
             payload["metrics"] = {"cpu": cpu, "mem": mem}
 
-    with closing(_get_connection()) as conn:
+    with closing(_status_conn()) as conn:
         try:
             cur = conn.cursor()
 
@@ -204,9 +224,7 @@ def update_ai_status(
                 release_lock()
                 os._exit(1)
 
-            conn.commit()
         except Exception as e:
-            conn.rollback()
             logger.error("Failed to update AI status: %s", e)
 
 
@@ -298,31 +316,8 @@ def claim_job() -> Optional[SubmissionJob]:
         conn.commit()
         job = SubmissionJob(sub_id, path, station_id, retries, file_unique_id)
 
-        # Secondary deduplication check using Redis
-        if job.file_unique_id:
-            try:
-                sync_redis_client = get_sync_redis()
-                dedupe_key = f"{DEDUPE_KEY_PREFIX}{job.file_unique_id}"
-                if sync_redis_client.exists(dedupe_key):
-                    logger.info(
-                        "Job %s (file_unique_id: %s) already has a Redis dedupe key. Marking as done to prevent reprocessing.",
-                        job.sub_id,
-                        job.file_unique_id,
-                    )
-                    # Mark this submission as done/skipped and don't process it further
-                    cur.execute(
-                        "UPDATE submissions SET status='done', processed=1, processed_ts=NOW(), error_message='Skipped: Duplicate file_unique_id detected by AI worker' WHERE id=%s",
-                        (sub_id,),
-                    )
-                    conn.commit()
-                    return None  # Skip this job
-                else:
-                    # If for some reason the bot didn't set it, the AI worker can as a fallback
-                    sync_redis_client.setex(dedupe_key, 86400, "1")  # 24 hours TTL
-            except Exception as redis_e:
-                logger.warning(
-                    "Redis dedupe check failed for job %s: %s", job.sub_id, redis_e
-                )
+        # Do not skip by Redis dedupe key here: the bot sets dedupe on enqueue.
+        # Skipping in AI worker would prevent legitimate queued jobs from being processed.
         return job
 
     except Exception as e:

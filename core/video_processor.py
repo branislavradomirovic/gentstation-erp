@@ -32,7 +32,10 @@ except Exception:  # pragma: no cover - optional dependency
 # Configuration
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:14b-instruct")
-OLLAMA_VISION_MODEL = os.getenv("OLLAMA_VISION_MODEL", "bakllava").strip()
+_vision_env = (os.getenv("OLLAMA_VISION_MODEL", "bakllava") or "").strip()
+OLLAMA_VISION_MODEL = (
+    "" if _vision_env.lower() in {"", "none", "null", "false", "0"} else _vision_env
+)
 OLLAMA_LOCAL_ONLY = os.getenv("OLLAMA_LOCAL_ONLY", "1").strip().lower() in {
     "1",
     "true",
@@ -58,11 +61,27 @@ SAMPLED FRAMES:
 
 {analysis_mode}
 
-Assess the following KPIs on a 1-10 scale, where 10 is best:
-- cleanliness_score
-- safety_score
-- staff_score
-- merchandising_score
+Evaluate both safety and commercial execution using observable evidence.
+
+SAFETY CHECKLIST (prioritize high-risk items):
+- Slip/trip hazards (spills, clutter, blocked aisles, cables, wet floors)
+- Fire and fuel risks (smoking, open flames, unsafe fuel handling)
+- PPE and compliance behaviors (uniform/PPE use, restricted-area discipline)
+- Emergency readiness (visible extinguishers, clear exits, unobstructed access)
+- Forecourt and traffic safety (vehicle/pedestrian conflict, unsafe parking)
+
+COMMERCIAL CHECKLIST:
+- Shelf availability and facing quality in key categories
+- Out-of-stock or low-stock visibility
+- Promotional execution (signage placement, campaign visibility)
+- Checkout/queue flow and service readiness
+- General store presentation quality affecting conversion
+
+Assess the following KPIs on a 1-10 scale (10 is best):
+- cleanliness_score: housekeeping and visual order
+- safety_score: hazard control and compliance
+- staff_score: staff professionalism, readiness, and process discipline
+- merchandising_score: product availability, facing, and promo execution
 
 Return ONLY valid JSON with exactly these keys:
 {{
@@ -77,7 +96,11 @@ Return ONLY valid JSON with exactly these keys:
   "summary": "<2-3 sentence executive summary>"
 }}
 
-If the image evidence is weak or partially obscured, lower confidence accordingly.
+Scoring policy:
+- Penalize safety_score aggressively when critical hazards are visible.
+- Penalize merchandising_score when stock or promo execution is weak.
+- Keep hazards and stock_issues concrete and operational (avoid generic wording).
+- If evidence is weak/obscured, reduce confidence and say so in summary.
 """
 
 
@@ -484,63 +507,67 @@ def parse_station_video(video_path: str) -> dict:
         )
 
     use_images = bool(frames) and vision_ready
-    model = _select_model(
-        use_images
-    )  # Still use internal selector for production logic
+    configured_vision_model = _select_model(True) if OLLAMA_VISION_MODEL else None
+    configured_text_model = _select_model(False)
+    vision_result = None
+    text_result = None
+    vision_error = None
+    text_error = None
 
-    logger.debug(
-        "Using model: %s (%s)",
-        model,
-        "frames attached" if use_images else "metadata fallback",
-    )
+    # Pass 1: Vision model (if frames are available)
+    if use_images:
+        vision_model = configured_vision_model or _select_model(True)
+        vision_prompt = _build_prompt(metadata, frames, True)
+        try:
+            vision_response_text = call_ollama(
+                vision_prompt, vision_model, [f.image_b64 for f in frames]
+            )
+            vision_result = _normalize_result(_parse_result(vision_response_text))
+            vision_result["_model_used"] = vision_model
+            vision_result["_raw_response"] = vision_response_text
+        except Exception as e:
+            vision_error = str(e)
 
-    prompt = _build_prompt(metadata, frames, use_images)
-
+    # Pass 2: Text model (always run to provide second-opinion output)
+    text_model = configured_text_model
+    text_prompt = _build_prompt(metadata, [], False)
     try:
-        image_payload = [frame.image_b64 for frame in frames] if use_images else None
-        response_text = call_ollama(prompt, model, image_payload)
-        result = _normalize_result(_parse_result(response_text))
-        result["_model_used"] = model
-        logger.debug(
-            "Analysis complete: C=%s S=%s St=%s M=%s",
-            result["cleanliness_score"],
-            result["safety_score"],
-            result["staff_score"],
-            result["merchandising_score"],
-        )
-        return result
-
-    except requests.exceptions.ConnectionError:
-        error_msg = (
-            f"Cannot connect to Ollama server at {OLLAMA_BASE_URL}. "
-            f"Make sure Ollama is running: 'ollama serve'"
-        )
-        logger.error(error_msg)
-        raise RuntimeError(error_msg)
-
-    except requests.exceptions.Timeout:
-        error_msg = "Ollama request timed out. The video may be too large or the model may be slow."
-        logger.error(error_msg)
-        raise RuntimeError(error_msg)
-
+        text_response_text = call_ollama(text_prompt, text_model, None)
+        text_result = _normalize_result(_parse_result(text_response_text))
+        text_result["_model_used"] = text_model
+        text_result["_raw_response"] = text_response_text
     except Exception as e:
-        # If we tried a vision model first and it failed, fall back to text-only.
-        if use_images:
-            try:
-                fallback_prompt = _build_prompt(metadata, [], False)
-                response_text = call_ollama(fallback_prompt, OLLAMA_MODEL, None)
-                result = _normalize_result(_parse_result(response_text))
-                result["_model_used"] = OLLAMA_MODEL
-                result["summary"] = (
-                    f"{result['summary']} (Vision fallback was unavailable; result used metadata-only analysis.)"
-                )
-                return result
-            except Exception:
-                pass
+        text_error = str(e)
 
-        error_msg = f"Ollama analysis failed: {str(e)}"
-        logger.error(error_msg)
-        raise RuntimeError(error_msg)
+    # Final chosen result: prefer vision when available, otherwise text.
+    if vision_result:
+        result = dict(vision_result)
+        result["_model_used"] = vision_result.get("_model_used")
+    elif text_result:
+        result = dict(text_result)
+        result["_model_used"] = text_result.get("_model_used")
+    else:
+        raise RuntimeError(
+            f"Ollama analysis failed. Vision error: {vision_error}. Text error: {text_error}"
+        )
+
+    # Include both model outputs for UI visibility/debugging.
+    result["_vision_model"] = (
+        vision_result.get("_model_used") if vision_result else configured_vision_model
+    )
+    result["_vision_output"] = vision_result
+    result["_vision_error"] = vision_error
+    result["_llm_model"] = (
+        text_result.get("_model_used") if text_result else configured_text_model
+    )
+    result["_llm_output"] = text_result
+    result["_llm_error"] = text_error
+    result["_analysis_metadata"] = {
+        "vision_used": bool(use_images),
+        "frames_sampled": len(frames),
+        "decoder": metadata.get("decoder"),
+    }
+    return result
 
 
 def test_ollama_connection(on_retry=None) -> bool:

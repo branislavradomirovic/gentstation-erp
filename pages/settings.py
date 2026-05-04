@@ -534,9 +534,6 @@ def render(conn):
 
         st.toast("System cleaned. Workers will restart on next page load.", icon="🧼")
         time.sleep(1.5)
-        # Clear boot_complete to force a fresh worker check/spawn in app.py
-        if "boot_complete" in st.session_state:
-            del st.session_state["boot_complete"]
         st.rerun()
 
     st.divider()

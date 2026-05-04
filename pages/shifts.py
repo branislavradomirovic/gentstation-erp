@@ -34,7 +34,7 @@ def _scope_clause(user_role, employee_row):
         return "", ()
     if not employee_row:
         return "es.employee_id IS NULL", ()
-    if user_role in ("Region Director", "Region Manager"):
+    if user_role == "Region Manager":
         return "u.region_id = %s", (employee_row[8],)  # employee_row[8] is u.region_id
     if user_role in ("Gas Station Manager", "Gas Station Supervisor"):
         return "es.station_id = %s", (employee_row[7],)
@@ -54,7 +54,7 @@ def _employee_options(conn, user_role, employee_row):
     if not employee_row:
         return pd.DataFrame(columns=["id", "fullname", "station_name"])
 
-    if user_role in ("Region Director", "Region Manager"):
+    if user_role == "Region Manager":
         return fetch_df(
             conn,
             """
@@ -99,7 +99,7 @@ def _station_options(conn, user_role, employee_row):
     if not employee_row:
         return pd.DataFrame(columns=["id", "name"])
 
-    if user_role in ("Region Director", "Region Manager"):
+    if user_role == "Region Manager":
         return fetch_df(
             conn,
             "SELECT id, name FROM stations WHERE region_id = %s ORDER BY name",
@@ -515,7 +515,6 @@ def render(conn):
     st.divider()
 
     if user_role == "General Manager" or user_role in (
-        "Region Director",
         "Region Manager",
         "Gas Station Manager",
         "Gas Station Supervisor",

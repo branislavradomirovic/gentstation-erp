@@ -32,23 +32,74 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 
 def create_user(
-    username: str, password: str, email: Optional[str], role: str = "Employee"
+    username: str,
+    password: str,
+    email: Optional[str],
+    role: str = "Employee",
+    name: Optional[str] = None,
+    surname: Optional[str] = None,
+    station_id: Optional[int] = None,
+    region_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Create new user in users table. Returns user row dict."""
+    station_scoped_roles = {
+        "Employee",
+        "Gas Station Supervisor",
+        "Gas Station Manager",
+    }
+    if role in station_scoped_roles:
+        if not station_id:
+            raise ValueError(f"{role} requires station assignment.")
+        with get_connection() as c2:
+            station_row = c2.execute(
+                "SELECT region_id FROM stations WHERE id = %s", (station_id,)
+            ).fetchone()
+        if not station_row or station_row[0] is None:
+            raise ValueError("Assigned station must exist and belong to a region.")
+        region_id = station_row[0]
+    elif role == "Region Manager":
+        if not region_id:
+            raise ValueError("Region Manager requires region assignment.")
+        station_id = None
+    else:
+        station_id = None if station_id is None else station_id
+
     with get_connection() as conn:
         cur = conn.cursor()
         pw_hash = hash_password(password)
         cur.execute(
             """
-            INSERT INTO users (username, email, password_hash, role, is_active, created_at, force_password_change)
-            VALUES (%s, %s, %s, %s, TRUE, %s, TRUE)
+            INSERT INTO users (
+                username, email, password_hash, role, is_active, created_at,
+                force_password_change, name, surname, station_id, region_id
+            )
+            VALUES (%s, %s, %s, %s, TRUE, %s, TRUE, %s, %s, %s, %s)
             RETURNING id
         """,
-            (username, email, pw_hash, role, datetime.utcnow().isoformat()),
+            (
+                username,
+                email,
+                pw_hash,
+                role,
+                datetime.utcnow().isoformat(),
+                (name or "").strip() or None,
+                (surname or "").strip() or None,
+                station_id,
+                region_id,
+            ),
         )
         uid = cur.fetchone()[0]
         conn.commit()
-        return {"id": uid, "username": username, "email": email, "role": role}
+        return {
+            "id": uid,
+            "username": username,
+            "email": email,
+            "role": role,
+            "name": (name or "").strip() or None,
+            "surname": (surname or "").strip() or None,
+            "station_id": station_id,
+            "region_id": region_id,
+        }
 
 
 def authenticate_user(
@@ -211,3 +262,9 @@ def logout_user_streamlit(st):
     for key in ["session_token", "user_id", "username", "user_role"]:
         if key in st.session_state:
             del st.session_state[key]
+
+    try:
+        if "session_token" in st.query_params:
+            del st.query_params["session_token"]
+    except Exception:
+        pass

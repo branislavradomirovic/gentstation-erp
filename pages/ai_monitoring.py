@@ -75,6 +75,20 @@ def render(conn):
 
     c_ctrl1, c_col2, c_col3 = st.columns([1, 1, 1])
 
+    def _reset_stuck_jobs_in_db(timeout_seconds=1800):
+        cutoff_sql = "NOW() - (%s || ' seconds')::interval"
+        conn.execute(
+            f"""
+            UPDATE submissions
+            SET status='pending'
+            WHERE status='processing'
+              AND processing_started_ts IS NOT NULL
+              AND processing_started_ts < {cutoff_sql}
+            """,
+            (str(int(timeout_seconds)),),
+        )
+        conn.commit()
+
     def _restart_service(lock_name, task_name):
         lock_path = Path(f"/tmp/{lock_name}")
         if lock_path.exists():
@@ -96,10 +110,7 @@ def render(conn):
             st.info(f"No active lock for {task_name}. Spawning now...")
 
         # Clear any jobs that might have been stuck in 'processing' by the terminated worker
-        reset_stuck_jobs()
-
-        if "boot_complete" in st.session_state:
-            del st.session_state["boot_complete"]
+        _reset_stuck_jobs_in_db()
         time.sleep(1)
         st.rerun()
 

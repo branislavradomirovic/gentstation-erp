@@ -19,7 +19,7 @@ def _scope_filter():
     if user_role == "General Manager":
         return None, ()
 
-    if user_role in ("Region Director", "Region Manager"):
+    if user_role == "Region Manager":
         return "u.region_id = %s", (st.session_state.get("user_region_id"),)
     if user_role in ("Gas Station Manager", "Gas Station Supervisor"):
         return "u.station_id = %s", (st.session_state.get("user_station_id"),)
@@ -31,7 +31,7 @@ def _alert_filter():
     if user_role == "General Manager":
         return None, ()
 
-    if user_role in ("Region Director", "Region Manager"):
+    if user_role == "Region Manager":
         return "st.region_id = %s", (st.session_state.get("user_region_id"),)
     if user_role in ("Gas Station Manager", "Gas Station Supervisor"):
         return "st.id = %s", (st.session_state.get("user_station_id"),)
@@ -172,7 +172,7 @@ def _render_scope_activity(conn, scope_where, scope_params):
         ]
         _render_metric_row(metrics)
 
-    elif user_role in ("Region Director", "Region Manager"):
+    elif user_role == "Region Manager":
         region_id = st.session_state.get("user_region_id")
         # ... rest of the logic using session state directly ...
 
@@ -200,7 +200,7 @@ def _render_scope_activity(conn, scope_where, scope_params):
         st.dataframe(reports_df, width="stretch", hide_index=True)
 
     st.markdown("#### Open Risks")
-    alert_where, alert_params = _alert_filter(user_role, employee_row)
+    alert_where, alert_params = _alert_filter()
     alerts_sql = """
         SELECT a.id, a.created_at, st.name AS station, a.severity, a.message, a.status
         FROM ai_alerts a

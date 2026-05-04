@@ -16,7 +16,6 @@ PAGE_CONFIG = {
         "icon": "🏠",
         "roles": [
             "General Manager",
-            "Region Director",
             "Region Manager",
             "Gas Station Manager",
             "Gas Station Supervisor",
@@ -28,7 +27,6 @@ PAGE_CONFIG = {
         "icon": "🧭",
         "roles": [
             "General Manager",
-            "Region Director",
             "Region Manager",
             "Gas Station Manager",
             "Gas Station Supervisor",
@@ -40,7 +38,6 @@ PAGE_CONFIG = {
         "icon": "🕒",
         "roles": [
             "General Manager",
-            "Region Director",
             "Region Manager",
             "Gas Station Manager",
             "Gas Station Supervisor",
@@ -55,12 +52,12 @@ PAGE_CONFIG = {
     "Stations": {
         "id": "Stations",
         "icon": "⛽",
-        "roles": ["General Manager", "Region Director", "Region Manager"],
+        "roles": ["General Manager", "Region Manager"],
     },
     "Map View": {
         "id": "Map View",
         "icon": "🗺️",
-        "roles": ["General Manager", "Region Director", "Region Manager"],
+        "roles": ["General Manager", "Region Manager"],
     },
     "Employees": {
         "id": "Employees",
@@ -72,7 +69,6 @@ PAGE_CONFIG = {
         "icon": "📈",
         "roles": [
             "General Manager",
-            "Region Director",
             "Region Manager",
             "Gas Station Manager",
         ],
@@ -82,7 +78,6 @@ PAGE_CONFIG = {
         "icon": "🚨",
         "roles": [
             "General Manager",
-            "Region Director",
             "Region Manager",
             "Gas Station Manager",
         ],
@@ -90,7 +85,7 @@ PAGE_CONFIG = {
     "AI Monitoring": {
         "id": "AI Monitoring",
         "icon": "🖥️",
-        "roles": ["General Manager", "Region Director"],
+        "roles": ["General Manager"],
     },
     "Audit Log": {
         "id": "Audit Log",
@@ -107,7 +102,6 @@ PAGE_CONFIG = {
         "icon": "⚙️",
         "roles": [
             "General Manager",
-            "Region Director",
             "Region Manager",
             "Gas Station Manager",
             "Gas Station Supervisor",
@@ -119,7 +113,6 @@ PAGE_CONFIG = {
         "icon": "❓",
         "roles": [
             "General Manager",
-            "Region Director",
             "Region Manager",
             "Gas Station Manager",
             "Gas Station Supervisor",

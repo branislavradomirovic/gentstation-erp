@@ -52,7 +52,7 @@ def render(conn):
         total_regions = conn.execute("SELECT COUNT(*) FROM regions").fetchone()[0]
         total_stations = conn.execute("SELECT COUNT(*) FROM stations").fetchone()[0]
         total_employees = conn.execute(
-            "SELECT COUNT(*) FROM users WHERE role IN ('Employee', 'Gas Station Supervisor', 'Gas Station Manager', 'Region Manager', 'Region Director', 'General Manager')"
+            "SELECT COUNT(*) FROM users WHERE role IN ('Employee', 'Gas Station Supervisor', 'Gas Station Manager', 'Region Manager', 'General Manager')"
         ).fetchone()[
             0
         ]  # Count users who are considered employees
@@ -145,7 +145,7 @@ def render(conn):
     # Run risk engine to refresh rankings and anomalies
     risk_results = {}
     with st.spinner("Analyzing real-time station risk..."):
-        risk_results = run_risk_cycle(conn)
+        risk_results = run_risk_cycle()
 
     tab1, tab2, tab3, tab4 = st.tabs(
         [

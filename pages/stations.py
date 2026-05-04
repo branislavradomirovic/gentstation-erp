@@ -44,9 +44,15 @@ def render(conn):
 
     mgrs = pd.read_sql_query(
         """
-        SELECT id, name || ' ' || surname as fullname
+        SELECT
+            id,
+            COALESCE(
+                NULLIF(TRIM(COALESCE(name, '') || ' ' || COALESCE(surname, '')), ''),
+                email,
+                username
+            ) as fullname
         FROM users
-        WHERE role = 'Gas Station Manager'
+        WHERE role IN ('Gas Station Manager', 'Gas Station Supervisor', 'General Manager')
         ORDER BY name
     """,
         conn,
@@ -168,8 +174,36 @@ def render(conn):
         """
         SELECT s.id, s.name, r.name as region_name,
                s.physical_address, s.email, s.lat, s.lon,
-               (SELECT name || ' ' || surname FROM users WHERE station_id = s.id AND role = 'Gas Station Manager' LIMIT 1) as manager,
-               (SELECT id FROM users WHERE station_id = s.id AND role = 'Gas Station Manager' LIMIT 1) as manager_id
+               (
+                    SELECT COALESCE(
+                        NULLIF(TRIM(COALESCE(name, '') || ' ' || COALESCE(surname, '')), ''),
+                        email,
+                        username
+                    )
+                    FROM users
+                    WHERE station_id = s.id
+                    ORDER BY
+                        CASE role
+                            WHEN 'Gas Station Manager' THEN 0
+                            WHEN 'Gas Station Supervisor' THEN 1
+                            WHEN 'General Manager' THEN 2
+                            ELSE 3
+                        END, id
+                    LIMIT 1
+               ) as manager,
+               (
+                    SELECT id
+                    FROM users
+                    WHERE station_id = s.id
+                    ORDER BY
+                        CASE role
+                            WHEN 'Gas Station Manager' THEN 0
+                            WHEN 'Gas Station Supervisor' THEN 1
+                            WHEN 'General Manager' THEN 2
+                            ELSE 3
+                        END, id
+                    LIMIT 1
+               ) as manager_id
         FROM stations s
         LEFT JOIN regions r ON s.region_id = r.id
         ORDER BY s.id
@@ -346,8 +380,21 @@ def render(conn):
             mgr_options = ["-- None --"] + list(mgr_map.keys())
             curr_mgr_name_q = pd.read_sql_query(
                 """
-                SELECT name || ' ' || surname as fullname FROM users
-                WHERE station_id = %s AND role = 'Gas Station Manager' LIMIT 1
+                SELECT COALESCE(
+                    NULLIF(TRIM(COALESCE(name, '') || ' ' || COALESCE(surname, '')), ''),
+                    email,
+                    username
+                ) as fullname
+                FROM users
+                WHERE station_id = %s
+                ORDER BY
+                    CASE role
+                        WHEN 'Gas Station Manager' THEN 0
+                        WHEN 'Gas Station Supervisor' THEN 1
+                        WHEN 'General Manager' THEN 2
+                        ELSE 3
+                    END, id
+                LIMIT 1
             """,
                 conn,
                 params=(sel,),
@@ -399,7 +446,7 @@ def render(conn):
 
                     # Update Manager link
                     conn.execute(
-                        "UPDATE users SET station_id = NULL WHERE station_id = %s AND role = 'Gas Station Manager'",
+                        "UPDATE users SET station_id = NULL WHERE station_id = %s AND role IN ('Gas Station Manager', 'Gas Station Supervisor', 'General Manager')",
                         (sel,),
                     )
                     if sel_mgr != "-- None --":

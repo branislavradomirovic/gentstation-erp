@@ -87,14 +87,24 @@ class CompatCursor:
                 # Persist slow query to database (avoid logging the log itself)
                 if "INSERT INTO slow_query_logs" not in query:
                     try:
-                        # Use a separate cursor to avoid interfering with current results
+                        # Use a savepoint so slow-log write failures do not poison
+                        # the caller transaction with "current transaction is aborted".
                         with self._connection._conn.cursor() as log_cur:
+                            log_cur.execute("SAVEPOINT slow_query_log_sp")
                             log_cur.execute(
                                 "INSERT INTO slow_query_logs (query_text, duration_seconds, params) VALUES (%s, %s, %s)",
                                 (query_snippet, duration, str(params)),
                             )
+                            log_cur.execute("RELEASE SAVEPOINT slow_query_log_sp")
                     except Exception:
-                        pass  # Prevent logging failures from crashing the app
+                        try:
+                            with self._connection._conn.cursor() as log_cur:
+                                log_cur.execute(
+                                    "ROLLBACK TO SAVEPOINT slow_query_log_sp"
+                                )
+                                log_cur.execute("RELEASE SAVEPOINT slow_query_log_sp")
+                        except Exception:
+                            pass
 
         self._lastrowid = None
         lowered = query.lstrip().lower()
@@ -240,11 +250,25 @@ def get_connection(on_retry=None):
     for attempt in range(max_retries):
         try:
             raw_conn = DatabaseConnection.get_connection()
+            # Pooled connections may be returned in an aborted transaction state.
+            # Always reset transaction state before handing the connection to callers.
+            try:
+                raw_conn.rollback()
+            except Exception:
+                pass
             conn = CompatConnection(raw_conn, pool=_POOL)
+
+            # Allow workers to skip schema migrations to avoid cross-process DDL deadlocks.
+            skip_schema_init = os.getenv("SKIP_SCHEMA_INIT", "").strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
 
             # Create tables if they don't exist, but only once per process to avoid
             # repeated noisy logs on every Streamlit rerun.
-            if not _SCHEMA_INITIALIZED:
+            if not _SCHEMA_INITIALIZED and not skip_schema_init:
                 ensure_schema(conn)
                 _SCHEMA_INITIALIZED = True
             return conn
@@ -356,18 +380,6 @@ def ensure_schema(conn):
         """
         )
 
-        # Director-Regions mapping table
-        cursor.execute(
-            """
-        CREATE TABLE IF NOT EXISTS director_regions (
-            user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-            region_id INTEGER REFERENCES regions(id) ON DELETE CASCADE,
-            PRIMARY KEY(user_id, region_id),
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-        """
-        )
-
         # Users table
         cursor.execute(
             """
@@ -409,6 +421,49 @@ def ensure_schema(conn):
         )
         cursor.execute(
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS force_password_change BOOLEAN DEFAULT FALSE;"
+        )
+        cursor.execute(
+            """
+            CREATE OR REPLACE FUNCTION enforce_user_assignment_integrity()
+            RETURNS TRIGGER
+            AS $$
+            DECLARE
+                station_region_id INTEGER;
+            BEGIN
+                IF NEW.role IN ('Employee', 'Gas Station Supervisor', 'Gas Station Manager') THEN
+                    IF NEW.station_id IS NULL THEN
+                        RAISE EXCEPTION 'Role % requires station_id', NEW.role;
+                    END IF;
+
+                    SELECT region_id INTO station_region_id
+                    FROM stations
+                    WHERE id = NEW.station_id;
+
+                    IF station_region_id IS NULL THEN
+                        RAISE EXCEPTION 'Assigned station % must exist and belong to a region', NEW.station_id;
+                    END IF;
+
+                    NEW.region_id := station_region_id;
+                ELSIF NEW.role = 'Region Manager' THEN
+                    IF NEW.region_id IS NULL THEN
+                        RAISE EXCEPTION 'Region Manager requires region_id';
+                    END IF;
+                    NEW.station_id := NULL;
+                END IF;
+
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql;
+            """
+        )
+        cursor.execute(
+            """
+            DROP TRIGGER IF EXISTS trg_enforce_user_assignment_integrity ON users;
+            CREATE TRIGGER trg_enforce_user_assignment_integrity
+            BEFORE INSERT OR UPDATE ON users
+            FOR EACH ROW
+            EXECUTE FUNCTION enforce_user_assignment_integrity();
+            """
         )
 
         # Cleanup: Remove the old employees table if it still exists
@@ -780,6 +835,13 @@ def ensure_schema(conn):
         ON users(username);
         """
         )
+        cursor.execute(
+            """
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_users_telegram_chat_id_not_null
+        ON users(telegram_chat_id)
+        WHERE telegram_chat_id IS NOT NULL;
+        """
+        )
 
         cursor.execute(
             """
@@ -889,8 +951,10 @@ def ensure_schema(conn):
         logger.debug("Database schema initialized successfully")
 
     except psycopg2.Error as e:
+    except Exception as e:
         conn.rollback()
         logger.error("Schema initialization error: %s", e)
+        logger.error("Failed to ensure schema: %s", e)
         raise
 
 

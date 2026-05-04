@@ -44,6 +44,7 @@ import socket
 import tempfile
 import time
 import uuid
+import psycopg2
 from contextlib import suppress
 from dataclasses import dataclass, asdict
 from pathlib import Path
@@ -55,6 +56,8 @@ except ImportError:
     psutil = None
 
 from dotenv import load_dotenv
+
+os.environ.setdefault("SKIP_SCHEMA_INIT", "1")
 
 try:
     from redis.asyncio import Redis
@@ -73,6 +76,8 @@ from telegram.ext import (
 
 # Keep your existing DB layer.
 from core.database import get_connection
+
+load_dotenv()
 
 
 # ---------------------------------------------------------------------------
@@ -115,13 +120,28 @@ ALLOWED_MIME_TYPES = {"video/mp4", "video/quicktime", "video/webm", "video/x-mat
 # ---------------------------------------------------------------------------
 # Runtime state
 # ---------------------------------------------------------------------------
-shutdown_event = asyncio.Event()
-bot_running_event = asyncio.Event()
+shutdown_event: Optional[asyncio.Event] = None
+bot_running_event: Optional[asyncio.Event] = None
 rate_limit_state: dict[str, list[float]] = {}
-rate_limit_lock = asyncio.Lock()
+rate_limit_lock: Optional[asyncio.Lock] = None
 heartbeat_task: Optional[asyncio.Task] = None
 cleanup_task: Optional[asyncio.Task] = None
 redis_client: Optional[Redis] = None
+
+
+def _shutdown_event() -> asyncio.Event:
+    assert shutdown_event is not None
+    return shutdown_event
+
+
+def _bot_running_event() -> asyncio.Event:
+    assert bot_running_event is not None
+    return bot_running_event
+
+
+def _rate_limit_lock() -> asyncio.Lock:
+    assert rate_limit_lock is not None
+    return rate_limit_lock
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +195,19 @@ def _now() -> float:
 
 def _safe_json(value: Any) -> str:
     return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
+
+
+def _status_conn():
+    conn = psycopg2.connect(
+        host=os.getenv("DB_HOST", "localhost"),
+        port=int(os.getenv("DB_PORT", "5432")),
+        database=os.getenv("DB_NAME", "gentstation"),
+        user=os.getenv("DB_USER", "gentstation_user"),
+        password=os.getenv("DB_PASSWORD", "secure_password"),
+        connect_timeout=5,
+    )
+    conn.autocommit = True
+    return conn
 
 
 def _ps_alive(pid: int) -> bool:
@@ -274,7 +307,13 @@ async def db_fetch_employee_by_chat(
             conn = get_connection()
             cur = conn.cursor()
             row = cur.execute(  # Fetch from users table
-                "SELECT id, station_id FROM users WHERE telegram_chat_id = %s",
+                """
+                SELECT id, station_id
+                FROM users
+                WHERE telegram_chat_id = %s
+                ORDER BY (station_id IS NOT NULL) DESC, id DESC
+                LIMIT 1
+                """,
                 (chat_id,),
             ).fetchone()
             return row
@@ -292,6 +331,11 @@ async def db_link_employee_chat(employee_id: int, chat_id: str) -> int:
         try:
             conn = get_connection()
             cur = conn.cursor()
+            # Ensure this chat is linked to exactly one account.
+            cur.execute(
+                "UPDATE users SET telegram_chat_id = NULL WHERE telegram_chat_id = %s AND id <> %s",
+                (chat_id, employee_id),
+            )
             cur.execute(  # Update users table
                 "UPDATE users SET telegram_chat_id = %s WHERE id = %s",
                 (chat_id, employee_id),
@@ -364,7 +408,7 @@ async def update_bot_status(
     def _db_work() -> None:
         conn = None
         try:
-            conn = get_connection()
+            conn = _status_conn()
             cur = conn.cursor()
 
             # 1. Update primary status key in system_settings
@@ -407,18 +451,16 @@ async def update_bot_status(
                     )
                     restart_needed = True
 
-            conn.commit()
             if restart_needed:
                 release_lock()
                 os._exit(1)
 
         except Exception as e:
-            if conn:
-                conn.rollback()
-            logger.debug("Bot status DB update failed: %s", e)
+            logger.warning("Bot status DB update failed: %s", e)
         finally:
             if conn:
-                conn.close()
+                with suppress(Exception):
+                    conn.close()
 
     await asyncio.to_thread(_db_work)
 
@@ -461,7 +503,7 @@ async def enqueue_job(job: SubmissionJob) -> None:
 # ---------------------------------------------------------------------------
 async def check_rate_limit(chat_id: str) -> bool:
     now = _now()
-    async with rate_limit_lock:
+    async with _rate_limit_lock():
         hits = rate_limit_state.setdefault(chat_id, [])
         hits[:] = [ts for ts in hits if now - ts <= RATE_LIMIT_WINDOW_SECONDS]
         if len(hits) >= RATE_LIMIT_MAX_FILES:
@@ -471,7 +513,7 @@ async def check_rate_limit(chat_id: str) -> bool:
 
 
 async def cleanup_old_uploads() -> None:
-    while not shutdown_event.is_set():
+    while not _shutdown_event().is_set():
         try:
             cutoff = _now() - 24 * 3600
             if UPLOADS_DIR.exists():
@@ -484,7 +526,7 @@ async def cleanup_old_uploads() -> None:
         except Exception as e:
             logger.warning("Cleanup loop error: %s", e)
         try:
-            await asyncio.wait_for(shutdown_event.wait(), timeout=3600)
+            await asyncio.wait_for(_shutdown_event().wait(), timeout=3600)
         except asyncio.TimeoutError:
             pass
 
@@ -493,9 +535,9 @@ async def heartbeat_loop() -> None:
     failure_count = 0
     FAILURE_THRESHOLD = 5
 
-    while not shutdown_event.is_set():
+    while not _shutdown_event().is_set():
         try:
-            if bot_running_event.is_set():
+            if _bot_running_event().is_set():
                 # Perform health checks
                 redis_online = False
                 redis_err = None
@@ -523,7 +565,7 @@ async def heartbeat_loop() -> None:
 
         try:
             await asyncio.wait_for(
-                shutdown_event.wait(), timeout=BOT_HEARTBEAT_INTERVAL
+                _shutdown_event().wait(), timeout=BOT_HEARTBEAT_INTERVAL
             )
         except asyncio.TimeoutError:
             pass
@@ -754,7 +796,7 @@ async def worker_loop() -> None:
         os.getenv("QUEUE_CONSUMER") or f"{socket.gethostname()}-{os.getpid()}"
     )
 
-    while not shutdown_event.is_set():
+    while not _shutdown_event().is_set():
         try:
             entries = await redis.xreadgroup(
                 groupname=QUEUE_GROUP,
@@ -783,7 +825,7 @@ async def worker_loop() -> None:
         except Exception as e:
             logger.error("Worker loop error: %s", e)
             try:
-                await asyncio.wait_for(shutdown_event.wait(), timeout=5)
+                await asyncio.wait_for(_shutdown_event().wait(), timeout=5)
             except asyncio.TimeoutError:
                 pass
 
@@ -817,7 +859,7 @@ async def run_bot_once() -> None:
         return
 
     app = await build_application()
-    bot_running_event.set()
+    _bot_running_event().set()
     await update_bot_status("starting")
 
     await app.initialize()
@@ -828,9 +870,9 @@ async def run_bot_once() -> None:
     logger.info("Telegram bot is running.")
 
     try:
-        await shutdown_event.wait()
+        await _shutdown_event().wait()
     finally:
-        bot_running_event.clear()
+        _bot_running_event().clear()
         with suppress(Exception):
             await app.updater.stop()
         with suppress(Exception):
@@ -843,12 +885,12 @@ async def run_bot_once() -> None:
 async def run_bot_with_retry() -> None:
     retry_delay = max(1, RETRY_BASE_SECONDS)
 
-    while not shutdown_event.is_set():
+    while not _shutdown_event().is_set():
         try:
             await run_bot_once()
             retry_delay = RETRY_BASE_SECONDS
 
-            if shutdown_event.is_set():
+            if _shutdown_event().is_set():
                 break
 
             logger.warning(
@@ -888,7 +930,7 @@ async def run_both() -> None:
 
 def _install_signal_handlers(loop: asyncio.AbstractEventLoop) -> None:
     def _stop(*_: Any) -> None:
-        shutdown_event.set()
+        _shutdown_event().set()
 
     for sig_name in ("SIGINT", "SIGTERM"):
         sig = getattr(signal, sig_name, None)
@@ -899,8 +941,22 @@ def _install_signal_handlers(loop: asyncio.AbstractEventLoop) -> None:
 
 
 async def main() -> None:
+    global shutdown_event, bot_running_event, rate_limit_lock
     load_dotenv()
     UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    shutdown_event = asyncio.Event()
+    bot_running_event = asyncio.Event()
+    rate_limit_lock = asyncio.Lock()
+
+    # AI processing is handled by core/ai_worker.py; prevent accidental
+    # queue consumption by this bot process even if BOT_MODE is set to both/worker.
+    effective_mode = BOT_MODE
+    if BOT_MODE in {"worker", "both"}:
+        logger.warning(
+            "BOT_MODE=%s is not supported in this build. Forcing BOT_MODE='bot' so AI worker remains the only processor.",
+            BOT_MODE,
+        )
+        effective_mode = "bot"
 
     if Redis is None:
         logger.error(
@@ -921,33 +977,36 @@ async def main() -> None:
     _install_signal_handlers(loop)
 
     try:
-        if BOT_MODE == "bot":
+        if effective_mode == "bot":
             tasks = [
                 asyncio.create_task(run_bot_with_retry(), name="telegram-bot"),
                 asyncio.create_task(heartbeat_loop(), name="heartbeat"),
                 asyncio.create_task(cleanup_old_uploads(), name="cleanup"),
             ]
             await asyncio.gather(*tasks)
-        elif BOT_MODE == "worker":
+        elif effective_mode == "worker":
             tasks = [asyncio.create_task(worker_loop(), name="queue-worker")]
             await asyncio.gather(*tasks)
-        elif BOT_MODE == "both":
+        elif effective_mode == "both":
             await run_both()
         else:
             raise ValueError(
-                f"Unsupported BOT_MODE={BOT_MODE!r}. Use bot, worker, or both."
+                f"Unsupported BOT_MODE={effective_mode!r}. Use bot, worker, or both."
             )
     except KeyboardInterrupt:
-        shutdown_event.set()
+        _shutdown_event().set()
     except Exception as e:
         logger.exception("Fatal error: %s", e)
         await update_bot_status("error", str(e))
         raise
     finally:
-        shutdown_event.set()
+        _shutdown_event().set()
         with suppress(Exception):
             if redis_client is not None:
-                await redis_client.close()
+                if hasattr(redis_client, "aclose"):
+                    await redis_client.aclose()
+                else:
+                    await redis_client.close()
                 await redis_client.connection_pool.disconnect()
         with suppress(Exception):
             await update_bot_status("stopped")

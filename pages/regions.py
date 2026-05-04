@@ -34,7 +34,16 @@ def render(conn):
             r.name AS "Name",
             r.email AS "Email",
             (SELECT COUNT(*) FROM stations s WHERE s.region_id = r.id) AS "Stations",
-            COALESCE((SELECT u.name || ' ' || u.surname FROM users u WHERE u.region_id = r.id AND u.role = 'Region Manager' LIMIT 1), '-') AS "Region Manager",
+            COALESCE((
+                SELECT COALESCE(
+                    NULLIF(TRIM(COALESCE(u.name, '') || ' ' || COALESCE(u.surname, '')), ''),
+                    u.email,
+                    u.username
+                )
+                FROM users u
+                WHERE u.region_id = r.id AND u.role = 'Region Manager'
+                LIMIT 1
+            ), '-') AS "Region Manager",
             (SELECT u.id FROM users u WHERE u.region_id = r.id AND u.role = 'Region Manager' LIMIT 1) AS "Region Manager ID",
             (
                 SELECT COUNT(DISTINCT u.id)
@@ -42,8 +51,7 @@ def render(conn):
                 LEFT JOIN stations s ON u.station_id = s.id
                 WHERE
                     u.region_id = r.id OR
-                    s.region_id = r.id OR
-                    u.id IN (SELECT dr.user_id FROM director_regions dr WHERE dr.region_id = r.id)
+                    s.region_id = r.id
             ) AS "Employees"
         FROM regions r
         ORDER BY r.id
@@ -153,7 +161,18 @@ def render(conn):
     st.subheader("👥 Attach/Assign Region Manager")
     # List Region Manager employees
     mgrs = pd.read_sql_query(
-        "SELECT id, name || ' ' || surname as fullname FROM users WHERE role = 'Region Manager' ORDER BY name",
+        """
+        SELECT
+            id,
+            COALESCE(
+                NULLIF(TRIM(COALESCE(name,'') || ' ' || COALESCE(surname,'')), ''),
+                email,
+                username
+            ) as fullname
+        FROM users
+        WHERE role = 'Region Manager'
+        ORDER BY name
+        """,
         conn,
     )
     mgr_list = ["-- None --"] + mgrs["fullname"].tolist()

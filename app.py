@@ -7,6 +7,9 @@ from pathlib import Path
 
 import subprocess
 import sys
+from dotenv import load_dotenv
+
+load_dotenv()
 
 warnings.filterwarnings(
     "ignore",
@@ -446,6 +449,11 @@ try:
     def restore_session():
         """Checks for an existing session token to keep the user logged in."""
         token = st.session_state.get("session_token")
+        if not token:
+            qp_token = st.query_params.get("session_token")
+            if qp_token:
+                token = qp_token
+                st.session_state["session_token"] = qp_token
         if token and "user_id" not in st.session_state:
             uid = validate_session_token(token)
             if uid:
@@ -528,6 +536,9 @@ try:
                     else:
                         ok, msg = login_user_streamlit(st, cred, pw)
                         if ok:
+                            st.query_params["session_token"] = st.session_state.get(
+                                "session_token", ""
+                            )
                             st.rerun()
                         else:
                             st.error(msg)

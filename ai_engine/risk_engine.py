@@ -89,7 +89,7 @@ def _ensure_dict(payload: Any) -> Dict[str, Any]:
 def record_ai_alert(conn, station_id: int, severity: str, message: str):
     now = datetime.utcnow().isoformat()
     conn.execute(
-        "INSERT INTO ai_alerts (station_id, severity, message, created_at) VALUES (?,?,?,?)",
+        "INSERT INTO ai_alerts (station_id, severity, message, created_at) VALUES (%s,%s,%s,%s)",
         (station_id, severity, message, now),
     )
     conn.commit()
@@ -149,7 +149,7 @@ def detect_kpi_anomalies(
     conn = get_connection()
     cur = conn.cursor()
     rows = cur.execute(
-        "SELECT data_json FROM submissions WHERE station_id = ? AND processed = 1 AND data_json IS NOT NULL ORDER BY timestamp DESC LIMIT ?",
+        "SELECT data_json FROM submissions WHERE station_id = %s AND processed = 1 AND data_json IS NOT NULL ORDER BY timestamp DESC LIMIT %s",
         (station_id, window),
     ).fetchall()
     vals = []

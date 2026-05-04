@@ -1,6 +1,7 @@
 import os
 import smtplib
 import time
+import string
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.image import MIMEImage
@@ -17,6 +18,112 @@ logger = logging.getLogger("gentstation.comm_service")
 
 # Load variables from .env
 load_dotenv()
+
+
+def send_activation_email(conn, user_id: int, reset_password: bool = False):
+    """
+    Sends a full activation email with account details and Telegram bot activation link.
+    If reset_password=True, generates a fresh temporary password and stores its hash.
+    """
+    user_row = conn.execute(
+        """
+        SELECT id, username, email, role, is_active, station_id, region_id, name, surname
+        FROM users
+        WHERE id = %s
+        """,
+        (user_id,),
+    ).fetchone()
+    if not user_row:
+        return False, "User not found."
+
+    (
+        uid,
+        username,
+        email,
+        role,
+        is_active,
+        station_id,
+        region_id,
+        first_name,
+        surname,
+    ) = user_row
+
+    if not email:
+        return False, "User has no email address."
+
+    smtp_server = os.getenv("SMTP_SERVER", "smtp.gmail.com")
+    smtp_port = int(os.getenv("SMTP_PORT", 587))
+    sender_email = os.getenv("SMTP_USER")
+    sender_password = os.getenv("SMTP_PASS")
+    bot_handle = os.getenv("TELEGRAM_BOT_HANDLE", "BaneTest_Bot")
+    login_url = os.getenv("APP_LOGIN_URL", "https://gentstation-erp.streamlit.app")
+
+    if not sender_email or not sender_password:
+        return False, "SMTP credentials missing in .env."
+
+    temp_password = None
+    if reset_password:
+        alphabet = string.ascii_letters + string.digits
+        temp_password = "".join(secrets.choice(alphabet) for _ in range(10))
+        conn.execute(
+            "UPDATE users SET password_hash = %s, updated_at = NOW() WHERE id = %s",
+            (hash_password_bcrypt(temp_password), uid),
+        )
+        conn.commit()
+
+    tg_link = f"https://t.me/{bot_handle}?start={uid}"
+    full_name = f"{first_name or ''} {surname or ''}".strip() or username
+
+    msg = MIMEMultipart("alternative")
+    msg["From"] = f"GentStation System <{sender_email}>"
+    msg["To"] = email
+    msg["Subject"] = "GentStation Account Activation Details"
+
+    temp_pw_block = (
+        f"<p><strong>Temporary Password:</strong> <code>{temp_password}</code></p>"
+        if temp_password
+        else "<p><strong>Password:</strong> Use your current password. If forgotten, use Reset Password.</p>"
+    )
+
+    html = f"""
+    <html>
+      <body style="font-family: Arial, sans-serif; color:#222;">
+        <h2>Account Activation</h2>
+        <p>Hello <strong>{full_name}</strong>,</p>
+        <p>Your GentStation account details:</p>
+        <ul>
+          <li><strong>User ID:</strong> {uid}</li>
+          <li><strong>Username:</strong> {username}</li>
+          <li><strong>Email:</strong> {email}</li>
+          <li><strong>Role:</strong> {role}</li>
+          <li><strong>Active:</strong> {bool(is_active)}</li>
+          <li><strong>Station ID:</strong> {station_id if station_id is not None else "N/A"}</li>
+          <li><strong>Region ID:</strong> {region_id if region_id is not None else "N/A"}</li>
+        </ul>
+        <p><strong>Login URL:</strong> <a href="{login_url}">{login_url}</a></p>
+        {temp_pw_block}
+        <h3>Telegram Bot Activation</h3>
+        <p>Use this personal activation link to connect your Telegram account:</p>
+        <p><a href="{tg_link}">{tg_link}</a></p>
+        <p>After activation, you can submit videos directly to the bot for AI processing.</p>
+      </body>
+    </html>
+    """
+    msg.attach(MIMEText(html, "html"))
+
+    try:
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.starttls()
+            server.login(sender_email, sender_password)
+            server.send_message(msg)
+        log_activity(
+            conn,
+            "SEND_ACTIVATION_EMAIL",
+            f"Activation email sent to user_id={uid}, email={email}, reset_password={reset_password}",
+        )
+        return True, f"Activation email sent to {email}."
+    except Exception as e:
+        return False, f"Failed to send email: {e}"
 
 
 def send_support_email(from_user: str, subject: str, message: str) -> bool:

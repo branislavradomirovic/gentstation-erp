@@ -2,6 +2,7 @@
 import streamlit as st
 import pandas as pd
 import json
+import os
 from ui.header import render_page_header
 from core.activity_logger import log_activity  # Keep this import
 
@@ -43,21 +44,7 @@ def render(conn):
     where_clause = ""
     params = []
 
-    if user_role == "Region Director":
-        if current_user_id:
-            regs = conn.execute(
-                "SELECT region_id FROM director_regions WHERE user_id = %s",
-                (current_user_id,),
-            ).fetchall()
-            region_ids = [r[0] for r in regs]
-            if region_ids:
-                # Use %s placeholders for psycopg2
-                placeholder = ",".join(["%s"] * len(region_ids))
-                where_clause = f"AND st.region_id IN ({placeholder})"
-                params = region_ids
-            else:
-                where_clause = "AND 1=0"  # No regions assigned to this director
-    elif user_role == "Region Manager":
+    if user_role == "Region Manager":
         if current_user_id:
             # Region Manager's region_id is now directly on the users table
             region_id_row = conn.execute(
@@ -88,11 +75,12 @@ def render(conn):
     queue_query = f"""
         SELECT
             s.id, s.timestamp, st.name as station_name,
-            e.name || ' ' || e.surname as employee_name, s.processed, s.retry_count
+            COALESCE(NULLIF(TRIM(COALESCE(e.name,'') || ' ' || COALESCE(e.surname,'')), ''), e.email, e.username) as employee_name,
+            s.processed, s.retry_count, s.status
         FROM submissions s
         JOIN stations st ON s.station_id = st.id
         JOIN users e ON s.employee_id = e.id -- submissions.employee_id now references users.id
-        WHERE s.processed IN (0, -1) {where_clause}
+        WHERE (s.processed IN (0, -1) OR (s.status = 'done' AND COALESCE(s.processed, 0) = 0)) {where_clause}
         ORDER BY s.timestamp DESC
     """
     queue_df = pd.read_sql_query(queue_query, conn, params=params)
@@ -100,7 +88,14 @@ def render(conn):
     if queue_df.empty:
         st.info("No pending or failed submissions in the queue for your scope.")
     else:
-        queue_df["status"] = queue_df["processed"].map({0: "Pending", -1: "Failed"})
+        queue_df["status"] = queue_df.apply(
+            lambda r: (
+                "Inconsistent (done but unprocessed)"
+                if str(r.get("status")) == "done" and int(r.get("processed") or 0) == 0
+                else ("Pending" if int(r.get("processed") or 0) == 0 else "Failed")
+            ),
+            axis=1,
+        )
         st.dataframe(
             queue_df[
                 [
@@ -115,6 +110,18 @@ def render(conn):
             width="stretch",
             hide_index=True,
         )
+
+        if st.button("🛠️ Repair Inconsistent Queue Rows", width="stretch"):
+            conn.execute(
+                """
+                UPDATE submissions
+                SET status='pending', retry_count=0
+                WHERE status='done' AND COALESCE(processed, 0)=0
+                """
+            )
+            conn.commit()
+            st.success("Inconsistent rows moved back to pending queue.")
+            st.rerun()
 
         failed_submissions = queue_df[queue_df["processed"] == -1]
         if not failed_submissions.empty:
@@ -261,6 +268,28 @@ def render(conn):
                 kpi_data = _ensure_dict(row["kpi_json"])
                 if kpi_data:
                     st.write(f"**Summary:** {kpi_data.get('summary', 'N/A')}")
+                    st.markdown("#### Model Outputs")
+                    m1, m2 = st.columns(2)
+                    configured_vision = os.getenv("OLLAMA_VISION_MODEL", "N/A")
+                    configured_llm = os.getenv(
+                        "OLLAMA_MODEL", "qwen2.5:14b-instruct"
+                    )
+                    with m1:
+                        st.caption(
+                            f"Vision Model: `{kpi_data.get('_vision_model') or configured_vision}`"
+                        )
+                        if kpi_data.get("_vision_error"):
+                            st.warning(f"Vision error: {kpi_data.get('_vision_error')}")
+                        if kpi_data.get("_vision_output"):
+                            st.json(kpi_data.get("_vision_output"))
+                    with m2:
+                        st.caption(
+                            f"LLM Model: `{kpi_data.get('_llm_model') or kpi_data.get('_model_used') or configured_llm}`"
+                        )
+                        if kpi_data.get("_llm_error"):
+                            st.warning(f"LLM error: {kpi_data.get('_llm_error')}")
+                        if kpi_data.get("_llm_output"):
+                            st.json(kpi_data.get("_llm_output"))
                     st.json(kpi_data)
                 else:
                     st.warning("No detailed KPI data available for this report.")

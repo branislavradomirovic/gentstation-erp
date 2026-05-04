@@ -4,6 +4,7 @@ import pandas as pd
 from core.database import get_connection
 from core.activity_logger import log_activity
 from core.auth import create_user, hash_password, verify_password
+from core.comm_service import send_activation_email
 from ui.header import render_page_header
 
 
@@ -71,31 +72,67 @@ def render(conn):
 
     # Only accessible to admins via app.py permissions check (app should only call render for admins)
     st.markdown("### Create new system user")
+    stations_df = pd.read_sql_query("SELECT id, name FROM stations ORDER BY name", conn)
+    station_options = [(row["name"], row["id"]) for _, row in stations_df.iterrows()]
+    regions_df = pd.read_sql_query("SELECT id, name FROM regions ORDER BY name", conn)
+    region_options = [(row["name"], row["id"]) for _, row in regions_df.iterrows()]
+
     with st.form("create_user_form"):
+        c_a, c_b = st.columns(2)
+        first_name = c_a.text_input("First name")
+        surname = c_b.text_input("Surname")
         username = st.text_input("Username")
         email = st.text_input("Email")
         role = st.selectbox(
             "Role",
             [
                 "General Manager",
-                "Region Director",
                 "Region Manager",
                 "Gas Station Manager",
                 "Employee",
             ],
         )
+        station_id = None
+        region_id = None
+        if role in ("Employee", "Gas Station Manager"):
+            selected_station = st.selectbox(
+                "Assign Station (Required)",
+                options=[(None, None)] + station_options,
+                format_func=lambda x: x[0] if x[0] else "Select station...",
+            )
+            station_id = selected_station[1] if selected_station else None
+        elif role == "Region Manager":
+            selected_region = st.selectbox(
+                "Assign Region (Required)",
+                options=[(None, None)] + region_options,
+                format_func=lambda x: x[0] if x[0] else "Select region...",
+            )
+            region_id = selected_region[1] if selected_region else None
+
         pwd = st.text_input("Temporary password", value="", type="password")
         if st.form_submit_button("Create user"):
             if not username or not pwd:
                 st.error("Username and password required")
+            elif role in ("Employee", "Gas Station Manager") and not station_id:
+                st.error("Station is required for this role.")
+            elif role == "Region Manager" and not region_id:
+                st.error("Region is required for this role.")
             else:
                 try:
                     u = create_user(
                         username=username, password=pwd, email=email or None, role=role
+                        ,
+                        name=first_name.strip() or None,
+                        surname=surname.strip() or None,
+                        station_id=station_id,
+                        region_id=region_id,
                     )  # create_user now handles all user fields
                     log_activity(
                         conn, "CREATE_USER", f"Created user {username} role {role}"
                     )
+                    sent, msg = send_activation_email(conn, u["id"], reset_password=True)
+                    if not sent:
+                        st.warning(f"User created, but activation email failed: {msg}")
                     st.success(f"User {username} created.")
                 except Exception as e:
                     st.error(f"Failed to create user: {e}")
@@ -139,7 +176,7 @@ def render(conn):
         )
 
         # Action buttons in columns for better layout
-        cols = st.columns(4)
+        cols = st.columns(5)
 
         # Unlock button - only shows if user is locked
         if row["locked_until"]:
@@ -163,7 +200,14 @@ def render(conn):
             conn.commit()
             log_activity(conn, "ACTIVATE_USER", f"User ID {uid}")
             st.success("User activated.")
-        if cols[3].button("🗑️ Delete user", type="secondary", width="stretch"):
+        if cols[3].button("📧 Resend Activation", type="primary", width="stretch"):
+            sent, msg = send_activation_email(conn, uid, reset_password=True)
+            if sent:
+                st.success(msg)
+            else:
+                st.error(msg)
+
+        if cols[4].button("🗑️ Delete user", type="secondary", width="stretch"):
             try:
                 conn.execute("DELETE FROM users WHERE id = %s", (uid,))
                 conn.commit()
