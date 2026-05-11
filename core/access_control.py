@@ -97,6 +97,11 @@ PAGE_CONFIG = {
         "icon": "👤",
         "roles": ["General Manager"],
     },
+    "Data Import": {
+        "id": "Data Import",
+        "icon": "📤",
+        "roles": ["General Manager"],
+    },
     "Settings": {
         "id": "Settings",
         "icon": "⚙️",

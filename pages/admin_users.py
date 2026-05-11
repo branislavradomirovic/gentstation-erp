@@ -120,8 +120,10 @@ def render(conn):
             else:
                 try:
                     u = create_user(
-                        username=username, password=pwd, email=email or None, role=role
-                        ,
+                        username=username,
+                        password=pwd,
+                        email=email or None,
+                        role=role,
                         name=first_name.strip() or None,
                         surname=surname.strip() or None,
                         station_id=station_id,
@@ -130,7 +132,9 @@ def render(conn):
                     log_activity(
                         conn, "CREATE_USER", f"Created user {username} role {role}"
                     )
-                    sent, msg = send_activation_email(conn, u["id"], reset_password=True)
+                    sent, msg = send_activation_email(
+                        conn, u["id"], reset_password=True
+                    )
                     if not sent:
                         st.warning(f"User created, but activation email failed: {msg}")
                     st.success(f"User {username} created.")

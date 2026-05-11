@@ -8,9 +8,14 @@ Supports both local development and Docker deployment.
 import os
 import logging
 import time
-import psycopg2
+import urllib.parse
+import psycopg2, sqlalchemy
 import pandas as pd
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import sessionmaker, Session
+from contextlib import contextmanager
 from psycopg2 import pool
+from core.models import Base
 from psycopg2 import sql
 from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
@@ -25,10 +30,18 @@ DB_USER = os.getenv("DB_USER", "gentstation_user")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "secure_password")
 _RESOLVED_DB_HOST = None
 _SCHEMA_INITIALIZED = False
-_POOL = None
+_ENGINE = None
+_SESSION_FACTORY = None
 _START_TIME = time.time()
 SLOW_QUERY_THRESHOLD = float(os.getenv("DB_SLOW_QUERY_THRESHOLD", "1.0"))
 logger = logging.getLogger("gentstation.database")
+
+
+def get_sqlalchemy_url():
+    """Constructs the SQLAlchemy connection string."""
+    host = _RESOLVED_DB_HOST or DB_HOST
+    encoded_password = urllib.parse.quote_plus(DB_PASSWORD)
+    return f"postgresql+psycopg2://{DB_USER}:{encoded_password}@{host}:{DB_PORT}/{DB_NAME}"
 
 
 def _connect(host: str):
@@ -194,43 +207,61 @@ class DatabaseConnection:
 
     @staticmethod
     def get_connection():
-        """Get a database connection (singleton pattern for simplicity)."""
-        global _RESOLVED_DB_HOST, _POOL
+        """Get a database engine and connection (singleton pattern)."""
+        global _RESOLVED_DB_HOST, _ENGINE
 
-        if _POOL is None:
+        if _ENGINE is None:
             # Resolve host first
             host_to_use = DB_HOST
             try:
                 test_conn = _connect(DB_HOST)
                 test_conn.close()
                 _RESOLVED_DB_HOST = DB_HOST
-            except psycopg2.Error:
+            except (psycopg2.Error, Exception):
                 if DB_HOST == "postgres":
                     try:
                         test_conn = _connect("localhost")
                         test_conn.close()
                         _RESOLVED_DB_HOST = "localhost"
                         host_to_use = "localhost"
-                    except psycopg2.Error as e:
+                    except (psycopg2.Error, Exception) as e:
                         logger.error("Database connection failed: %s", e)
                         raise
                 else:
                     raise
 
-            # Initialize the pool
-            _POOL = pool.ThreadedConnectionPool(
-                1,
-                100,
-                host=host_to_use,
-                port=DB_PORT,
-                database=DB_NAME,
-                user=DB_USER,
-                password=DB_PASSWORD,
-                connect_timeout=5,
+            # Initialize SQLAlchemy Engine with pooling
+            _ENGINE = create_engine(
+                get_sqlalchemy_url(),
+                pool_size=10,
+                max_overflow=20,
+                pool_pre_ping=True
             )
-            logger.info("Database connection pool initialized (host: %s)", host_to_use)
+            logger.info("SQLAlchemy Engine initialized with pooling.")
 
-        return _POOL.getconn()
+        if _ENGINE is None:
+            raise RuntimeError("Failed to initialize SQLAlchemy Engine.")
+
+        return _ENGINE.raw_connection()
+
+@contextmanager
+def get_session() -> Session:
+    """Provide a transactional scope around a series of operations."""
+    global _SESSION_FACTORY, _ENGINE
+    if _ENGINE is None:
+        DatabaseConnection.get_connection()
+    if _SESSION_FACTORY is None:
+        _SESSION_FACTORY = sessionmaker(bind=_ENGINE)
+
+    session = _SESSION_FACTORY()
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
 
 
 def get_system_uptime():
@@ -249,14 +280,10 @@ def get_connection(on_retry=None):
 
     for attempt in range(max_retries):
         try:
+            # Get raw connection from SQLAlchemy engine
             raw_conn = DatabaseConnection.get_connection()
-            # Pooled connections may be returned in an aborted transaction state.
-            # Always reset transaction state before handing the connection to callers.
-            try:
-                raw_conn.rollback()
-            except Exception:
-                pass
-            conn = CompatConnection(raw_conn, pool=_POOL)
+            # Compatibility adapter to keep existing code working
+            conn = CompatConnection(raw_conn)
 
             # Allow workers to skip schema migrations to avoid cross-process DDL deadlocks.
             skip_schema_init = os.getenv("SKIP_SCHEMA_INIT", "").strip().lower() in {
@@ -269,11 +296,18 @@ def get_connection(on_retry=None):
             # Create tables if they don't exist, but only once per process to avoid
             # repeated noisy logs on every Streamlit rerun.
             if not _SCHEMA_INITIALIZED and not skip_schema_init:
-                ensure_schema(conn)
+                # For now, we still use ensure_schema to handle triggers.
+                # In a future update, move triggers to Alembic and use:
+                # Base.metadata.create_all(_ENGINE)
+                try:
+                    ensure_schema(conn)
+                except Exception as e:
+                    logger.error("Legacy ensure_schema failed: %s", e)
+                    # We don't raise here to allow Alembic-managed DBs to still connect
                 _SCHEMA_INITIALIZED = True
             return conn
 
-        except (psycopg2.Error, pool.PoolError) as e:
+        except Exception as e:
             if attempt < max_retries - 1:
                 logger.warning(
                     "Database connection attempt %d failed: %s. Retrying in %ds...",
@@ -330,16 +364,63 @@ def test_redis_connection(on_retry=None, timeout=2) -> bool:
 
 def get_pool_stats():
     """Returns statistics about the database connection pool."""
-    global _POOL
-    if _POOL is None:
+    global _ENGINE
+    if _ENGINE is None:
         return None
+    p = _ENGINE.pool
+    # Total capacity is size + max_overflow
+    # Default max_overflow is often 10 if not specified
+    size = getattr(p, '_size', 10)
+    overflow = getattr(p, '_max_overflow', 20)
+    total_capacity = size + overflow
+    checked_out = p.checkedout()
+
+    usage_pct = (checked_out / total_capacity) * 100 if total_capacity > 0 else 0
+
     return {
-        "minconn": _POOL.minconn,
-        "maxconn": _POOL.maxconn,
-        "used": len(_POOL._used),
-        "available": len(_POOL._pool),
+        "size": size,
+        "overflow": overflow,
+        "total_capacity": total_capacity,
+        "checkedin": p.checkedin(),
+        "checkedout": checked_out,
+        "usage_pct": round(usage_pct, 2)
     }
 
+
+def check_pool_health():
+    """Logs a warning if database pool usage exceeds 90%."""
+    stats = get_pool_stats()
+    if stats and stats["usage_pct"] >= 90:
+        logger.warning(
+            "CRITICAL: Database connection pool usage at %s%% (%s/%s)",
+            stats["usage_pct"], stats["checkedout"], stats["total_capacity"]
+        )
+
+def sync_identity_sequences():
+    """
+    Generic SQLAlchemy utility to synchronize all IDENTITY sequences
+    based on the models defined in core.models.Base.
+    """
+    with get_session() as session:
+        for table_name, table in Base.metadata.tables.items():
+            for column in table.columns:
+                if isinstance(column.server_default, sqlalchemy.schema.Identity):
+                    col_name = column.name
+                    try:
+                        # Identify current max ID and restart sequence
+                        sync_sql = text(f"""
+                            DO $$
+                            DECLARE
+                                max_id integer;
+                            BEGIN
+                                EXECUTE 'SELECT COALESCE(MAX("{col_name}"), 0) + 1 FROM "{table_name}"' INTO max_id;
+                                EXECUTE 'ALTER TABLE "{table_name}" ALTER COLUMN "{col_name}" RESTART WITH ' || max_id;
+                            END $$;
+                        """)
+                        session.execute(sync_sql)
+                        logger.debug(f"Synced sequence for {table_name}.{col_name}")
+                    except Exception as e:
+                        logger.error(f"Failed to sync sequence for {table_name}: {e}")
 
 def ensure_schema(conn):
     """
@@ -353,7 +434,7 @@ def ensure_schema(conn):
         cursor.execute(
             """
         CREATE TABLE IF NOT EXISTS regions (
-            id SERIAL PRIMARY KEY,
+            id INTEGER PRIMARY KEY GENERATED BY DEFAULT AS IDENTITY,
             name VARCHAR(255) NOT NULL,
             email VARCHAR(255),
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -366,7 +447,7 @@ def ensure_schema(conn):
         cursor.execute(
             """
         CREATE TABLE IF NOT EXISTS stations (
-            id SERIAL PRIMARY KEY,
+            id INTEGER PRIMARY KEY GENERATED BY DEFAULT AS IDENTITY,
             name VARCHAR(255) NOT NULL,
             region_id INTEGER REFERENCES regions(id) ON DELETE SET NULL,
             physical_address TEXT,
@@ -384,7 +465,7 @@ def ensure_schema(conn):
         cursor.execute(
             """
         CREATE TABLE IF NOT EXISTS users (
-            id SERIAL PRIMARY KEY,
+            id INTEGER PRIMARY KEY GENERATED BY DEFAULT AS IDENTITY,
             username VARCHAR(255) UNIQUE NOT NULL,
             email VARCHAR(255) UNIQUE,
             password_hash TEXT NOT NULL,
@@ -485,7 +566,7 @@ def ensure_schema(conn):
         cursor.execute(
             """
         CREATE TABLE IF NOT EXISTS activity_logs (
-            id SERIAL PRIMARY KEY,
+            id INTEGER PRIMARY KEY GENERATED BY DEFAULT AS IDENTITY,
             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             user_name VARCHAR(255),
             action VARCHAR(255),
@@ -499,7 +580,7 @@ def ensure_schema(conn):
         cursor.execute(
             """
         CREATE TABLE IF NOT EXISTS submissions (
-            id SERIAL PRIMARY KEY,
+            id INTEGER PRIMARY KEY GENERATED BY DEFAULT AS IDENTITY,
             station_id INTEGER REFERENCES stations(id) ON DELETE CASCADE,
             employee_id INTEGER REFERENCES users(id) ON DELETE SET NULL, -- Renamed from employee_id to user_id in logic, but keeping column name for now
             video_path TEXT,
@@ -549,7 +630,7 @@ def ensure_schema(conn):
         cursor.execute(
             """
         CREATE TABLE IF NOT EXISTS employee_shifts (
-            id SERIAL PRIMARY KEY,
+            id INTEGER PRIMARY KEY GENERATED BY DEFAULT AS IDENTITY,
             employee_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
             station_id INTEGER REFERENCES stations(id) ON DELETE SET NULL,
             shift_type VARCHAR(50) DEFAULT 'standard',
@@ -639,7 +720,7 @@ def ensure_schema(conn):
         cursor.execute(
             """
         CREATE TABLE IF NOT EXISTS ai_alerts (
-            id SERIAL PRIMARY KEY,
+            id INTEGER PRIMARY KEY GENERATED BY DEFAULT AS IDENTITY,
             station_id INTEGER REFERENCES stations(id) ON DELETE CASCADE,
             severity VARCHAR(50),
             message TEXT,
@@ -667,7 +748,7 @@ def ensure_schema(conn):
         cursor.execute(
             """
         CREATE TABLE IF NOT EXISTS redis_health_logs (
-            id SERIAL PRIMARY KEY,
+            id INTEGER PRIMARY KEY GENERATED BY DEFAULT AS IDENTITY,
             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             is_online BOOLEAN NOT NULL,
             details TEXT
@@ -679,7 +760,7 @@ def ensure_schema(conn):
         cursor.execute(
             """
         CREATE TABLE IF NOT EXISTS ai_inference_latency (
-            id SERIAL PRIMARY KEY,
+            id INTEGER PRIMARY KEY GENERATED BY DEFAULT AS IDENTITY,
             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             model_name VARCHAR(255),
             latency_seconds DECIMAL(10, 2),
@@ -692,7 +773,7 @@ def ensure_schema(conn):
         cursor.execute(
             """
         CREATE TABLE IF NOT EXISTS worker_health_logs (
-            id SERIAL PRIMARY KEY,
+            id INTEGER PRIMARY KEY GENERATED BY DEFAULT AS IDENTITY,
             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             worker_name VARCHAR(50),
             cpu_percent DECIMAL(5, 2),
@@ -705,7 +786,7 @@ def ensure_schema(conn):
         cursor.execute(
             """
         CREATE TABLE IF NOT EXISTS slow_query_logs (
-            id SERIAL PRIMARY KEY,
+            id INTEGER PRIMARY KEY GENERATED BY DEFAULT AS IDENTITY,
             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             query_text TEXT,
             duration_seconds DECIMAL(10, 4),
@@ -718,7 +799,7 @@ def ensure_schema(conn):
         cursor.execute(
             """
         CREATE TABLE IF NOT EXISTS ai_jobs (
-            id SERIAL PRIMARY KEY,
+            id INTEGER PRIMARY KEY GENERATED BY DEFAULT AS IDENTITY,
             job_type VARCHAR(100),
             status VARCHAR(50) DEFAULT 'pending',
             started_at TIMESTAMP,
@@ -733,7 +814,7 @@ def ensure_schema(conn):
         cursor.execute(
             """
         CREATE TABLE IF NOT EXISTS ai_reports (
-            id SERIAL PRIMARY KEY,
+            id INTEGER PRIMARY KEY GENERATED BY DEFAULT AS IDENTITY,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             report_role VARCHAR(100),
             station_id INTEGER REFERENCES stations(id) ON DELETE CASCADE,
@@ -950,7 +1031,6 @@ def ensure_schema(conn):
         conn.commit()
         logger.debug("Database schema initialized successfully")
 
-    except psycopg2.Error as e:
     except Exception as e:
         conn.rollback()
         logger.error("Schema initialization error: %s", e)
@@ -970,10 +1050,11 @@ def execute_query(query, params=None, fetch=False):
     Returns:
         Query results if fetch=True, else row count
     """
-    conn = get_connection()
-    cursor = conn.cursor(cursor_factory=RealDictCursor)
-
+    conn = None
+    cursor = None
     try:
+        conn = get_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
         if params:
             cursor.execute(query, params)
         else:
@@ -985,13 +1066,16 @@ def execute_query(query, params=None, fetch=False):
         else:
             conn.commit()
             return cursor.rowcount
-    except psycopg2.Error as e:
-        conn.rollback()
+    except (psycopg2.Error, Exception) as e:
+        if conn:
+            conn.rollback()
         logger.error("Query execution error: %s", e)
         raise
     finally:
-        cursor.close()
-        conn.close()
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
 
 
 def close_connection(conn):
@@ -1005,8 +1089,11 @@ def fetch_df(conn, query, params=None):
     Utility to execute a query and return a pandas DataFrame.
     Uses the provided connection (CompatConnection or native).
     """
-    cursor = conn.cursor()
-    cursor.execute(query, params or ())
-    rows = cursor.fetchall()
-    columns = [desc[0] for desc in cursor.description] if cursor.description else []
-    return pd.DataFrame(rows, columns=columns)
+    try:
+        cursor = conn.cursor()
+        cursor.execute(query, params or ())
+        rows = cursor.fetchall()
+        columns = [desc[0] for desc in cursor.description] if cursor.description else []
+        return pd.DataFrame(rows, columns=columns)
+    finally:
+        cursor.close()

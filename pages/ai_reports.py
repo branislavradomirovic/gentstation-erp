@@ -271,9 +271,7 @@ def render(conn):
                     st.markdown("#### Model Outputs")
                     m1, m2 = st.columns(2)
                     configured_vision = os.getenv("OLLAMA_VISION_MODEL", "N/A")
-                    configured_llm = os.getenv(
-                        "OLLAMA_MODEL", "qwen2.5:14b-instruct"
-                    )
+                    configured_llm = os.getenv("OLLAMA_MODEL", "qwen2.5:14b-instruct")
                     with m1:
                         st.caption(
                             f"Vision Model: `{kpi_data.get('_vision_model') or configured_vision}`"

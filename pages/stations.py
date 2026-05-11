@@ -3,9 +3,13 @@ import os
 import streamlit as st
 import pandas as pd
 import folium
+from sqlalchemy import select, func, or_, asc, desc
+from sqlalchemy.orm import joinedload, selectinload
 from streamlit_folium import st_folium
 from core.activity_logger import log_activity
 from ui.header import render_page_header
+from core.database import get_session
+from core.models import Station, Region, User
 import urllib.parse
 import urllib.request
 import json
@@ -34,34 +38,17 @@ def _ensure_dict(payload):
 def render(conn):
     render_page_header("⛽ Stations Management")
 
-    # --- DATA PREPARATION ---
-    regions = pd.read_sql_query("SELECT id, name FROM regions ORDER BY name", conn)
-    regions_map = (
-        {row["name"]: row["id"] for _, row in regions.iterrows()}
-        if not regions.empty
-        else {}
-    )
+    # --- DATA PREPARATION WITH ORM ---
+    with get_session() as session:
+        regions_list = session.execute(select(Region).order_by(Region.name)).scalars().all()
+        regions_map = {r.name: r.id for r in regions_list}
 
-    mgrs = pd.read_sql_query(
-        """
-        SELECT
-            id,
-            COALESCE(
-                NULLIF(TRIM(COALESCE(name, '') || ' ' || COALESCE(surname, '')), ''),
-                email,
-                username
-            ) as fullname
-        FROM users
-        WHERE role IN ('Gas Station Manager', 'Gas Station Supervisor', 'General Manager')
-        ORDER BY name
-    """,
-        conn,
-    )
-    mgr_map = (
-        {row["fullname"]: row["id"] for _, row in mgrs.iterrows()}
-        if not mgrs.empty
-        else {}
-    )
+        # Fetch only necessary fields for managers to optimize memory and speed
+        mgr_query = select(User.id, User.name, User.surname, User.username).where(
+            User.role.in_(['Gas Station Manager', 'Gas Station Supervisor', 'General Manager'])
+        )
+        managers = session.execute(mgr_query).all()
+        mgr_map = {f"{m.name or ''} {m.surname or ''}".strip() or m.username: m.id for m in managers}
 
     # --- 1. ADD NEW STATION ---
     with st.expander("➕ Add New Station", expanded=False):
@@ -127,33 +114,27 @@ def render(conn):
                         if region_name != "-- None --"
                         else None
                     )
-                    cursor = conn.execute(
-                        """
-                        INSERT INTO stations (name, region_id, physical_address, email, lat, lon, category)
-                        VALUES (%s,%s,%s,%s,%s,%s,%s)
-                        RETURNING id
-                    """,
-                        (
-                            s_name.strip(),
-                            region_id,
-                            s_addr.strip() or None,
-                            s_email.strip() or None,
-                            lat_val,
-                            lon_val,
-                            "Retail",
-                        ),
-                    )
-                    new_id = cursor.fetchone()[0]
 
-                    # Link Manager
-                    if mgr_name != "-- None --":
-                        mgr_id = mgr_map.get(mgr_name)
-                        conn.execute(
-                            "UPDATE users SET station_id = %s WHERE id = %s",
-                            (new_id, mgr_id),
+                    with get_session() as session:
+                        new_station = Station(
+                            name=s_name.strip(),
+                            region_id=region_id,
+                            physical_address=s_addr.strip() or None,
+                            email=s_email.strip() or None,
+                            lat=lat_val,
+                            lon=lon_val,
+                            category="Retail"
                         )
+                        session.add(new_station)
+                        session.flush() # Get the new ID
 
-                    conn.commit()
+                        if mgr_name != "-- None --":
+                            mgr_id = mgr_map.get(mgr_name)
+                            manager = session.get(User, mgr_id)
+                            if manager:
+                                manager.station_id = new_station.id
+
+                        new_id = new_station.id
 
                     # LOGGING AND FEEDBACK
                     log_activity(
@@ -169,49 +150,145 @@ def render(conn):
                     st.session_state.pop("create_lon", None)
                     st.rerun()
 
-    # --- 2. STATIONS TABLE ---
-    df = pd.read_sql_query(
-        """
-        SELECT s.id, s.name, r.name as region_name,
-               s.physical_address, s.email, s.lat, s.lon,
-               (
-                    SELECT COALESCE(
-                        NULLIF(TRIM(COALESCE(name, '') || ' ' || COALESCE(surname, '')), ''),
-                        email,
-                        username
-                    )
-                    FROM users
-                    WHERE station_id = s.id
-                    ORDER BY
-                        CASE role
-                            WHEN 'Gas Station Manager' THEN 0
-                            WHEN 'Gas Station Supervisor' THEN 1
-                            WHEN 'General Manager' THEN 2
-                            ELSE 3
-                        END, id
-                    LIMIT 1
-               ) as manager,
-               (
-                    SELECT id
-                    FROM users
-                    WHERE station_id = s.id
-                    ORDER BY
-                        CASE role
-                            WHEN 'Gas Station Manager' THEN 0
-                            WHEN 'Gas Station Supervisor' THEN 1
-                            WHEN 'General Manager' THEN 2
-                            ELSE 3
-                        END, id
-                    LIMIT 1
-               ) as manager_id
-        FROM stations s
-        LEFT JOIN regions r ON s.region_id = r.id
-        ORDER BY s.id
-    """,
-        conn,
-    )
-
+    # --- SEARCH & FILTERING ---
     st.subheader("Existing Stations")
+
+    c_search, c_region = st.columns([2, 1])
+    search_query = c_search.text_input("🔍 Search", placeholder="Name, address, or email...", key="station_search_input")
+    selected_regions = c_region.multiselect("🌍 Filter Regions", options=list(regions_map.keys()))
+
+    c_sort_col, c_sort_dir, _ = st.columns([1.5, 1, 1.5])
+    sort_options = {"ID": Station.id, "Name": Station.name, "Region": Region.name, "Address": Station.physical_address}
+    sort_col_name = c_sort_col.selectbox("Sort By", options=list(sort_options.keys()), index=1)
+    sort_desc = c_sort_dir.toggle("Descending", value=False)
+
+    # Track filter/sort state to reset pagination
+    current_filter_state = f"{search_query}-{selected_regions}-{sort_col_name}-{sort_desc}"
+    if "last_filter_state" not in st.session_state:
+        st.session_state.last_filter_state = current_filter_state
+
+    if current_filter_state != st.session_state.last_filter_state:
+        st.session_state.stations_page = 1
+        st.session_state.last_filter_state = current_filter_state
+
+    # --- PAGINATION SETTINGS ---
+    PAGE_SIZE = 20
+    if "stations_page" not in st.session_state:
+        st.session_state.stations_page = 1
+
+    # --- 2. STATIONS TABLE ---
+    # Build filters
+    filters = []
+    if search_query:
+        search_pattern = f"%{search_query}%"
+        filters.append(or_(
+            Station.name.ilike(search_pattern),
+            Station.physical_address.ilike(search_pattern),
+            Station.email.ilike(search_pattern)
+        ))
+
+    if selected_regions:
+        region_ids = [regions_map[name] for name in selected_regions]
+        filters.append(Station.region_id.in_(region_ids))
+
+    with get_session() as session:
+        # Get total count for pagination UI
+        # We need to join Region if sorting or filtering by Region attributes
+        count_stmt = select(func.count(Station.id)).outerjoin(Region)
+        if filters:
+            count_stmt = count_stmt.where(*filters)
+
+        total_count = session.scalar(count_stmt)
+        total_pages = (total_count // PAGE_SIZE) + (1 if total_count % PAGE_SIZE > 0 else 0)
+
+        # Ensure current page is within bounds
+        if st.session_state.stations_page > total_pages and total_pages > 0:
+            st.session_state.stations_page = total_pages
+
+        offset = (st.session_state.stations_page - 1) * PAGE_SIZE
+
+        # joinedload is efficient for Many-to-One (Region).
+        # selectinload is better for One-to-Many (Users) to avoid Cartesian product performance issues.
+        stmt = select(Station).options(
+            joinedload(Station.region),
+            selectinload(Station.users)
+        ).outerjoin(Region)
+
+        if filters:
+            stmt = stmt.where(*filters)
+
+        # Dynamic Order By
+        sort_attr = sort_options[sort_col_name]
+        order_func = desc(sort_attr) if sort_desc else asc(sort_attr)
+
+        stmt = stmt.order_by(order_func).limit(PAGE_SIZE).offset(offset)
+
+        stations_objs = session.execute(stmt).scalars().unique().all()
+
+        # --- PREPARE DATA FRAME ---
+        data = []
+        for s in stations_objs:
+            mgr = next((u for u in s.users if u.role == 'Gas Station Manager'),
+                  next((u for u in s.users if u.role == 'Gas Station Supervisor'), None))
+
+            data.append({
+                "id": s.id,
+                "name": s.name,
+                "region_name": s.region.name if s.region else None,
+                "physical_address": s.physical_address,
+                "email": s.email,
+                "manager": f"{mgr.name} {mgr.surname}".strip() if mgr else (mgr.username if mgr else None),
+                "manager_id": mgr.id if mgr else None
+            })
+        df = pd.DataFrame(data)
+
+    # Pagination Controls (Top)
+    p_col1, p_col2, p_col3 = st.columns([1, 2, 1])
+    if p_col1.button("⬅️ Previous", disabled=st.session_state.stations_page <= 1, use_container_width=True):
+        st.session_state.stations_page -= 1
+        st.rerun()
+
+    p_col2.markdown(f"<p style='text-align: center;'>Page <b>{st.session_state.stations_page}</b> of {total_pages}<br><small>{total_count} matching stations</small></p>", unsafe_allow_html=True)
+
+    if p_col3.button("Next ➡️", disabled=st.session_state.stations_page >= total_pages, use_container_width=True):
+        st.session_state.stations_page += 1
+        st.rerun()
+
+    # --- EXPORT TO CSV ---
+    # Create a separate statement for export that includes all filters and sorting, but no pagination
+    with get_session() as session:
+        export_stmt = select(Station).options(
+            joinedload(Station.region),
+            selectinload(Station.users)
+        ).outerjoin(Region)
+        if filters:
+            export_stmt = export_stmt.where(*filters)
+        export_stmt = export_stmt.order_by(order_func)
+
+        export_stations_objs = session.execute(export_stmt).scalars().unique().all()
+
+        export_data = []
+        for s in export_stations_objs:
+            mgr = next((u for u in s.users if u.role == 'Gas Station Manager'),
+                  next((u for u in s.users if u.role == 'Gas Station Supervisor'), None))
+            export_data.append({
+                "id": s.id, "name": s.name, "region_name": s.region.name if s.region else None,
+                "physical_address": s.physical_address, "email": s.email,
+                "manager": f"{mgr.name} {mgr.surname}".strip() if mgr else (mgr.username if mgr else None),
+                "manager_id": mgr.id if mgr else None
+            })
+        export_df = pd.DataFrame(export_data)
+
+    # --- EXPORT TO CSV ---
+    if not export_df.empty:
+        csv_data = export_df.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📥 Export All Filtered Results to CSV",
+            data=csv_data,
+            file_name=f"stations_export_filtered_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            mime="text/csv",
+        )
+
     if df.empty:
         st.info("No stations available.")
     else:
@@ -249,6 +326,16 @@ def render(conn):
                 c[5].write(mgr_name if mgr_name else "-")
 
             st.divider()
+
+    # Pagination Controls (Bottom)
+    p_btm_col1, p_btm_col2, p_btm_col3 = st.columns([1, 2, 1])
+    if p_btm_col1.button("⬅️ Previous ", disabled=st.session_state.stations_page <= 1, use_container_width=True):
+        st.session_state.stations_page -= 1
+        st.rerun()
+    p_btm_col2.markdown(f"<p style='text-align: center;'>Page <b>{st.session_state.stations_page}</b></p>", unsafe_allow_html=True)
+    if p_btm_col3.button("Next ➡️ ", disabled=st.session_state.stations_page >= total_pages, use_container_width=True):
+        st.session_state.stations_page += 1
+        st.rerun()
 
     # --- 2.1 TRENDS CHART ---
     st.markdown("### 📊 Daily Submission Trends")

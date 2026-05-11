@@ -375,13 +375,21 @@ def render(conn):
     stats = get_pool_stats()
     if stats:
         r_col2.success("✅ Database Health")
-        usage_pct = (stats["used"] / stats["maxconn"]) * 100
+        usage_pct = stats["usage_pct"]
+
+        if usage_pct >= 90:
+            r_col2.error(f"⚠️ High Pool Usage: {usage_pct}%")
+        elif usage_pct >= 70:
+            r_col2.warning(f"🟡 Moderate Pool Usage: {usage_pct}%")
+
         r_col2.metric(
             "Connections In Use",
-            f"{stats['used']} / {stats['maxconn']}",
-            f"{usage_pct:.1f}% load",
+            f"{stats['checkedout']} / {stats['total_capacity']}",
+            f"{usage_pct}% load",
+            delta_color="inverse" if usage_pct > 80 else "normal"
         )
-        r_col2.progress(stats["used"] / stats["maxconn"])
+        progress_val = min(1.0, usage_pct / 100.0)
+        r_col2.progress(progress_val)
     else:
         r_col2.error("🔴 Database Pool: Error")
 

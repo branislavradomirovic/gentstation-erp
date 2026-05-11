@@ -254,6 +254,7 @@ import pages.ai_reports as ai_reports
 import pages.ai_alerts as ai_alerts
 import pages.ai_monitoring as ai_monitoring
 import pages.audit_log as audit_log
+import pages.admin_data_import as admin_data_import
 import pages.settings as settings
 import pages.help as page_help
 
@@ -607,6 +608,7 @@ try:
             "AI Alerts": ai_alerts.render,
             "AI Monitoring": ai_monitoring.render,
             "Audit Log": audit_log.render,
+            "Data Import": admin_data_import.render,
             "Admin Users": admin_users.render,
             "Settings": settings.render,
             "Help": page_help.render,
