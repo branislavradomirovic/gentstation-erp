@@ -23,6 +23,13 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Database configuration
+DB_HOST = os.getenv("DB_HOST", "localhost")
+DB_PORT = int(os.getenv("DB_PORT", 5432))
+DB_NAME = os.getenv("DB_NAME", "gentstation")
+DB_USER = os.getenv("DB_USER", "gentstation_user")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "secure_password")
+DB_SSLMODE = os.getenv("DB_SSLMODE")
+
 DATABASE_URL = (
     os.getenv("DATABASE_URL")
     or os.getenv("POSTGRES_URL")
@@ -31,22 +38,12 @@ DATABASE_URL = (
 logger = logging.getLogger("gentstation.database")
 # Safe diagnostic: log whether DATABASE_URL is present (do not log its value)
 logger.info("DATABASE_URL present: %s", bool(DATABASE_URL))
-print("DATABASE_URL present:", bool(DATABASE_URL), flush=True)
-# Also print basic DB host/user info (non-secret) so Render stdout shows env visibility
-print("DB_HOST:", DB_HOST, "DB_PORT:", DB_PORT, "DB_NAME:", DB_NAME, "DB_USER:", DB_USER, flush=True)
-DB_HOST = os.getenv("DB_HOST", "localhost")
-DB_PORT = int(os.getenv("DB_PORT", 5432))
-DB_NAME = os.getenv("DB_NAME", "gentstation")
-DB_USER = os.getenv("DB_USER", "gentstation_user")
-DB_PASSWORD = os.getenv("DB_PASSWORD", "secure_password")
-DB_SSLMODE = os.getenv("DB_SSLMODE")
 _RESOLVED_DB_HOST = None
 _SCHEMA_INITIALIZED = False
 _ENGINE = None
 _SESSION_FACTORY = None
 _START_TIME = time.time()
 SLOW_QUERY_THRESHOLD = float(os.getenv("DB_SLOW_QUERY_THRESHOLD", "1.0"))
-logger = logging.getLogger("gentstation.database")
 
 
 def _assert_safe_database_config():
