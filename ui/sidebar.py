@@ -82,11 +82,12 @@ def display_sidebar(conn):
                         unsafe_allow_html=True,
                     )
                 else:
-                    # For PNG/JPG, use an <img> tag so we can control max-width
-                    st.markdown(
-                        f"<div style='text-align:center;padding:6px 0;'><img src=\"{logo_path.as_posix()}\" style='max-width:160px;height:auto;display:inline-block;border-radius:6px;' /></div>",
-                        unsafe_allow_html=True,
-                    )
+                    # For PNG/JPG, use Streamlit's st.image with explicit width
+                    # so the file is served correctly and displayed at a readable size.
+                    try:
+                        st.image(str(logo_path), width=160)
+                    except Exception:
+                        st.image(str(logo_path), use_container_width=True)
             except Exception:
                 # Last-resort fallback
                 st.image(str(logo_path), use_container_width=True)
