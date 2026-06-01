@@ -8,15 +8,17 @@ from core.access_control import PAGE_CONFIG, has_access
 
 def get_logo_path():
     base_path = Path(__file__).resolve().parents[1]
-    # Prefer a sidebar-specific GenStation asset, then the horizontal branding.
-    # This lets you provide a compact sidebar logo (GSI_SideBar.png) while
-    # keeping the horizontal variant as a secondary option.
-    sidebar_logo = base_path / "assets" / "GSI_SideBar.png"
-    horizontal_logo = base_path / "assets" / "GSAI_Horizontal.png"
-    if sidebar_logo.exists():
-        return str(sidebar_logo)
-    if horizontal_logo.exists():
-        return str(horizontal_logo)
+    # Look for common logo filename variants (PNG or SVG), prefer compact
+    # sidebar-specific asset then the horizontal branding.
+    candidates = [
+        base_path / "assets" / "GSI_SideBar.png",
+        base_path / "assets" / "GSI_SideBar.svg",
+        base_path / "assets" / "GSAI_Horizontal.png",
+        base_path / "assets" / "GSAI_Horizontal.svg",
+    ]
+    for p in candidates:
+        if p.exists():
+            return str(p)
     return None
 
 
@@ -69,7 +71,21 @@ def display_sidebar(conn):
 
         logo = get_logo_path()
         if logo:
-            st.image(logo, use_container_width=True)
+            logo_path = Path(logo)
+            if logo_path.suffix.lower() == ".svg":
+                try:
+                    svg = logo_path.read_text()
+                    # Inline SVG via data URI to ensure Streamlit renders it in sidebar
+                    svg_escaped = svg.replace("\n", "").replace('"', "'")
+                    st.markdown(
+                        f"<div style='width:100%;'><img src=\"data:image/svg+xml;utf8,{svg_escaped}\" style='width:100%;height:auto;border-radius:6px;' /></div>",
+                        unsafe_allow_html=True,
+                    )
+                except Exception:
+                    # Fallback to st.image if reading fails
+                    st.image(str(logo_path), use_container_width=True)
+            else:
+                st.image(str(logo_path), use_container_width=True)
         st.markdown(
             f"""
             <div class="gs-user-meta">
