@@ -11,6 +11,9 @@ def get_logo_path():
     # Look for common logo filename variants (PNG or SVG), prefer compact
     # sidebar-specific asset then the horizontal branding.
     candidates = [
+        base_path / "assets" / "GSAI_SideBarn_transparent.png",
+        base_path / "assets" / "GSAI_SideBar_transparent.png",
+        base_path / "assets" / "GSI_SideBar_transparent.png",
         base_path / "assets" / "GSAI_SideBarn.png",  # user's requested name (typo-tolerant)
         base_path / "assets" / "GSAI_SideBar.png",
         base_path / "assets" / "GSI_SideBar.png",
