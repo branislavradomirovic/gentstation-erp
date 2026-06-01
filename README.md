@@ -1,11 +1,13 @@
 ---
-title: GentStationAI
+title: Genstationai
 emoji: G
 colorFrom: blue
 colorTo: green
 sdk: docker
 app_port: 8501
 pinned: false
+license: apache-2.0
+short_description: Generative AI operations dashboard for gas stations
 ---
 
 # GentStationAI
