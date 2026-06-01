@@ -501,13 +501,17 @@ try:
         )
 
         # Center logo and login form in the same column for visual alignment.
-        _, content_col, _ = st.columns([1, 1.6, 1], vertical_alignment="top")
+        _, content_col, _ = st.columns([1, 1.4, 1], vertical_alignment="top")
         with content_col:
-            logo_path = Path("assets/GSAI_Horizontal.png")
-            if not logo_path.exists():
-                logo_path = Path("assets/OpusLogo.png")
-            if logo_path.exists():
-                st.image(str(logo_path), use_container_width=True)
+            # Prefer the GenStation horizontal logo. If missing, fall back to the
+            # official login screenshot so the page still looks correct instead of
+            # falling back to the old Opus branding.
+            preferred = Path("assets/GSAI_Horizontal.png")
+            fallback = Path("assets/LogIn.png")
+            logo_path = preferred if preferred.exists() else (fallback if fallback.exists() else None)
+            if logo_path:
+                # Constrain height to keep the logo compact and positioned near the top
+                st.image(str(logo_path), width=520)
 
             # Add a bit of space before the form
             st.markdown("<br>", unsafe_allow_html=True)
