@@ -23,9 +23,9 @@ ENV HOME=/home/user \
     PATH=/home/user/.local/bin:$PATH
 WORKDIR $HOME/app
 
-COPY --chown=user requirements_docker.txt .
+COPY --chown=user requirements.txt .
 RUN pip install --upgrade pip \
-    && pip install --user -r requirements_docker.txt
+    && pip install --user -r requirements.txt
 
 COPY --chown=user . .
 
