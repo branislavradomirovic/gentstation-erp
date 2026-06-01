@@ -83,16 +83,20 @@ def display_sidebar(conn):
                     svg = logo_path.read_text()
                     svg_escaped = svg.replace("\n", "").replace('"', "'")
                     st.markdown(
-                        f"<div style='text-align:center;padding:6px 0;'><img src=\"data:image/svg+xml;utf8,{svg_escaped}\" style='width:160px;height:auto;display:inline-block;border-radius:6px;' /></div>",
+                        f"<div style='display:flex;justify-content:center;padding:6px 0;'><img src=\"data:image/svg+xml;utf8,{svg_escaped}\" style='width:120px;height:auto;display:block;border-radius:6px;margin:0 auto;' /></div>",
                         unsafe_allow_html=True,
                     )
                 else:
                     # For PNG/JPG, use Streamlit's st.image with explicit width
-                    # so the file is served correctly and displayed at a readable size.
+                    # and center it within a flex container for consistent layout.
                     try:
-                        st.image(str(logo_path), width=160)
+                        st.markdown("<div style='display:flex;justify-content:center;padding:6px 0;'>", unsafe_allow_html=True)
+                        st.image(str(logo_path), width=120)
+                        st.markdown("</div>", unsafe_allow_html=True)
                     except Exception:
-                        st.image(str(logo_path), use_container_width=True)
+                        st.markdown("<div style='display:flex;justify-content:center;padding:6px 0;'>", unsafe_allow_html=True)
+                        st.image(str(logo_path), use_container_width=False)
+                        st.markdown("</div>", unsafe_allow_html=True)
             except Exception:
                 # Last-resort fallback
                 st.image(str(logo_path), use_container_width=True)

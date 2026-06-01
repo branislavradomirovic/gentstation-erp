@@ -28,7 +28,7 @@ class Station(Base):
 
     region = relationship("Region", back_populates="stations")
     users = relationship("User", back_populates="station")
-    submissions = relationship("Submission", back_populates="station")
+    submissions = relationship(lambda: Submission, back_populates="station")
 
 class User(Base):
     __tablename__ = "users"
@@ -51,7 +51,7 @@ class User(Base):
     force_password_change = Column(Boolean, default=False)
 
     station = relationship("Station", back_populates="users")
-    submissions = relationship("Submission", back_populates="user")
+    submissions = relationship(lambda: Submission, back_populates="user")
 
 class Submission(Base):
     __tablename__ = "submissions"
@@ -73,8 +73,8 @@ class Submission(Base):
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
-    station = relationship("Station", back_populates="submissions")
-    user = relationship("User", back_populates="submissions")
+    station = relationship(lambda: Station, back_populates="submissions")
+    user = relationship(lambda: User, back_populates="submissions")
 
 class SlowQueryLog(Base):
     __tablename__ = "slow_query_logs"
