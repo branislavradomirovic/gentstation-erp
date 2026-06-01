@@ -8,12 +8,15 @@ from core.access_control import PAGE_CONFIG, has_access
 
 def get_logo_path():
     base_path = Path(__file__).resolve().parents[1]
-    # Prefer the GenStation horizontal branding. Do not fall back to Opus; if
-    # the GenStation asset is missing, return None so the sidebar simply shows
-    # user meta without an unrelated logo.
-    preferred_logo = base_path / "assets" / "GSAI_Horizontal.png"
-    if preferred_logo.exists():
-        return str(preferred_logo)
+    # Prefer a sidebar-specific GenStation asset, then the horizontal branding.
+    # This lets you provide a compact sidebar logo (GSI_SideBar.png) while
+    # keeping the horizontal variant as a secondary option.
+    sidebar_logo = base_path / "assets" / "GSI_SideBar.png"
+    horizontal_logo = base_path / "assets" / "GSAI_Horizontal.png"
+    if sidebar_logo.exists():
+        return str(sidebar_logo)
+    if horizontal_logo.exists():
+        return str(horizontal_logo)
     return None
 
 
