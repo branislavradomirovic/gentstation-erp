@@ -1,6 +1,6 @@
 ---
 title: Genstationai
-emoji: G
+emoji: ⛽
 colorFrom: blue
 colorTo: green
 sdk: docker
