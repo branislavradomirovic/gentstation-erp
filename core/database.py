@@ -387,13 +387,24 @@ def get_connection(on_retry=None):
 
 def test_redis_connection(on_retry=None, timeout=2) -> bool:
     """Test if Redis server is running and responding."""
+    # If background workers are disabled or REDIS_URL is not set, skip Redis checks.
+    auto_start = os.getenv("AUTO_START_BACKGROUND_WORKERS", "1")
+    try:
+        auto_start_bool = auto_start.strip().lower() in {"1", "true", "yes", "on"}
+    except Exception:
+        auto_start_bool = True
+
+    redis_url = os.getenv("REDIS_URL", "").strip()
+    if not auto_start_bool or not redis_url:
+        logger.info("Redis checks disabled (AUTO_START_BACKGROUND_WORKERS=%s, REDIS_URL=%s)", auto_start, bool(redis_url))
+        return False
+
     try:
         import redis
     except ImportError:
-        logger.error("Redis library not installed.")
+        logger.info("Redis library not installed; skipping Redis checks.")
         return False
 
-    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     max_retries = 5
     retry_delay = 3
 

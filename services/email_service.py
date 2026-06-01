@@ -9,8 +9,9 @@ load_dotenv()
 
 SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", 587) or 587)
-SENDER_EMAIL = os.getenv("SENDER_EMAIL")
-SENDER_PASSWORD = os.getenv("SENDER_PASSWORD")
+# Support multiple env var names to match .env and deployment providers
+SENDER_EMAIL = os.getenv("SENDER_EMAIL") or os.getenv("SMTP_USER") or os.getenv("SMTP_USERNAME")
+SENDER_PASSWORD = os.getenv("SENDER_PASSWORD") or os.getenv("SMTP_PASS") or os.getenv("SMTP_PASSWORD")
 
 
 def send_email(to_email: str, subject: str, html_body: str) -> bool:

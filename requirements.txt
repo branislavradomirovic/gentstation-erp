@@ -20,7 +20,7 @@ psycopg2-binary>=2.9.9
 alembic>=1.13.0
 
 # Queue
-redis>=5.0.0
+
 
 # AI / Processing
 opencv-python-headless>=4.8.0

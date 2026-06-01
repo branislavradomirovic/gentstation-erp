@@ -324,22 +324,28 @@ def run_boot_sequence():
         st.stop()
 
     # 2. Redis Connectivity
-    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-    redis_status.info(f"⏳ Connecting to Redis...")
+    redis_url = os.getenv("REDIS_URL", "").strip()
+    auto_start_workers = os.getenv("AUTO_START_BACKGROUND_WORKERS", "1")
+    auto_start_bool = auto_start_workers.strip().lower() in {"1", "true", "yes", "on"}
 
-    def redis_retry_callback(attempt, total, remaining, error):
-        redis_status.warning(
-            f"⚠️ **Redis connection attempt {attempt}/{total} failed.**\n\n"
-            f"Retrying in **{remaining}s**...\n\n"
-            f"**Current Error:** `{error}`\n\n"
-            "💡 *Reminder: Ensure Redis is running (e.g., `docker compose up -d redis`) before starting the app.*"
-        )
-
-    if test_redis_connection(on_retry=redis_retry_callback):
-        redis_status.success(f"✅ Redis: **Online** (`{redis_url}`)")
+    if not auto_start_bool or not redis_url:
+        redis_status.info("ℹ️ Redis checks disabled (background workers disabled or REDIS_URL unset).")
     else:
-        redis_status.warning(f"⚠️ Redis: **Offline**. Background tasks may be delayed.")
-        st.caption(f"Check your `REDIS_URL` in `.env`.")
+        redis_status.info(f"⏳ Connecting to Redis...")
+
+        def redis_retry_callback(attempt, total, remaining, error):
+            redis_status.warning(
+                f"⚠️ **Redis connection attempt {attempt}/{total} failed.**\n\n"
+                f"Retrying in **{remaining}s**...\n\n"
+                f"**Current Error:** `{error}`\n\n"
+                "💡 *Reminder: Ensure Redis is running (e.g., `docker compose up -d redis`) before starting the app.*"
+            )
+
+        if test_redis_connection(on_retry=redis_retry_callback):
+            redis_status.success(f"✅ Redis: **Online** (`{redis_url}`)")
+        else:
+            redis_status.warning(f"⚠️ Redis: **Offline**. Background tasks may be delayed.")
+            st.caption(f"Check your `REDIS_URL` in `.env`.")
 
     # 3. Telegram Bot Configuration
     tg_config_status.info("⏳ Checking Telegram Bot configuration...")
