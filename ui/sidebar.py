@@ -72,19 +72,23 @@ def display_sidebar(conn):
         logo = get_logo_path()
         if logo:
             logo_path = Path(logo)
-            if logo_path.suffix.lower() == ".svg":
-                try:
+            try:
+                # Render with explicit dimensions so the logo is clear and centered
+                if logo_path.suffix.lower() == ".svg":
                     svg = logo_path.read_text()
-                    # Inline SVG via data URI to ensure Streamlit renders it in sidebar
                     svg_escaped = svg.replace("\n", "").replace('"', "'")
                     st.markdown(
-                        f"<div style='width:100%;'><img src=\"data:image/svg+xml;utf8,{svg_escaped}\" style='width:100%;height:auto;border-radius:6px;' /></div>",
+                        f"<div style='text-align:center;padding:6px 0;'><img src=\"data:image/svg+xml;utf8,{svg_escaped}\" style='width:160px;height:auto;display:inline-block;border-radius:6px;' /></div>",
                         unsafe_allow_html=True,
                     )
-                except Exception:
-                    # Fallback to st.image if reading fails
-                    st.image(str(logo_path), use_container_width=True)
-            else:
+                else:
+                    # For PNG/JPG, use an <img> tag so we can control max-width
+                    st.markdown(
+                        f"<div style='text-align:center;padding:6px 0;'><img src=\"{logo_path.as_posix()}\" style='max-width:160px;height:auto;display:inline-block;border-radius:6px;' /></div>",
+                        unsafe_allow_html=True,
+                    )
+            except Exception:
+                # Last-resort fallback
                 st.image(str(logo_path), use_container_width=True)
         st.markdown(
             f"""
