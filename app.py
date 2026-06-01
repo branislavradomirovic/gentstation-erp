@@ -182,6 +182,13 @@ st.markdown(
             margin-top: 0px !important;
             padding-top: 0px !important;
         }
+        /* Force sidebar logo to a clear, centered size */
+        [data-testid="stSidebar"] img {
+            width: 160px !important;
+            height: auto !important;
+            display: block !important;
+            margin: 6px auto !important;
+        }
 
         /* UI Polish: Rounded buttons and taller height for breathability */
         .stButton button {
