@@ -1,5 +1,3 @@
-version: '3.9'
-
 services:
   # PostgreSQL Database
   postgres:
@@ -17,6 +15,23 @@ services:
       - ./init_db.sql:/docker-entrypoint-initdb.d/init.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-gentstation_user} -d ${DB_NAME:-gentstation}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - gentstation-network
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: gentstation-redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -48,6 +63,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       # Database Configuration
       DB_HOST: postgres
@@ -55,7 +72,7 @@ services:
       DB_NAME: ${DB_NAME:-gentstation}
       DB_USER: ${DB_USER:-gentstation_user}
       DB_PASSWORD: ${DB_PASSWORD:-secure_password}
-      
+
       # Ollama Configuration (connect to local Ollama or external service)
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:14b-instruct}
@@ -63,11 +80,11 @@ services:
       OLLAMA_TEMPERATURE: 0.3
       VIDEO_FRAME_SAMPLES: ${VIDEO_FRAME_SAMPLES:-6}
       VIDEO_MAX_FRAME_DIMENSION: ${VIDEO_MAX_FRAME_DIMENSION:-768}
-      
+
       # Telegram Configuration
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
       TELEGRAM_BOT_URL: ${TELEGRAM_BOT_URL}
-      
+
       # Email Configuration
       SENDER_EMAIL: ${SENDER_EMAIL}
       SMTP_USER: ${SMTP_USER}
@@ -75,35 +92,98 @@ services:
       SMTP_SERVER: ${SMTP_SERVER:-smtp.gmail.com}
       SMTP_PORT: ${SMTP_PORT:-587}
       MANAGER_EMAIL: ${MANAGER_EMAIL}
-      
+
       # Streamlit Configuration
       STREAMLIT_SERVER_PORT: 8501
       STREAMLIT_SERVER_ADDRESS: 0.0.0.0
       STREAMLIT_BROWSER_GATHERUSAGESTATS: false
-      AUTO_START_BACKGROUND_WORKERS: ${AUTO_START_BACKGROUND_WORKERS:-1}
-      AUTO_START_TELEGRAM_BOT: ${AUTO_START_TELEGRAM_BOT:-1}
-      AUTO_START_AI_WORKER: ${AUTO_START_AI_WORKER:-1}
-    
+      REDIS_URL: redis://redis:6379/0
+      AUTO_START_BACKGROUND_WORKERS: "0"
+      AUTO_START_TELEGRAM_BOT: "0"
+      AUTO_START_AI_WORKER: "0"
+
     ports:
       - "8501:8501"
-    
+
     volumes:
       # Mount uploads directory for video processing
       - ./uploads:/app/uploads
       - ./downloads:/app/downloads
       - ./assets:/app/assets
-    
+
     networks:
       - gentstation-network
-    
+
     restart: unless-stopped
-    
+
     # Keep container running
     stdin_open: true
     tty: true
 
+  telegram-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: gentstation-telegram-worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-gentstation}
+      DB_USER: ${DB_USER:-gentstation_user}
+      DB_PASSWORD: ${DB_PASSWORD:-secure_password}
+      REDIS_URL: redis://redis:6379/0
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_BOT_URL: ${TELEGRAM_BOT_URL}
+      SKIP_SCHEMA_INIT: "1"
+      BOT_MODE: ${BOT_MODE:-bot}
+    volumes:
+      - ./uploads:/app/uploads
+      - ./downloads:/app/downloads
+    networks:
+      - gentstation-network
+    restart: unless-stopped
+    command: ["python", "-m", "core.bot_worker"]
+
+  ai-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: gentstation-ai-worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-gentstation}
+      DB_USER: ${DB_USER:-gentstation_user}
+      DB_PASSWORD: ${DB_PASSWORD:-secure_password}
+      REDIS_URL: redis://redis:6379/0
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:14b-instruct}
+      OLLAMA_VISION_MODEL: ${OLLAMA_VISION_MODEL:-}
+      VIDEO_FRAME_SAMPLES: ${VIDEO_FRAME_SAMPLES:-6}
+      VIDEO_MAX_FRAME_DIMENSION: ${VIDEO_MAX_FRAME_DIMENSION:-768}
+      SKIP_SCHEMA_INIT: "1"
+    volumes:
+      - ./uploads:/app/uploads
+      - ./downloads:/app/downloads
+    networks:
+      - gentstation-network
+    restart: unless-stopped
+    command: ["python", "-m", "core.ai_worker"]
+
 volumes:
   postgres_data:
+    driver: local
+  redis_data:
     driver: local
   # ollama_data:
   #   driver: local

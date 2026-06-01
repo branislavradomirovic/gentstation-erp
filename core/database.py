@@ -23,11 +23,17 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Database configuration
+DATABASE_URL = (
+    os.getenv("DATABASE_URL")
+    or os.getenv("POSTGRES_URL")
+    or os.getenv("SQLALCHEMY_DATABASE_URL")
+)
 DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_PORT = int(os.getenv("DB_PORT", 5432))
 DB_NAME = os.getenv("DB_NAME", "gentstation")
 DB_USER = os.getenv("DB_USER", "gentstation_user")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "secure_password")
+DB_SSLMODE = os.getenv("DB_SSLMODE")
 _RESOLVED_DB_HOST = None
 _SCHEMA_INITIALIZED = False
 _ENGINE = None
@@ -37,21 +43,56 @@ SLOW_QUERY_THRESHOLD = float(os.getenv("DB_SLOW_QUERY_THRESHOLD", "1.0"))
 logger = logging.getLogger("gentstation.database")
 
 
+def _assert_safe_database_config():
+    production_like = bool(os.getenv("HF_SPACE_ID")) or os.getenv(
+        "APP_ENV", ""
+    ).strip().lower() in {"production", "prod"}
+    if not production_like:
+        return
+
+    if not DATABASE_URL and DB_PASSWORD in {"", "secure_password", "change_me_for_local_dev"}:
+        raise RuntimeError(
+            "Production database credentials are not configured. Set DATABASE_URL "
+            "or provide DB_HOST/DB_USER/DB_PASSWORD as Hugging Face Space secrets."
+        )
+
+
 def get_sqlalchemy_url():
     """Constructs the SQLAlchemy connection string."""
+    if DATABASE_URL:
+        if DATABASE_URL.startswith("postgres://"):
+            return DATABASE_URL.replace("postgres://", "postgresql+psycopg2://", 1)
+        if DATABASE_URL.startswith("postgresql://"):
+            return DATABASE_URL.replace("postgresql://", "postgresql+psycopg2://", 1)
+        return DATABASE_URL
+
     host = _RESOLVED_DB_HOST or DB_HOST
     encoded_password = urllib.parse.quote_plus(DB_PASSWORD)
-    return f"postgresql+psycopg2://{DB_USER}:{encoded_password}@{host}:{DB_PORT}/{DB_NAME}"
+    url = f"postgresql+psycopg2://{DB_USER}:{encoded_password}@{host}:{DB_PORT}/{DB_NAME}"
+    if DB_SSLMODE:
+        url += f"?sslmode={urllib.parse.quote_plus(DB_SSLMODE)}"
+    return url
 
 
 def _connect(host: str):
+    if DATABASE_URL:
+        kwargs = {"connect_timeout": 5}
+        if DB_SSLMODE and "sslmode=" not in DATABASE_URL:
+            kwargs["sslmode"] = DB_SSLMODE
+        return psycopg2.connect(DATABASE_URL, **kwargs)
+
+    kwargs = {
+        "host": host,
+        "port": DB_PORT,
+        "database": DB_NAME,
+        "user": DB_USER,
+        "password": DB_PASSWORD,
+        "connect_timeout": 5,
+    }
+    if DB_SSLMODE:
+        kwargs["sslmode"] = DB_SSLMODE
     return psycopg2.connect(
-        host=host,
-        port=DB_PORT,
-        database=DB_NAME,
-        user=DB_USER,
-        password=DB_PASSWORD,
-        connect_timeout=5,
+        **kwargs,
     )
 
 
@@ -211,6 +252,7 @@ class DatabaseConnection:
         global _RESOLVED_DB_HOST, _ENGINE
 
         if _ENGINE is None:
+            _assert_safe_database_config()
             # Resolve host first
             host_to_use = DB_HOST
             try:
@@ -292,10 +334,26 @@ def get_connection(on_retry=None):
                 "yes",
                 "on",
             }
+            run_schema_init = os.getenv(
+                "RUN_SCHEMA_MIGRATIONS_ON_STARTUP", "1"
+            ).strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+            strict_schema_init = os.getenv(
+                "STRICT_SCHEMA_INIT", "1"
+            ).strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
 
             # Create tables if they don't exist, but only once per process to avoid
             # repeated noisy logs on every Streamlit rerun.
-            if not _SCHEMA_INITIALIZED and not skip_schema_init:
+            if not _SCHEMA_INITIALIZED and not skip_schema_init and run_schema_init:
                 # For now, we still use ensure_schema to handle triggers.
                 # In a future update, move triggers to Alembic and use:
                 # Base.metadata.create_all(_ENGINE)
@@ -303,7 +361,8 @@ def get_connection(on_retry=None):
                     ensure_schema(conn)
                 except Exception as e:
                     logger.error("Legacy ensure_schema failed: %s", e)
-                    # We don't raise here to allow Alembic-managed DBs to still connect
+                    if strict_schema_init:
+                        raise
                 _SCHEMA_INITIALIZED = True
             return conn
 
@@ -1027,6 +1086,40 @@ def ensure_schema(conn):
            OR clock_out_at IS NULL;
         """
         )
+
+        admin_password = os.getenv("INITIAL_ADMIN_PASSWORD", "").strip()
+        if admin_password:
+            admin_username = os.getenv("INITIAL_ADMIN_USERNAME", "admin").strip()
+            admin_email = os.getenv("INITIAL_ADMIN_EMAIL", "").strip() or None
+            admin_name = os.getenv("INITIAL_ADMIN_NAME", "Initial").strip()
+            admin_surname = os.getenv("INITIAL_ADMIN_SURNAME", "Admin").strip()
+            existing_admin = cursor.execute(
+                "SELECT id FROM users WHERE username = %s OR LOWER(email) = LOWER(%s)",
+                (admin_username, admin_email or ""),
+            ).fetchone()
+            if not existing_admin:
+                import bcrypt
+
+                password_hash = bcrypt.hashpw(
+                    admin_password.encode("utf-8"), bcrypt.gensalt(rounds=12)
+                ).decode("utf-8")
+                cursor.execute(
+                    """
+                    INSERT INTO users (
+                        username, email, password_hash, role, is_active,
+                        force_password_change, name, surname
+                    )
+                    VALUES (%s, %s, %s, 'General Manager', TRUE, TRUE, %s, %s)
+                    """,
+                    (
+                        admin_username,
+                        admin_email,
+                        password_hash,
+                        admin_name or None,
+                        admin_surname or None,
+                    ),
+                )
+                logger.info("Initial General Manager user created: %s", admin_username)
 
         conn.commit()
         logger.debug("Database schema initialized successfully")

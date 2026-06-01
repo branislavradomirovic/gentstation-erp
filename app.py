@@ -117,7 +117,8 @@ def start_background_workers():
     def _env_bool(name: str, default: str = "1") -> bool:
         return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
-    if not _env_bool("AUTO_START_BACKGROUND_WORKERS", "1"):
+    default_worker_start = "0" if os.getenv("HF_SPACE_ID") else "1"
+    if not _env_bool("AUTO_START_BACKGROUND_WORKERS", default_worker_start):
         logger.info(
             "AUTO_START_BACKGROUND_WORKERS is disabled. Skipping worker startup."
         )
@@ -125,7 +126,7 @@ def start_background_workers():
 
     for cfg in WORKERS:
         # 1. Check if enabled via env
-        if not _env_bool(cfg["enabled_env"], "1"):
+        if not _env_bool(cfg["enabled_env"], default_worker_start):
             logger.info("%s startup is disabled via env.", cfg["name"])
             continue
 
@@ -450,17 +451,12 @@ try:
     def restore_session():
         """Checks for an existing session token to keep the user logged in."""
         token = st.session_state.get("session_token")
-        if not token:
-            qp_token = st.query_params.get("session_token")
-            if qp_token:
-                token = qp_token
-                st.session_state["session_token"] = qp_token
         if token and "user_id" not in st.session_state:
             uid = validate_session_token(token)
             if uid:
                 # Fetch all user-related data from the single users table
                 row = conn.execute(
-                    "SELECT id, username, email, role, dark_mode_enabled, name, surname, station_id, region_id, telegram_chat_id FROM users WHERE id = %s",
+                    "SELECT id, username, email, role, dark_mode_enabled, name, surname, station_id, region_id, telegram_chat_id, force_password_change FROM users WHERE id = %s",
                     (uid,),
                 ).fetchone()
                 if row:
@@ -475,6 +471,7 @@ try:
                     st.session_state["user_station_id"] = row[7]
                     st.session_state["user_region_id"] = row[8]
                     st.session_state["user_telegram_chat_id"] = row[9]
+                    st.session_state["force_password_change"] = bool(row[10])
                 else:
                     if "session_token" in st.session_state:
                         del st.session_state["session_token"]
@@ -537,9 +534,6 @@ try:
                     else:
                         ok, msg = login_user_streamlit(st, cred, pw)
                         if ok:
-                            st.query_params["session_token"] = st.session_state.get(
-                                "session_token", ""
-                            )
                             st.rerun()
                         else:
                             st.error(msg)

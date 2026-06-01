@@ -247,6 +247,7 @@ def login_user_streamlit(st, username_or_email: str, password: str):
     st.session_state["user_station_id"] = user["station_id"]
     st.session_state["user_region_id"] = user["region_id"]
     st.session_state["user_telegram_chat_id"] = user["telegram_chat_id"]
+    st.session_state["force_password_change"] = user.get("force_change", False)
 
     st.session_state["dark_mode"] = user.get("dark_mode", False)
 
@@ -259,7 +260,13 @@ def logout_user_streamlit(st):
     if token:
         destroy_session_token(token)
 
-    for key in ["session_token", "user_id", "username", "user_role"]:
+    for key in [
+        "session_token",
+        "user_id",
+        "username",
+        "user_role",
+        "force_password_change",
+    ]:
         if key in st.session_state:
             del st.session_state[key]
 

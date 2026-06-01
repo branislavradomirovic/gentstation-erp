@@ -418,7 +418,7 @@ def send_password_reset_email(conn, email: str):
         # Update users table (bcrypt)
         new_bcrypt_hash = hash_password_bcrypt(new_pw)
         conn.execute(
-            "UPDATE users SET password_hash = %s WHERE id = %s",
+            "UPDATE users SET password_hash = %s, force_password_change = TRUE WHERE id = %s",
             (new_bcrypt_hash, user_id),
         )
 
@@ -428,8 +428,8 @@ def send_password_reset_email(conn, email: str):
         return
 
     # 4. Send the email
-    SMTP_SERVER = "smtp.gmail.com"
-    SMTP_PORT = 587
+    SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
+    SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
     SENDER_EMAIL = os.getenv("SMTP_USER")
     SENDER_PASSWORD = os.getenv("SMTP_PASS")
 

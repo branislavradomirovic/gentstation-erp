@@ -1,8 +1,13 @@
 # core/session.py
 import secrets
+import hashlib
 from datetime import datetime, timedelta
 from typing import Tuple, Optional
 from core.database import get_connection
+
+
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 def create_session_token(user_id: int, ttl_hours: int = 8) -> Tuple[str, str]:
@@ -13,11 +18,12 @@ def create_session_token(user_id: int, ttl_hours: int = 8) -> Tuple[str, str]:
     with get_connection() as conn:
         cur = conn.cursor()
         token = secrets.token_urlsafe(32)
+        token_hash = _hash_token(token)
         created_at = datetime.utcnow()
         expires_at = created_at + timedelta(hours=ttl_hours)
         cur.execute(
             "INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (%s,%s,%s,%s)",
-            (token, user_id, created_at.isoformat(), expires_at.isoformat()),
+            (token_hash, user_id, created_at.isoformat(), expires_at.isoformat()),
         )
         conn.commit()
         return token, expires_at.isoformat()
@@ -29,10 +35,11 @@ def validate_session_token(token: str) -> Optional[int]:
     """
     if not token:
         return None
+    token_hash = _hash_token(token)
     with get_connection() as conn:
         cur = conn.cursor()
         row = cur.execute(
-            "SELECT user_id, expires_at FROM sessions WHERE token = %s", (token,)
+            "SELECT user_id, expires_at FROM sessions WHERE token = %s", (token_hash,)
         ).fetchone()
         if not row:
             return None
@@ -45,7 +52,7 @@ def validate_session_token(token: str) -> Optional[int]:
 
             if expiry_dt and expiry_dt < datetime.utcnow():
                 # expired -> delete
-                cur.execute("DELETE FROM sessions WHERE token = %s", (token,))
+                cur.execute("DELETE FROM sessions WHERE token = %s", (token_hash,))
                 conn.commit()
                 return None
         except Exception:
@@ -54,7 +61,8 @@ def validate_session_token(token: str) -> Optional[int]:
 
 
 def destroy_session_token(token: str):
+    token_hash = _hash_token(token)
     with get_connection() as conn:
         cur = conn.cursor()
-        cur.execute("DELETE FROM sessions WHERE token = %s", (token,))
+        cur.execute("DELETE FROM sessions WHERE token = %s", (token_hash,))
         conn.commit()

@@ -432,16 +432,12 @@ def process_job(job: SubmissionJob):
     result = parse_station_video(job.video_path)
     latency = time.time() - start
 
-    # async-safe side effects
+    mark_done(job.sub_id, result)
+    record_inference_latency(job.sub_id, result.get("_model_used", "unknown"), latency)
+
     try:
         with closing(_get_connection()) as conn:
             db_pid = conn.get_backend_pid()
-            mark_done(
-                job.sub_id, result
-            )  # Moved inside to reuse/log pid context if desired
-            record_inference_latency(
-                job.sub_id, result.get("_model_used", "unknown"), latency
-            )
             send_ai_report_email(conn, job.station_id, result)
     except Exception as e:
         logger.warning("Email failed: %s", e)
