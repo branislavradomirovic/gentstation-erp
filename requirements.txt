@@ -1,3 +1,5 @@
+# Consolidated requirements
+
 # UI / Dashboard
 streamlit>=1.30.0
 pandas>=2.0.0
@@ -19,12 +21,16 @@ psutil>=5.9.0
 psycopg2-binary>=2.9.9
 alembic>=1.13.0
 
-# Queue
-
-
 # AI / Processing
 opencv-python-headless>=4.8.0
 ollama>=0.1.6
 
-# Optional (recommended for future scaling)
+# Optional / Async DB
 asyncpg>=0.29.0
+
+# Development / Testing
+pytest>=8.0.0
+
+# Notes:
+# - requirements_dev.txt and requirements_docker.txt have been merged here
+# - Keep this file in sync with Docker builds and CI
