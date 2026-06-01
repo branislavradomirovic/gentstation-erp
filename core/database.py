@@ -31,6 +31,9 @@ DATABASE_URL = (
 logger = logging.getLogger("gentstation.database")
 # Safe diagnostic: log whether DATABASE_URL is present (do not log its value)
 logger.info("DATABASE_URL present: %s", bool(DATABASE_URL))
+print("DATABASE_URL present:", bool(DATABASE_URL), flush=True)
+# Also print basic DB host/user info (non-secret) so Render stdout shows env visibility
+print("DB_HOST:", DB_HOST, "DB_PORT:", DB_PORT, "DB_NAME:", DB_NAME, "DB_USER:", DB_USER, flush=True)
 DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_PORT = int(os.getenv("DB_PORT", 5432))
 DB_NAME = os.getenv("DB_NAME", "gentstation")
