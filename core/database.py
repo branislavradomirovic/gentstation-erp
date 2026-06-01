@@ -63,6 +63,8 @@ def _assert_safe_database_config():
 def get_sqlalchemy_url():
     """Constructs the SQLAlchemy connection string."""
     if DATABASE_URL:
+        # Non-secret diagnostic: note that DATABASE_URL is present and will be used.
+        logger.info("get_sqlalchemy_url: using DATABASE_URL (present=%s)", True)
         if DATABASE_URL.startswith("postgres://"):
             return DATABASE_URL.replace("postgres://", "postgresql+psycopg2://", 1)
         if DATABASE_URL.startswith("postgresql://"):
@@ -274,7 +276,13 @@ class DatabaseConnection:
                         raise
                 else:
                     raise
-
+            # Non-secret diagnostic: report which host will be used and whether DATABASE_URL exists
+            logger.info(
+                "Database init: using host_to_use=%s, resolved_host=%s, DATABASE_URL_present=%s",
+                host_to_use,
+                _RESOLVED_DB_HOST,
+                bool(DATABASE_URL),
+            )
             # Initialize SQLAlchemy Engine with pooling
             _ENGINE = create_engine(
                 get_sqlalchemy_url(),
