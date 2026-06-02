@@ -6,7 +6,7 @@ services:
     environment:
       POSTGRES_DB: ${DB_NAME:-gentstation}
       POSTGRES_USER: ${DB_USER:-gentstation_user}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-secure_password}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-change_me_for_local_dev}
       POSTGRES_INITDB_ARGS: "--encoding=UTF8"
     ports:
       - "${DB_PORT:-5432}:5432"
@@ -56,6 +56,7 @@ services:
 
   # GentStationAI Application
   app:
+    profiles: ["app"]
     build:
       context: .
       dockerfile: Dockerfile
@@ -71,7 +72,10 @@ services:
       DB_PORT: 5432
       DB_NAME: ${DB_NAME:-gentstation}
       DB_USER: ${DB_USER:-gentstation_user}
-      DB_PASSWORD: ${DB_PASSWORD:-secure_password}
+      DB_PASSWORD: ${DB_PASSWORD:-change_me_for_local_dev}
+      APP_ENV: development
+      RUN_SCHEMA_MIGRATIONS_ON_STARTUP: "1"
+      STRICT_SCHEMA_INIT: "1"
 
       # Ollama Configuration (connect to local Ollama or external service)
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
@@ -92,6 +96,9 @@ services:
       SMTP_SERVER: ${SMTP_SERVER:-smtp.gmail.com}
       SMTP_PORT: ${SMTP_PORT:-587}
       MANAGER_EMAIL: ${MANAGER_EMAIL}
+      APP_LOGIN_URL: ${APP_LOGIN_URL:-http://localhost:8501}
+      SUPPORT_RECIPIENT: ${SUPPORT_RECIPIENT:-support@example.com}
+      TELEGRAM_BOT_HANDLE: ${TELEGRAM_BOT_HANDLE:-your_bot_username}
 
       # Streamlit Configuration
       STREAMLIT_SERVER_PORT: 8501
@@ -109,7 +116,6 @@ services:
       # Mount uploads directory for video processing
       - ./uploads:/app/uploads
       - ./downloads:/app/downloads
-      - ./assets:/app/assets
 
     networks:
       - gentstation-network
@@ -121,6 +127,7 @@ services:
     tty: true
 
   telegram-worker:
+    profiles: ["workers"]
     build:
       context: .
       dockerfile: Dockerfile
@@ -135,10 +142,12 @@ services:
       DB_PORT: 5432
       DB_NAME: ${DB_NAME:-gentstation}
       DB_USER: ${DB_USER:-gentstation_user}
-      DB_PASSWORD: ${DB_PASSWORD:-secure_password}
+      DB_PASSWORD: ${DB_PASSWORD:-change_me_for_local_dev}
+      APP_ENV: development
       REDIS_URL: redis://redis:6379/0
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
       TELEGRAM_BOT_URL: ${TELEGRAM_BOT_URL}
+      TELEGRAM_BOT_HANDLE: ${TELEGRAM_BOT_HANDLE:-your_bot_username}
       SKIP_SCHEMA_INIT: "1"
       BOT_MODE: ${BOT_MODE:-bot}
     volumes:
@@ -150,6 +159,7 @@ services:
     command: ["python", "-m", "core.bot_worker"]
 
   ai-worker:
+    profiles: ["workers"]
     build:
       context: .
       dockerfile: Dockerfile
@@ -164,7 +174,8 @@ services:
       DB_PORT: 5432
       DB_NAME: ${DB_NAME:-gentstation}
       DB_USER: ${DB_USER:-gentstation_user}
-      DB_PASSWORD: ${DB_PASSWORD:-secure_password}
+      DB_PASSWORD: ${DB_PASSWORD:-change_me_for_local_dev}
+      APP_ENV: development
       REDIS_URL: redis://redis:6379/0
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:14b-instruct}

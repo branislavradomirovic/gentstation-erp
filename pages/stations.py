@@ -637,7 +637,7 @@ def render(conn):
         st.subheader("📱 Mobile Access (QR Code)")
 
         # Bot handle (matches core/comm_service.py)
-        bot_handle = "BaneTest_Bot"
+        bot_handle = os.getenv("TELEGRAM_BOT_HANDLE", "your_bot_username")
         bot_link = f"https://t.me/{bot_handle}"
         qr_api_url = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={urllib.parse.quote(bot_link)}"
 

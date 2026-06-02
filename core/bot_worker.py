@@ -198,14 +198,18 @@ def _safe_json(value: Any) -> str:
 
 
 def _status_conn():
-    conn = psycopg2.connect(
-        host=os.getenv("DB_HOST", "localhost"),
-        port=int(os.getenv("DB_PORT", "5432")),
-        database=os.getenv("DB_NAME", "gentstation"),
-        user=os.getenv("DB_USER", "gentstation_user"),
-        password=os.getenv("DB_PASSWORD", "secure_password"),
-        connect_timeout=5,
-    )
+    database_url = os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL")
+    if database_url:
+        conn = psycopg2.connect(database_url, connect_timeout=5)
+    else:
+        conn = psycopg2.connect(
+            host=os.getenv("DB_HOST", "localhost"),
+            port=int(os.getenv("DB_PORT", "5432")),
+            database=os.getenv("DB_NAME", "gentstation"),
+            user=os.getenv("DB_USER", "gentstation_user"),
+            password=os.getenv("DB_PASSWORD", "change_me_for_local_dev"),
+            connect_timeout=5,
+        )
     conn.autocommit = True
     return conn
 

@@ -20,6 +20,23 @@ logger = logging.getLogger("gentstation.comm_service")
 load_dotenv()
 
 
+def _login_url() -> str:
+    return os.getenv("APP_LOGIN_URL", "http://localhost:8501")
+
+
+def _bot_handle() -> str:
+    return os.getenv("TELEGRAM_BOT_HANDLE", "your_bot_username")
+
+
+def _smtp_settings():
+    return (
+        os.getenv("SMTP_SERVER", "smtp.gmail.com"),
+        int(os.getenv("SMTP_PORT", 587)),
+        os.getenv("SMTP_USER"),
+        os.getenv("SMTP_PASS"),
+    )
+
+
 def send_activation_email(conn, user_id: int, reset_password: bool = False):
     """
     Sends a full activation email with account details and Telegram bot activation link.
@@ -51,12 +68,9 @@ def send_activation_email(conn, user_id: int, reset_password: bool = False):
     if not email:
         return False, "User has no email address."
 
-    smtp_server = os.getenv("SMTP_SERVER", "smtp.gmail.com")
-    smtp_port = int(os.getenv("SMTP_PORT", 587))
-    sender_email = os.getenv("SMTP_USER")
-    sender_password = os.getenv("SMTP_PASS")
-    bot_handle = os.getenv("TELEGRAM_BOT_HANDLE", "BaneTest_Bot")
-    login_url = os.getenv("APP_LOGIN_URL", "https://gentstation-erp.streamlit.app")
+    smtp_server, smtp_port, sender_email, sender_password = _smtp_settings()
+    bot_handle = _bot_handle()
+    login_url = _login_url()
 
     if not sender_email or not sender_password:
         return False, "SMTP credentials missing in .env."
@@ -132,15 +146,12 @@ def send_support_email(from_user: str, subject: str, message: str) -> bool:
     Returns True on success, False on failure.
     """
     # 1. Credentials from .env
-    SMTP_SERVER = "smtp.gmail.com"
-    SMTP_PORT = 587
-    SENDER_EMAIL = os.getenv("SMTP_USER")
-    SENDER_PASSWORD = os.getenv("SMTP_PASS")
-    SUPPORT_RECIPIENT = "support@opus.rs"  # Admin/Support email address
+    SMTP_SERVER, SMTP_PORT, SENDER_EMAIL, SENDER_PASSWORD = _smtp_settings()
+    SUPPORT_RECIPIENT = os.getenv("SUPPORT_RECIPIENT", "support@example.com")
 
     if not SENDER_EMAIL or not SENDER_PASSWORD:
         st.error(
-            "System email is not configured. Please contact support directly at support@opus.rs."
+            f"System email is not configured. Please contact support directly at {SUPPORT_RECIPIENT}."
         )
         return False
 
@@ -181,14 +192,11 @@ def send_welcome_comms(user_data):
     Handles real SMTP email delivery and returns Telegram link if applicable.
     """
     # 1. Credentials from .env
-    SMTP_SERVER = "smtp.gmail.com"
-    SMTP_PORT = 587
-    SENDER_EMAIL = os.getenv("SMTP_USER")
-    SENDER_PASSWORD = os.getenv("SMTP_PASS")
+    SMTP_SERVER, SMTP_PORT, SENDER_EMAIL, SENDER_PASSWORD = _smtp_settings()
 
     # 2. Build the Telegram Deep Link
     # Note: Use your actual bot handle here
-    bot_handle = "BaneTest_Bot"
+    bot_handle = _bot_handle()
     reporting_roles = ["Employee", "Gas Station Supervisor"]
 
     tg_link = None
@@ -207,7 +215,7 @@ def send_welcome_comms(user_data):
     Your account has been successfully created in the GentStation Opus ERP system.
 
     --- YOUR ACCESS DETAILS ---
-    Login URL: https://gentstation-erp.streamlit.app
+    Login URL: {_login_url()}
     Username: {user_data['email']}
     Temporary Password: {user_data['password_plain']}
     ---------------------------
@@ -272,10 +280,7 @@ def send_ai_report_email(conn, station_id: int, report_data: dict):
     manager_email, station_name = manager_query
 
     # 2. Credentials from .env
-    SMTP_SERVER = "smtp.gmail.com"
-    SMTP_PORT = 587
-    SENDER_EMAIL = os.getenv("SMTP_USER")
-    SENDER_PASSWORD = os.getenv("SMTP_PASS")
+    SMTP_SERVER, SMTP_PORT, SENDER_EMAIL, SENDER_PASSWORD = _smtp_settings()
 
     if not SENDER_EMAIL or not SENDER_PASSWORD:
         logger.debug("SMTP credentials missing. AI report email skipped.")
@@ -377,7 +382,7 @@ def send_password_reset_email(conn, email: str):
 
     # Bot handle (matches core/bot_worker.py)
     bot_handle = os.getenv(
-        "TELEGRAM_BOT_HANDLE", "BaneTest_Bot"
+        "TELEGRAM_BOT_HANDLE", "your_bot_username"
     )  # Ensure this matches your bot's username
     reporting_roles = ["Employee", "Gas Station Supervisor"]
 
@@ -428,10 +433,7 @@ def send_password_reset_email(conn, email: str):
         return
 
     # 4. Send the email
-    SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
-    SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
-    SENDER_EMAIL = os.getenv("SMTP_USER")
-    SENDER_PASSWORD = os.getenv("SMTP_PASS")
+    SMTP_SERVER, SMTP_PORT, SENDER_EMAIL, SENDER_PASSWORD = _smtp_settings()
 
     if not SENDER_EMAIL or not SENDER_PASSWORD:
         st.error("SMTP service not configured. Cannot send reset email.")
@@ -453,7 +455,7 @@ def send_password_reset_email(conn, email: str):
             <p>A password reset was requested for your account.</p>
 
             <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0;">
-                <p><strong>Login URL:</strong> <a href="https://gentstation-erp.streamlit.app">https://gentstation-erp.streamlit.app</a></p>
+                <p><strong>Login URL:</strong> <a href="{_login_url()}">{_login_url()}</a></p>
                 <p><strong>Username:</strong> {email}</p>
                 <p><strong>New Temporary Password:</strong> <code style="background: #e0e0e0; padding: 4px 8px; border-radius: 4px; font-size: 1.1em;">{new_pw}</code></p>
             </div>

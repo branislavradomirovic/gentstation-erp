@@ -1,0 +1,86 @@
+services:
+  - type: web
+    name: gentstationai-web
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    region: frankfurt
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: gentstationai-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: gentstationai-redis
+          property: connectionString
+      - key: RUN_SCHEMA_MIGRATIONS_ON_STARTUP
+        value: "1"
+      - key: STRICT_SCHEMA_INIT
+        value: "1"
+      - key: AUTO_START_BACKGROUND_WORKERS
+        value: "0"
+      - key: AUTO_START_TELEGRAM_BOT
+        value: "0"
+      - key: AUTO_START_AI_WORKER
+        value: "0"
+
+  - type: worker
+    name: gentstationai-ai-worker
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerCommand: python -m core.ai_worker
+    plan: starter
+    region: frankfurt
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: gentstationai-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: gentstationai-redis
+          property: connectionString
+      - key: SKIP_SCHEMA_INIT
+        value: "1"
+
+  - type: worker
+    name: gentstationai-telegram-worker
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerCommand: python -m core.bot_worker
+    plan: starter
+    region: frankfurt
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: gentstationai-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: gentstationai-redis
+          property: connectionString
+      - key: SKIP_SCHEMA_INIT
+        value: "1"
+
+  - type: keyvalue
+    name: gentstationai-redis
+    plan: starter
+    region: frankfurt
+    ipAllowList: []
+
+databases:
+  - name: gentstationai-postgres
+    databaseName: gentstation
+    user: gentstation
+    plan: starter
+    region: frankfurt

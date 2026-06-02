@@ -117,7 +117,7 @@ def start_background_workers():
     def _env_bool(name: str, default: str = "1") -> bool:
         return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
-    default_worker_start = "0" if os.getenv("HF_SPACE_ID") else "1"
+    default_worker_start = os.getenv("AUTO_START_BACKGROUND_WORKERS_DEFAULT", "0")
     if not _env_bool("AUTO_START_BACKGROUND_WORKERS", default_worker_start):
         logger.info(
             "AUTO_START_BACKGROUND_WORKERS is disabled. Skipping worker startup."
@@ -239,11 +239,10 @@ if st.session_state.get("dark_mode"):
     )
 
 # Core imports
-from core.database import get_connection, ensure_schema
+from core.database import get_connection
 from core.auth import (
     login_user_streamlit,
     logout_user_streamlit,
-    hash_password as hash_password_bcrypt,
 )
 from core.session import validate_session_token
 from core.activity_logger import log_activity
@@ -449,8 +448,15 @@ def run_boot_sequence():
     return _conn
 
 
+def ensure_runtime_dirs():
+    """Create local runtime directories when they are missing."""
+    for name in ("uploads", "downloads"):
+        Path(name).mkdir(parents=True, exist_ok=True)
+
+
 conn = None
 try:
+    ensure_runtime_dirs()
     # If we are starting fresh, show the boot sequence.
     # Once booted or logged in, we bypass the sequence for snappier navigation.
     if "user_id" not in st.session_state and "boot_complete" not in st.session_state:

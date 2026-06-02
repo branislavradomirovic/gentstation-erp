@@ -333,7 +333,7 @@ def _render_screenshot_card(image_path: Path, caption: str):
             ">
                 <strong>{caption}</strong><br><br>
                 Screenshot not found yet.<br>
-                Drop a PNG or JPG into <code>assets/help_screenshots</code> with the matching filename.
+                Add a PNG or JPG into <code>assets/</code> with the matching filename if you want a visual guide here.
             </div>
             """,
             unsafe_allow_html=True,
@@ -368,7 +368,7 @@ def _render_topic(topic):
 def _render_asset_gallery():
     st.markdown("### Asset Gallery")
     st.caption(
-        "These are the actual screenshots already stored in the `assets/` folder."
+        "If matching screenshots are present in `assets/`, they appear here automatically."
     )
     gallery_files = [
         ("LogIn.png", "Login screen"),

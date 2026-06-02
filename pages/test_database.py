@@ -5,7 +5,10 @@ from sqlalchemy.orm import sessionmaker
 from core.models import Base, Region, Station
 
 # Use a separate test database from environment or default
-TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL", "postgresql://gentstation_user:secure_password@localhost:5432/gentstation_test") # pragma: allowlist secret
+TEST_DATABASE_URL = os.getenv(
+    "TEST_DATABASE_URL",
+    "postgresql://gentstation_user:change_me_for_local_dev@localhost:5432/gentstation_test",
+)  # pragma: allowlist secret
 
 @pytest.fixture(scope="module")
 def engine():

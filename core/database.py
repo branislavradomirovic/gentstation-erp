@@ -27,7 +27,7 @@ DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_PORT = int(os.getenv("DB_PORT", 5432))
 DB_NAME = os.getenv("DB_NAME", "gentstation")
 DB_USER = os.getenv("DB_USER", "gentstation_user")
-DB_PASSWORD = os.getenv("DB_PASSWORD", "secure_password")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "change_me_for_local_dev")
 DB_SSLMODE = os.getenv("DB_SSLMODE")
 
 DATABASE_URL = (
@@ -47,16 +47,17 @@ SLOW_QUERY_THRESHOLD = float(os.getenv("DB_SLOW_QUERY_THRESHOLD", "1.0"))
 
 
 def _assert_safe_database_config():
-    production_like = bool(os.getenv("HF_SPACE_ID")) or os.getenv(
-        "APP_ENV", ""
-    ).strip().lower() in {"production", "prod"}
+    production_like = os.getenv("APP_ENV", "").strip().lower() in {
+        "production",
+        "prod",
+    }
     if not production_like:
         return
 
     if not DATABASE_URL and DB_PASSWORD in {"", "secure_password", "change_me_for_local_dev"}:
         raise RuntimeError(
             "Production database credentials are not configured. Set DATABASE_URL "
-            "or provide DB_HOST/DB_USER/DB_PASSWORD as Hugging Face Space secrets."
+            "or provide DB_HOST/DB_USER/DB_PASSWORD as real production secrets."
         )
 
 
@@ -627,9 +628,6 @@ def ensure_schema(conn):
             EXECUTE FUNCTION enforce_user_assignment_integrity();
             """
         )
-
-        # Cleanup: Remove the old employees table if it still exists
-        cursor.execute("DROP TABLE IF EXISTS employees CASCADE;")
 
         # Sessions table
         cursor.execute(
