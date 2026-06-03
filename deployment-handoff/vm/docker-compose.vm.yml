@@ -1,0 +1,179 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: gentstation-postgres
+    environment:
+      POSTGRES_DB: ${DB_NAME:-gentstation}
+      POSTGRES_USER: ${DB_USER:-gentstation_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-change_me_vm_password}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8"
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../../init_db.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-gentstation_user} -d ${DB_NAME:-gentstation}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: gentstation-redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  app:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: gentstation-app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-gentstation}
+      DB_USER: ${DB_USER:-gentstation_user}
+      DB_PASSWORD: ${DB_PASSWORD:-change_me_vm_password}
+      APP_ENV: production
+      RUN_SCHEMA_MIGRATIONS_ON_STARTUP: "1"
+      STRICT_SCHEMA_INIT: "1"
+      REDIS_URL: redis://redis:6379/0
+      AUTO_START_BACKGROUND_WORKERS: "0"
+      AUTO_START_TELEGRAM_BOT: "0"
+      AUTO_START_AI_WORKER: "0"
+      AUTO_START_REPORT_SCHEDULER: "0"
+      INITIAL_ADMIN_USERNAME: ${INITIAL_ADMIN_USERNAME:-admin}
+      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-}
+      INITIAL_ADMIN_EMAIL: ${INITIAL_ADMIN_EMAIL:-admin@example.com}
+      APP_LOGIN_URL: ${APP_LOGIN_URL:-http://localhost:8501}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-bakllava:latest}
+      OLLAMA_VISION_MODEL: ${OLLAMA_VISION_MODEL:-bakllava:latest}
+      OLLAMA_LOCAL_ONLY: ${OLLAMA_LOCAL_ONLY:-1}
+      VIDEO_FRAME_SAMPLES: ${VIDEO_FRAME_SAMPLES:-6}
+      VIDEO_MAX_FRAME_DIMENSION: ${VIDEO_MAX_FRAME_DIMENSION:-768}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_BOT_URL: ${TELEGRAM_BOT_URL:-}
+      TELEGRAM_BOT_HANDLE: ${TELEGRAM_BOT_HANDLE:-}
+      SMTP_SERVER: ${SMTP_SERVER:-smtp.gmail.com}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SENDER_EMAIL: ${SENDER_EMAIL:-}
+      MANAGER_EMAIL: ${MANAGER_EMAIL:-admin@example.com}
+      SUPPORT_RECIPIENT: ${SUPPORT_RECIPIENT:-support@example.com}
+      STREAMLIT_SERVER_PORT: 8501
+      STREAMLIT_SERVER_ADDRESS: 0.0.0.0
+      STREAMLIT_BROWSER_GATHERUSAGESTATS: "false"
+    ports:
+      - "${APP_PORT:-8501}:8501"
+    volumes:
+      - ../../uploads:/home/user/app/uploads
+      - ../../downloads:/home/user/app/downloads
+    restart: unless-stopped
+
+  ai-worker:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: gentstation-ai-worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-gentstation}
+      DB_USER: ${DB_USER:-gentstation_user}
+      DB_PASSWORD: ${DB_PASSWORD:-change_me_vm_password}
+      APP_ENV: production
+      REDIS_URL: redis://redis:6379/0
+      SKIP_SCHEMA_INIT: "1"
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-bakllava:latest}
+      OLLAMA_VISION_MODEL: ${OLLAMA_VISION_MODEL:-bakllava:latest}
+      OLLAMA_LOCAL_ONLY: ${OLLAMA_LOCAL_ONLY:-1}
+      VIDEO_FRAME_SAMPLES: ${VIDEO_FRAME_SAMPLES:-6}
+      VIDEO_MAX_FRAME_DIMENSION: ${VIDEO_MAX_FRAME_DIMENSION:-768}
+    volumes:
+      - ../../uploads:/home/user/app/uploads
+      - ../../downloads:/home/user/app/downloads
+    command: ["python", "-m", "core.ai_worker"]
+    restart: unless-stopped
+
+  telegram-worker:
+    profiles: ["telegram"]
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: gentstation-telegram-worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-gentstation}
+      DB_USER: ${DB_USER:-gentstation_user}
+      DB_PASSWORD: ${DB_PASSWORD:-change_me_vm_password}
+      APP_ENV: production
+      REDIS_URL: redis://redis:6379/0
+      SKIP_SCHEMA_INIT: "1"
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_BOT_URL: ${TELEGRAM_BOT_URL:-}
+      TELEGRAM_BOT_HANDLE: ${TELEGRAM_BOT_HANDLE:-}
+      BOT_MODE: ${BOT_MODE:-bot}
+    volumes:
+      - ../../uploads:/home/user/app/uploads
+      - ../../downloads:/home/user/app/downloads
+    command: ["python", "-m", "core.bot_worker"]
+    restart: unless-stopped
+
+  report-scheduler:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: gentstation-report-scheduler
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-gentstation}
+      DB_USER: ${DB_USER:-gentstation_user}
+      DB_PASSWORD: ${DB_PASSWORD:-change_me_vm_password}
+      APP_ENV: production
+      REDIS_URL: redis://redis:6379/0
+      SKIP_SCHEMA_INIT: "1"
+    volumes:
+      - ../../uploads:/home/user/app/uploads
+      - ../../downloads:/home/user/app/downloads
+    command: ["python", "-m", "core.report_scheduler"]
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
