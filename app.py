@@ -738,11 +738,17 @@ def run_boot_sequence():
     db_status.info(f"⏳ Connecting to PostgreSQL at `{DB_HOST}`...")
 
     def db_retry_callback(attempt, total, remaining, error):
+        production_hint = (
+            "💡 *Render deployment: verify the managed Postgres connection string is attached to `DATABASE_URL`.*"
+            if os.getenv("APP_ENV", "").strip().lower() in {"production", "prod"}
+            or os.getenv("RENDER_SERVICE_ID")
+            else "💡 *Reminder: Ensure PostgreSQL is running (e.g., `docker compose up -d postgres`) before starting the app.*"
+        )
         db_status.warning(
             f"⚠️ **Database connection attempt {attempt}/{total} failed.**\n\n"
             f"Retrying in **{remaining}s**...\n\n"
             f"**Current Error:** `{error}`\n\n"
-            "💡 *Reminder: Ensure PostgreSQL is running (e.g., `docker compose up -d postgres`) before starting the app.*"
+            f"{production_hint}"
         )
 
     try:

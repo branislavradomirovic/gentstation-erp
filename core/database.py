@@ -20,7 +20,16 @@ from psycopg2 import sql
 from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
 
-load_dotenv()
+
+def _is_production_like_env() -> bool:
+    app_env = os.getenv("APP_ENV", "").strip().lower()
+    render_flag = os.getenv("RENDER", "").strip().lower()
+    render_service = os.getenv("RENDER_SERVICE_ID", "").strip()
+    return app_env in {"production", "prod"} or render_flag in {"1", "true", "yes", "on"} or bool(render_service)
+
+
+if not _is_production_like_env():
+    load_dotenv()
 
 # Database configuration
 DB_HOST = os.getenv("DB_HOST", "localhost")
@@ -47,17 +56,15 @@ SLOW_QUERY_THRESHOLD = float(os.getenv("DB_SLOW_QUERY_THRESHOLD", "1.0"))
 
 
 def _assert_safe_database_config():
-    production_like = os.getenv("APP_ENV", "").strip().lower() in {
-        "production",
-        "prod",
-    }
+    production_like = _is_production_like_env()
     if not production_like:
         return
 
-    if not DATABASE_URL and DB_PASSWORD in {"", "secure_password", "change_me_for_local_dev"}:
+    if not DATABASE_URL:
         raise RuntimeError(
-            "Production database credentials are not configured. Set DATABASE_URL "
-            "or provide DB_HOST/DB_USER/DB_PASSWORD as real production secrets."
+            "Production database configuration is incomplete. DATABASE_URL is missing. "
+            "This deployment will not fall back to localhost. In Render, attach the Postgres "
+            "database connection string to the DATABASE_URL environment variable."
         )
 
 
