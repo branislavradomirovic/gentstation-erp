@@ -22,28 +22,6 @@ PAGE_CONFIG = {
             "Employee",
         ],
     },
-    "Personal Dashboard": {
-        "id": "Personal Dashboard",
-        "icon": "🧭",
-        "roles": [
-            "General Manager",
-            "Region Manager",
-            "Gas Station Manager",
-            "Gas Station Supervisor",
-            "Employee",
-        ],
-    },
-    "Shifts": {
-        "id": "Shifts",
-        "icon": "🕒",
-        "roles": [
-            "General Manager",
-            "Region Manager",
-            "Gas Station Manager",
-            "Gas Station Supervisor",
-            "Employee",
-        ],
-    },
     "Regions": {
         "id": "Regions",
         "icon": "🌍",

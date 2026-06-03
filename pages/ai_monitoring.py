@@ -2,15 +2,11 @@ import streamlit as st
 import json
 import time
 import os
-import base64
 import signal
-import sys
-import subprocess
 import logging
 from pathlib import Path
 from contextlib import suppress
 import pandas as pd
-import requests
 from datetime import datetime
 
 try:
@@ -125,7 +121,7 @@ def render(conn):
     st.markdown("---")
 
     # --- New Real-Time Metrics Widget ---
-    st.subheader("⚡ Real-Time Worker Metrics")
+    st.subheader("⚡ Worker Heartbeat & Resources")
     m_col1, m_col2 = st.columns(2)
 
     def get_latest_metrics(worker_name):
@@ -151,6 +147,7 @@ def render(conn):
             c2.metric("Memory", f"{int(ai_mem)} MB")
             if ai_ts:
                 st.caption(f"Last sync: {ai_ts.strftime('%H:%M:%S')}")
+            st.caption("Idle workers normally show near-zero CPU between jobs.")
 
     with m_col2:
         with st.container(border=True):
@@ -288,14 +285,34 @@ def render(conn):
             conn,
         )
         if not latency_df.empty:
-            # Display a multiline chart grouped by model
-            chart_data = latency_df.pivot(
-                index="timestamp", columns="model_name", values="latency_seconds"
+            latency_df = latency_df.rename(
+                columns={
+                    "timestamp": "Timestamp",
+                    "latency_seconds": "Latency (s)",
+                    "model_name": "Model",
+                }
             )
+            latency_df = latency_df.sort_values("Timestamp")
             st.write("**Latency (seconds)**")
-            st.area_chart(chart_data)
+            st.line_chart(
+                latency_df.set_index("Timestamp")[["Latency (s)"]],
+                height=260,
+            )
+            summary_col1, summary_col2, summary_col3 = st.columns(3)
+            summary_col1.metric(
+                "Latest",
+                f"{float(latency_df['Latency (s)'].iloc[-1]):.2f}s",
+            )
+            summary_col2.metric(
+                "24h Average",
+                f"{float(latency_df['Latency (s)'].mean()):.2f}s",
+            )
+            summary_col3.metric(
+                "24h Peak",
+                f"{float(latency_df['Latency (s)'].max()):.2f}s",
+            )
             st.caption(
-                "Latency in seconds. Higher values indicate slower model response times."
+                "Latency in seconds for BakLLaVA inference. Higher values indicate slower model response times."
             )
         else:
             st.info(
@@ -369,9 +386,7 @@ def render(conn):
         except Exception as e:
             st.warning(f"Could not load processing volume: {e}")
 
-    # --- Infrastructure Services ---
     st.markdown("---")
-    st.subheader("📦 Infrastructure Services")
     stats = get_pool_stats()
     if stats:
         r_col2.success("✅ Database Health")
@@ -485,10 +500,3 @@ def render(conn):
     dcol2.metric("AI Last Signal", _age_text(ai_last_update_ts))
     dcol3.metric("Pending Tasks", pending_row[0] if pending_row else 0)
     dcol4.metric("Failed Tasks", failed_row[0] if failed_row else 0)
-
-    st.caption(
-        "💡 **Tip:** If videos are pending but AI Last Signal is old, check worker logs for Ollama connection errors."
-    )
-    st.code(
-        "pkill -f core/bot_worker.py && pkill -f core/ai_worker.py", language="bash"
-    )

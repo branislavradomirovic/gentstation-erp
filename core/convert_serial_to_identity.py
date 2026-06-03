@@ -11,7 +11,7 @@ import sqlalchemy as sa
 # List of tables that were created with SERIAL in ensure_schema
 TABLES_TO_CONVERT = [
     "regions", "stations", "users", "activity_logs", "submissions",
-    "employee_shifts", "ai_alerts", "redis_health_logs",
+    "ai_alerts", "redis_health_logs",
     "ai_inference_latency", "worker_health_logs", "slow_query_logs",
     "ai_jobs", "ai_reports"
 ]

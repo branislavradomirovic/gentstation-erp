@@ -1,409 +1,197 @@
-from pathlib import Path
-
 import streamlit as st
 
 from core.comm_service import send_support_email
 from ui.header import render_page_header
 
-HELP_IMAGE_DIR = Path(__file__).resolve().parents[1] / "assets"
-
 
 def _help_topics():
     return [
         {
-            "category": "Overview & submission",
+            "category": "Overview & Submission",
             "title": "Telegram Video Submission",
-            "summary": "Employees link their chat, send video clips, and the AI worker queues them for inspection.",
+            "summary": "Employees submit station videos through Telegram, and the AI worker processes them into operational reports.",
             "details": [
-                "Use the registration link sent by email to connect the Telegram chat to the employee record.",
-                "Send a video as either a Telegram video message or a file/document upload.",
-                "The bot stores the file, writes a new submission row, and marks it as pending for AI analysis.",
-                "Once the AI worker finishes, the results appear in AI Reports, the Dashboard, and any relevant alert feeds.",
+                "Link the employee record to Telegram before expecting uploads to be accepted.",
+                "Employees can send a video directly to the bot as a normal Telegram upload or document.",
+                "The system stores the media temporarily, creates a submission row, and sends it to the AI queue.",
+                "After processing finishes, the uploader receives a Telegram status reply and managers can review the result in AI Reports.",
             ],
             "tips": [
-                "If a video is not accepted, resend it as an MP4 file to avoid Telegram compression issues.",
-                "For the best results, keep clips short and focused on one station area at a time.",
-            ],
-            "screenshots": [
-                {"file": "LogIn.png", "label": "Application login screen"},
-                {
-                    "file": "Screenshot 2026-04-18 at 16.54.56.png",
-                    "label": "Employee directory and Telegram-linked profiles",
-                },
-                {
-                    "file": "Screenshot 2026-04-18 at 16.54.46.png",
-                    "label": "Station audit history and QR onboarding",
-                },
+                "Keep videos short and focused on one station area at a time for the most useful AI output.",
+                "If Telegram compresses the clip too heavily, resend it as a file upload instead of a chat video.",
             ],
         },
         {
-            "category": "Overview & submission",
+            "category": "Overview & Submission",
             "title": "Dashboard",
-            "summary": "The main landing page shows KPIs, station health, recent activity, and a quick view of open work.",
+            "summary": "Dashboard is the quickest way to understand network health, queue pressure, and where risk is building.",
             "details": [
-                "KPI cards summarize the most important numbers for the current session.",
-                "Regional and station status sections highlight where work is pending or where risk is building up.",
-                "The map and recent activity panels help managers spot changes without drilling into every module.",
-                "This is usually the best first stop after login because it gives the fastest operational snapshot.",
+                "Use the top metrics to understand network size, reporting volume, and current queue load.",
+                "Regional status highlights which parts of the network have the most pending work.",
+                "Merchandising and risk panels summarize operational quality without opening individual reports.",
+                "This should be the first page reviewed after login for a broad operational picture.",
             ],
             "tips": [
-                "Use Dashboard when you want a quick sense of whether the network is stable or under pressure.",
-                "If a metric looks wrong, jump to AI Reports or GM Dashboard to inspect the underlying data.",
-            ],
-            "screenshots": [
-                {
-                    "file": "Screenshot 2026-04-18 at 16.53.28.png",
-                    "label": "Dashboard KPI summary and station overview",
-                },
-                {
-                    "file": "Screenshot 2026-04-18 at 16.53.44.png",
-                    "label": "Dashboard map and operational layout",
-                },
-                {
-                    "file": "Screenshot 2026-04-18 at 16.54.26.png",
-                    "label": "Regional status and merchandising performance",
-                },
+                "Move to AI Reports when a dashboard number needs explanation.",
+                "Open Map View when you want to understand whether an issue is isolated or geographically clustered.",
             ],
         },
         {
-            "category": "Management Modules",
+            "category": "Network Administration",
             "title": "Regions",
-            "summary": "General Managers use Regions to model the organization and assign responsibility boundaries.",
+            "summary": "Regions define the business hierarchy used for permissions, reporting, and executive rollups.",
             "details": [
-                "Create regions for each operational territory the company manages.",
-                "Edit names, contact information, and ownership details as the organization changes.",
-                "Use region assignments to keep stations and managers grouped correctly.",
-                "The module is the foundation for reporting, access control, and executive rollups.",
+                "Create one region for each real operational territory.",
+                "Keep region ownership and contact details current so escalation paths stay accurate.",
+                "Regions control how station data rolls up into manager-facing views.",
             ],
             "tips": [
-                "Keep region names consistent and short so the rest of the app remains easy to scan.",
-                "Assign managers before adding stations if you want the hierarchy to stay clean from the start.",
-            ],
-            "screenshots": [
-                {
-                    "file": "Screenshot 2026-04-18 at 16.54.03.png",
-                    "label": "Region directory",
-                },
-                {
-                    "file": "Screenshot 2026-04-18 at 16.54.10.png",
-                    "label": "Edit or delete a region",
-                },
-                {
-                    "file": "Screenshot 2026-04-18 at 16.54.14.png",
-                    "label": "Stations in the selected region",
-                },
+                "Use concise region names so analytics and dropdowns stay easy to scan.",
+                "Assign region structure before bulk-loading stations whenever possible.",
             ],
         },
         {
-            "category": "Management Modules",
+            "category": "Network Administration",
             "title": "Stations",
-            "summary": "Stations stores the operational details for each site, including ownership, location, and QR onboarding.",
+            "summary": "Stations hold the core operational definition of each site, including category, location, and reporting context.",
             "details": [
-                "Add or edit station names, geographic coordinates, category, and regional assignment.",
-                "Use the station detail view to review historical AI submissions and audit the performance trail.",
-                "The QR code workflow helps employees connect quickly to the correct Telegram reporting bot.",
-                "A station can also be linked to a manager for email notifications and escalation routing.",
+                "Store the correct region, category, address, and map coordinates for each station.",
+                "Station detail views are the best place to review site-specific report history.",
+                "Managers use stations as the anchor point for alerts, reports, and escalation.",
             ],
             "tips": [
-                "Double-check coordinates so map views and risk overlays render in the right location.",
-                "The QR code is most useful when you are onboarding a new site or replacing a manager.",
-            ],
-            "screenshots": [
-                {
-                    "file": "Screenshot 2026-04-18 at 16.54.20.png",
-                    "label": "Stations management list",
-                },
-                {
-                    "file": "Screenshot 2026-04-18 at 16.54.37.png",
-                    "label": "Edit or delete station",
-                },
-                {
-                    "file": "Screenshot 2026-04-18 at 16.54.46.png",
-                    "label": "Station audit history and QR code",
-                },
+                "Verify map coordinates carefully, because location views depend on them.",
+                "Review a station's recent AI history before changing category or operational ownership.",
             ],
         },
         {
-            "category": "Management Modules",
+            "category": "Network Administration",
             "title": "Employees",
-            "summary": "Employees links personnel records to Telegram, station assignment, and reporting permissions.",
+            "summary": "Employees manages who can submit videos, who receives alerts, and which station each person represents.",
             "details": [
-                "Create a record for each employee and assign the correct role immediately.",
-                "When an employee is linked to Telegram, the bot can accept media from that chat and associate it with the correct station.",
-                "Password reset and access updates are centralized here so the user profile stays synchronized with the system account.",
-                "Use this module to control who can submit, view, or administer operational data.",
+                "Assign every employee to the correct role and station before activating reporting.",
+                "Keep Telegram linkage accurate so uploads and AI completion replies reach the right person.",
+                "This page is also where password resets and account activation are controlled.",
             ],
             "tips": [
-                "If someone changes station, update the employee record before the next reporting cycle starts.",
-                "Keeping email and Telegram fields accurate makes support and escalation much easier.",
-            ],
-            "screenshots": [  # This screenshot should be updated to reflect the unified 'users' table
-                {
-                    "file": "Screenshot 2026-04-18 at 16.54.56.png",
-                    "label": "Employees list and access state",
-                },
-                {
-                    "file": "Screenshot 2026-04-18 at 16.55.03.png",
-                    "label": "Edit or delete employee",
-                },
+                "If someone moves to a new station, update their assignment before the next reporting cycle.",
+                "Unlinked Telegram profiles are a common cause of failed intake or missing replies.",
             ],
         },
         {
-            "category": "Management Modules",
-            "title": "Shifts & Attendance",
-            "summary": "Shifts lets managers schedule coverage per station and lets employees clock in and out from the same place.",
-            "details": [
-                "Managers can create scheduled shifts for a specific station and employee.",
-                "Employees can clock in from their personal shift view when they start work and clock out when the shift ends.",
-                "Each shift record stores the planned window, actual clock-in/out times, and optional notes for handover or coverage.",
-                "Use this page whenever you need a clear coverage picture for a station or a personal work history for an employee.",
-            ],
-            "tips": [
-                "Create the planned shift before the workday starts so the clock-in record stays tied to the correct station.",
-                "If someone forgets to clock out, you can still audit the shift from the shift register.",
-            ],
-            "screenshots": [],
-        },
-        {
-            "category": "Dashboards & Reporting",
+            "category": "Dashboards & AI",
             "title": "Map View",
-            "summary": "The map shows where stations are located and helps managers spot geographic patterns at a glance.",
+            "summary": "Map View combines station geography with queue pressure and recent activity.",
             "details": [
-                "Color and marker state summarize operational status across the network.",
-                "Use the map to compare nearby stations, identify clusters, and understand regional spread.",
-                "The view is especially useful during incidents because it combines location context with operational urgency.",
+                "Station border color reflects workload pressure, while inner marker color reflects station category.",
+                "Use the map to see whether recent reporting spikes are isolated or regional.",
+                "Recent activity overlays help managers confirm that reporting is happening where expected.",
             ],
             "tips": [
-                "Zoom out for regional context, then zoom in to inspect a single station.",
-                "Use the map with AI Alerts to understand whether risk is isolated or spreading.",
-            ],
-            "screenshots": [
-                {
-                    "file": "Screenshot 2026-04-18 at 16.53.44.png",
-                    "label": "Station location map",
-                },
+                "Use this view during escalations when geography matters as much as score quality.",
+                "If a station is missing, confirm that coordinates were entered in the station record.",
             ],
         },
         {
-            "category": "Dashboards & Reporting",
+            "category": "Dashboards & AI",
             "title": "AI Reports",
-            "summary": "AI Reports is the inspection console for processed video submissions and score breakdowns.",
+            "summary": "AI Reports is the main review surface for queue status, report quality, risk scoring, and corrective actions.",
             "details": [
-                "Pending submissions appear in the queue until the worker finishes analysis.",
-                "Completed reports include the AI summary, numerical scores, and the JSON detail payload.",
-                "Failed submissions can be retried from the page if a temporary processing issue occurred.",
-                "Trend charts help managers see whether a station is improving or drifting over time.",
+                "The Queue tab shows what is pending, processing, inconsistent, or failed.",
+                "The Trends tab shows rolling risk patterns across stations.",
+                "Completed Reports expose executive summary, overall risk, hazards, improvement actions, and station/region/company risk context.",
+                "This is the primary page for turning uploaded footage into management decisions.",
             ],
             "tips": [
-                "Review AI Reports first when you want the raw evidence behind a dashboard metric.",
-                "The JSON payload is useful when you need to compare two reports field by field.",
-            ],
-            "screenshots": [
-                {
-                    "file": "Screenshot 2026-04-18 at 16.55.15.png",
-                    "label": "AI reports processing queue",
-                },
-                {
-                    "file": "Screenshot 2026-04-18 at 16.55.20.png",
-                    "label": "Retry failed submissions and trend charts",
-                },
+                "Use re-queue only for legitimate processing failures, not for normal completed rows.",
+                "Compare station risk with region and company risk to decide whether an issue is local or systemic.",
             ],
         },
         {
-            "category": "Dashboards & Reporting",
+            "category": "Dashboards & AI",
             "title": "AI Alerts",
-            "summary": "AI Alerts surfaces critical findings such as low scores, hazards, and station anomalies.",
+            "summary": "AI Alerts highlights the most urgent findings that need human attention.",
             "details": [
-                "Alerts are prioritized by severity so urgent issues stand out immediately.",
-                "The alert feed is the best place to track unresolved incidents and operational exceptions.",
-                "Alerts can be acknowledged or resolved depending on the operational workflow in use.",
+                "Alerts are designed to surface high-risk or abnormal station conditions quickly.",
+                "Managers can review, acknowledge, and resolve alerts as part of their operating routine.",
+                "The alert feed complements AI Reports by reducing the need to inspect every report manually.",
             ],
             "tips": [
-                "Use the alert feed after reviewing AI Reports if you need to act on something immediately.",
-                "Treat repeated alerts at the same station as a sign that process or training may need attention.",
-            ],
-            "screenshots": [
-                {
-                    "file": "Screenshot 2026-04-18 at 16.55.28.png",
-                    "label": "AI alerts and incidents",
-                },
+                "Repeated alerts at one station usually indicate a training or process problem, not a one-off event.",
+                "Open the related AI report before resolving an alert so the context is preserved.",
             ],
         },
         {
-            "category": "Dashboards & Reporting",
-            "title": "GM Dashboard",
-            "summary": "The executive dashboard combines station ranking, risk concentration, and alert summaries.",
+            "category": "Dashboards & AI",
+            "title": "AI Monitoring",
+            "summary": "AI Monitoring is the operational screen for worker health, throughput, and service diagnostics.",
             "details": [
-                "Risk ranking compares station outcomes so leaders can focus on the most exposed sites first.",
-                "The executive map highlights clusters of higher risk across the network.",
-                "Recent anomalies help the General Manager see where action is needed without reading every report.",
+                "Use this page to confirm the AI worker, Telegram bot, Redis, and AI service are alive.",
+                "It is the right place for deep operational troubleshooting when queue behavior looks wrong.",
+                "Managers should rely on this page during rollout, recovery, or production testing.",
             ],
             "tips": [
-                "Use GM Dashboard for leadership reviews, weekly status meetings, or escalations.",
-                "If a station jumps into the top risk bucket, open AI Reports immediately to inspect the cause.",
-            ],
-            "screenshots": [
-                {
-                    "file": "Screenshot 2026-04-18 at 16.55.35.png",
-                    "label": "Executive dashboard and KPI view",
-                },
-                {
-                    "file": "Screenshot 2026-04-18 at 16.55.39.png",
-                    "label": "Risk map and employee performance snapshot",
-                },
-                {
-                    "file": "Screenshot 2026-04-18 at 16.55.45.png",
-                    "label": "Employee performance snapshot and anomalies",
-                },
-            ],
-        },
-        {
-            "category": "System Administration",
-            "title": "Admin Users",
-            "summary": "Admin Users controls login accounts, lockouts, and maintenance-mode access.",
-            "details": [
-                "Create system-level logins for staff who need direct application access.",
-                "Deactivate, unlock, or reset access based on security policy and employment status.",
-                "Maintenance mode protects the system during upgrades or emergency work.",
-            ],
-            "tips": [
-                "Use the smallest number of admin accounts possible.",
-                "Review locked accounts before assuming a password issue.",
-            ],
-            "screenshots": [
-                {
-                    "file": "Screenshot 2026-04-18 at 16.55.58.png",
-                    "label": "Admin user management",
-                },
-            ],
-        },
-        {
-            "category": "System Administration",
-            "title": "Audit Log",
-            "summary": "Audit Log records who changed what and when so actions remain traceable.",
-            "details": [
-                "The log is designed for accountability and troubleshooting.",
-                "Use filters to find a specific user, action, or date range quickly.",
-                "When investigating an issue, pair the audit trail with AI Reports and settings history.",
-            ],
-            "tips": [
-                "Audit logs are most useful when you already know the time window or the user involved.",
-                "If you cannot find an action, check whether it was performed by a background worker instead of a human user.",
-            ],
-            "screenshots": [
-                {
-                    "file": "Screenshot 2026-04-18 at 16.56.03.png",
-                    "label": "System audit log",
-                },
+                "If uploads are not moving, check AI Monitoring before changing settings.",
+                "A healthy AI service with a stale worker usually points to process restart or deployment drift.",
             ],
         },
         {
             "category": "System Administration",
             "title": "Settings",
-            "summary": "Settings contains personal preferences plus live health indicators for the Telegram bot and AI worker.",
+            "summary": "Settings centralizes production-ready controls for service health, BakLLaVA runtime policy, categories, and retention.",
             "details": [
-                "Users can change password and theme preferences from this page.",
-                "The Telegram Bot and AI Worker status cards help you confirm the background services are alive.",
-                "Force AI Processing is useful when you want the worker to run immediately instead of waiting for the next cycle.",
+                "Use Settings for password updates, dark mode, service health review, AI runtime memory limits, and staffing defaults.",
+                "Station category administration lives here because it affects maps and reporting views across the app.",
+                "Storage controls are intentionally limited to retention and visibility, keeping the page operational rather than technical.",
             ],
             "tips": [
-                "If the bot status looks stale, restart the app and ensure only one polling process is running.",
-                "When debugging, Settings is the fastest place to confirm whether the workers are actually online.",
+                "If BakLLaVA is marked degraded, confirm the configured model exists in Ollama before testing uploads.",
+                "This page is no longer a development toolbox; use AI Monitoring for deeper diagnostics.",
             ],
-            "screenshots": [
-                {"file": "LogIn.png", "label": "Login and system status"},
+        },
+        {
+            "category": "System Administration",
+            "title": "Admin Users & Audit Log",
+            "summary": "These pages support security, accountability, and controlled operations.",
+            "details": [
+                "Admin Users controls account activation, lockouts, and maintenance-mode access.",
+                "Audit Log provides a trace of key user actions and operational changes.",
+                "Together, they give administrators the controls needed to manage access and understand what changed in the system.",
+            ],
+            "tips": [
+                "Keep the number of high-privilege accounts small.",
+                "Use Audit Log whenever you need to understand whether an issue came from a user action or an automated process.",
             ],
         },
     ]
 
 
-def _render_screenshot_card(image_path: Path, caption: str):
-    if image_path.exists():
-        st.image(str(image_path))
-        st.caption(caption)
-    else:
-        st.markdown(
-            f"""
-            <div style="
-                border:1px dashed rgba(120,130,150,0.35);
-                border-radius:14px;
-                padding:1rem;
-                min-height:180px;
-                background: linear-gradient(180deg, rgba(245,247,252,0.95), rgba(255,255,255,1));
-            ">
-                <strong>{caption}</strong><br><br>
-                Screenshot not found yet.<br>
-                Add a PNG or JPG into <code>assets/</code> with the matching filename if you want a visual guide here.
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-
 def _render_topic(topic):
     st.markdown(f"### {topic['title']}")
     st.caption(topic["summary"])
-
-    col_text, col_media = st.columns([1.4, 1.0], gap="large")
-    with col_text:
-        st.markdown("**How it works**")
-        for item in topic["details"]:
-            st.markdown(f"- {item}")
-
-        st.markdown("**Practical tips**")
-        for tip in topic["tips"]:
-            st.markdown(f"- {tip}")
-
-    with col_media:
-        st.markdown("**Visual guide**")
-        if topic["screenshots"]:
-            for shot in topic["screenshots"]:
-                image_path = HELP_IMAGE_DIR / shot["file"]
-                _render_screenshot_card(image_path, shot["label"])
-                st.write("")
-        else:
-            st.info("No screenshot captured for this workflow yet.")
-
-
-def _render_asset_gallery():
-    st.markdown("### Asset Gallery")
-    st.caption(
-        "If matching screenshots are present in `assets/`, they appear here automatically."
-    )
-    gallery_files = [
-        ("LogIn.png", "Login screen"),
-        ("Screenshot 2026-04-18 at 16.53.28.png", "Dashboard overview"),
-        ("Screenshot 2026-04-18 at 16.53.44.png", "Map view"),
-        ("Screenshot 2026-04-18 at 16.54.03.png", "Regions"),
-        ("Screenshot 2026-04-18 at 16.54.20.png", "Stations"),
-        ("Screenshot 2026-04-18 at 16.54.56.png", "Employees"),
-        ("Screenshot 2026-04-18 at 16.55.15.png", "AI reports"),
-        ("Screenshot 2026-04-18 at 16.55.28.png", "AI alerts"),
-        ("Screenshot 2026-04-18 at 16.55.35.png", "GM dashboard"),
-        ("Screenshot 2026-04-18 at 16.55.58.png", "Admin users"),
-        ("Screenshot 2026-04-18 at 16.56.03.png", "Audit log"),
-    ]
-    cols = st.columns(2)
-    for idx, (filename, caption) in enumerate(gallery_files):
-        with cols[idx % 2]:
-            _render_screenshot_card(HELP_IMAGE_DIR / filename, caption)
-            st.write("")
+    st.markdown("**How It Works**")
+    for item in topic["details"]:
+        st.markdown(f"- {item}")
+    st.markdown("**Practical Tips**")
+    for tip in topic["tips"]:
+        st.markdown(f"- {tip}")
 
 
 def render(conn):
     render_page_header("❓ Help & Documentation")
     st.markdown(
-        "Welcome to the **GentStation Opus ERP** help center. This page is organized around real workflows so you can move from setup to daily operations without hunting through the app."
+        '<div class="gs-page-intro">This guide is written for the current production-focused application: video intake through Telegram, AI assessment with BakLLaVA, and manager review through reports, alerts, and dashboards.</div>',
+        unsafe_allow_html=True,
     )
 
     topics = _help_topics()
     search_query = st.text_input(
-        "🔍 Search Documentation",
-        placeholder="Type keywords like telegram, risk, settings, or stations",
+        "Search Help",
+        placeholder="Type keywords like telegram, station, risk, alert, or settings",
     ).strip()
 
     if search_query:
-        st.subheader(f"Search results for '{search_query}'")
+        st.markdown("#### Search Results")
         found_any = False
         for item in topics:
             haystack = " ".join(
@@ -417,29 +205,35 @@ def render(conn):
             )
             if search_query.lower() in haystack.lower():
                 found_any = True
-                with st.expander(
-                    f"{item['category']} > {item['title']}", expanded=True
-                ):
+                with st.expander(f"{item['category']} • {item['title']}", expanded=True):
                     _render_topic(item)
-
         if not found_any:
-            st.warning("No matching documentation found.")
-            if st.button("Clear Search", width="stretch"):
-                st.rerun()
+            st.warning("No matching help topic was found.")
         return
 
     tab_names = [
-        "Overview & submission",
-        "Management Modules",
-        "Dashboards & Reporting",
+        "Overview & Submission",
+        "Network Administration",
+        "Dashboards & AI",
         "System Administration",
         "Contact Support",
     ]
-    target_tab_name = st.session_state.pop("help_target_tab", tab_names[0])
-    default_index = (
-        tab_names.index(target_tab_name) if target_tab_name in tab_names else 0
-    )
+    category_map = {
+        "Overview & Submission": "Overview & Submission",
+        "Network Administration": "Network Administration",
+        "Dashboards & AI": "Dashboards & AI",
+        "System Administration": "System Administration",
+    }
 
+    target_tab_name = st.session_state.pop("help_target_tab", "Overview & Submission")
+    target_tab_name = {
+        "Overview & submission": "Overview & Submission",
+        "Management Modules": "Network Administration",
+        "Dashboards & Reporting": "Dashboards & AI",
+        "System Administration": "System Administration",
+    }.get(target_tab_name, target_tab_name)
+
+    default_index = tab_names.index(target_tab_name) if target_tab_name in tab_names else 0
     selected_tab = st.radio(
         "Help Topics",
         options=tab_names,
@@ -451,99 +245,62 @@ def render(conn):
     st.divider()
 
     if selected_tab == "Contact Support":
-        st.header("Contact & Support")
+        st.markdown("#### Support Guidance")
         st.markdown(
-            """
-            If something looks wrong or a workflow is not behaving as expected, send the support team a short message with:
-
-            - the page you were using,
-            - what you expected to happen,
-            - what actually happened,
-            - and a screenshot if available.
-            """
+            "When reporting a problem, include the page name, what you expected to happen, what actually happened, and whether the issue affects uploads, AI scoring, or visibility in reports."
         )
-        st.subheader("Support details")
-        st.markdown(
-            """
-            **Address:**
-            Nikolajevska 2
-            Novi Sad, 21000
-            Serbia
-
-            **Customer Care:**
-            office@opus.rs
-
-            **Support:**
-            support@opus.rs
-
-            **General Inquiries:**
-            +381641323706
-            """
-        )
+        contact_col1, contact_col2 = st.columns(2, gap="large")
+        with contact_col1:
+            st.markdown("**Support Contacts**")
+            st.markdown(
+                "- Office: `office@opus.rs`\n- Support: `support@opus.rs`\n- General inquiries: `+381641323706`"
+            )
+        with contact_col2:
+            st.markdown("**Address**")
+            st.markdown("Nikolajevska 2\n\nNovi Sad, 21000\n\nSerbia")
 
         st.divider()
-        st.subheader("Send a Support Request")
+        st.markdown("#### Send a Support Request")
         with st.form("support_form", clear_on_submit=True):
             subject = st.text_input("Subject")
-            message = st.text_area("Your Message", height=160)
-
+            message = st.text_area("Message", height=160)
             if st.form_submit_button("Send Email to Support", width="stretch"):
                 if not subject or not message:
-                    st.error("Please provide a subject and a message.")
+                    st.error("Please provide both a subject and a message.")
                 else:
                     current_user = st.session_state.get("username", "Unknown User")
                     if send_support_email(
                         from_user=current_user, subject=subject, message=message
                     ):
-                        st.success(
-                            "Your message has been sent. Our support team will get back to you shortly."
-                        )
-                        st.toast("Support request sent!", icon="✅")
+                        st.success("Your support request has been sent.")
         return
 
-    with st.expander("Screenshot Gallery", expanded=False):
-        _render_asset_gallery()
+    filtered_items = [
+        item for item in topics if item["category"] == category_map[selected_tab]
+    ]
 
-    filtered_items = [item for item in topics if item["category"] == selected_tab]
-
-    if selected_tab == "Overview & submission":
-        st.header("Getting Started")
+    if selected_tab == "Overview & Submission":
+        st.markdown("#### Operating Flow")
         st.markdown(
-            "This section explains how the Telegram bot, dashboard, and AI workers fit together. It is the fastest way to understand the end-to-end reporting flow."
+            "Start here if you want to understand how video moves from Telegram intake into AI scoring and management review."
         )
-    elif selected_tab == "Management Modules":
-        st.header("Operational Management")
+    elif selected_tab == "Network Administration":
+        st.markdown("#### Network Setup")
         st.markdown(
-            "Use these modules to maintain the company structure, stations, and employee access."
+            "These topics explain how to maintain the core business structure that supports AI reporting."
         )
-    elif selected_tab == "Dashboards & Reporting":
-        st.header("Analytics & Insights")
+    elif selected_tab == "Dashboards & AI":
+        st.markdown("#### Analysis & Action")
         st.markdown(
-            "These pages help managers interpret the AI output, spot risk, and act on anomalies."
+            "These pages turn uploads into operational insight, risk scoring, and actionable follow-up."
         )
     elif selected_tab == "System Administration":
-        st.header("Administration")
+        st.markdown("#### Administration")
         st.markdown(
-            "Use these tools when you need to manage access, review the audit trail, or check service health."
+            "These controls are for service readiness, access governance, and production operations."
         )
 
-    st.markdown("### Visual overview")
-    gallery_topics = filtered_items[:2]
-    if gallery_topics:
-        gallery_cols = st.columns(len(gallery_topics))
-        for col, topic in zip(gallery_cols, gallery_topics):
-            with col:
-                first_shot = topic["screenshots"][0] if topic["screenshots"] else None
-                if first_shot:
-                    _render_screenshot_card(
-                        HELP_IMAGE_DIR / first_shot["file"], first_shot["label"]
-                    )
-                else:
-                    st.info("No screenshot configured for this section yet.")
-
     st.divider()
-    for item in filtered_items:
-        with st.expander(
-            item["title"], expanded=selected_tab == "Overview & submission"
-        ):
+    for index, item in enumerate(filtered_items):
+        with st.expander(item["title"], expanded=index == 0):
             _render_topic(item)

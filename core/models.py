@@ -11,24 +11,27 @@ class Region(Base):
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
-    stations = relationship("Station", back_populates="region")
+class StationCategory(Base):
+    __tablename__ = "station_categories"
+    id = Column(Integer, Identity(always=False), primary_key=True)
+    name = Column(String(255), unique=True, nullable=False)
+    color = Column(String(50), nullable=False, default="#808080")
+    description = Column(Text)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
 class Station(Base):
     __tablename__ = "stations"
     id = Column(Integer, Identity(always=False), primary_key=True)
     name = Column(String(255), nullable=False)
-    region_id = Column(Integer, ForeignKey("regions.id", ondelete="SET NULL"))
+    region_id = Column(Integer, ForeignKey("regions.id", ondelete="CASCADE"))
     physical_address = Column(Text)
     email = Column(String(255))
     lat = Column(Numeric(10, 8))
     lon = Column(Numeric(11, 8))
-    category = Column(String(100))
+    category_id = Column(Integer, ForeignKey("station_categories.id", ondelete="CASCADE"))
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
-
-    region = relationship("Region", back_populates="stations")
-    users = relationship("User", back_populates="station")
-    submissions = relationship(lambda: Submission, back_populates="station")
 
 class User(Base):
     __tablename__ = "users"
@@ -40,8 +43,8 @@ class User(Base):
     is_active = Column(Boolean, default=True)
     name = Column(String(255))
     surname = Column(String(255))
-    station_id = Column(Integer, ForeignKey("stations.id", ondelete="SET NULL"))
-    region_id = Column(Integer, ForeignKey("regions.id", ondelete="SET NULL"))
+    station_id = Column(Integer, ForeignKey("stations.id", ondelete="CASCADE"))
+    region_id = Column(Integer, ForeignKey("regions.id", ondelete="CASCADE"))
     telegram_chat_id = Column(String(255))
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
@@ -50,14 +53,11 @@ class User(Base):
     dark_mode_enabled = Column(Boolean, default=False)
     force_password_change = Column(Boolean, default=False)
 
-    station = relationship("Station", back_populates="users")
-    submissions = relationship(lambda: Submission, back_populates="user")
-
 class Submission(Base):
     __tablename__ = "submissions"
     id = Column(Integer, Identity(always=False), primary_key=True)
     station_id = Column(Integer, ForeignKey("stations.id", ondelete="CASCADE"))
-    employee_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
+    employee_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"))
     video_path = Column(Text)
     audio_path = Column(Text)
     role = Column(String(100))
@@ -72,9 +72,6 @@ class Submission(Base):
     error_message = Column(Text)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
-
-    station = relationship(lambda: Station, back_populates="submissions")
-    user = relationship(lambda: User, back_populates="submissions")
 
 class SlowQueryLog(Base):
     __tablename__ = "slow_query_logs"
@@ -112,4 +109,33 @@ class AIInferenceLatency(Base):
     timestamp = Column(DateTime, server_default=func.now())
     model_name = Column(String(255))
     latency_seconds = Column(Numeric(10, 2))
-    submission_id = Column(Integer, ForeignKey("submissions.id", ondelete="SET NULL"))
+    submission_id = Column(Integer, ForeignKey("submissions.id", ondelete="CASCADE"))
+
+class AIAlert(Base):
+    __tablename__ = "ai_alerts"
+    id = Column(Integer, Identity(always=False), primary_key=True)
+    station_id = Column(Integer, ForeignKey("stations.id", ondelete="CASCADE"))
+    severity = Column(String(50))
+    message = Column(Text)
+    status = Column(String(50), default='new')
+    created_at = Column(DateTime, server_default=func.now())
+    resolved_at = Column(DateTime)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+# Define relationships after all dependent classes exist so mapper
+# configuration is resilient during Streamlit reloads.
+Region.stations = relationship("Station", back_populates="region", cascade="all, delete-orphan")
+Station.region = relationship("Region", back_populates="stations")
+Station.users = relationship("User", back_populates="station", cascade="all, delete-orphan")
+Station.submissions = relationship("Submission", back_populates="station", cascade="all, delete-orphan")
+Region.users = relationship("User", back_populates="region", cascade="all, delete-orphan")
+User.region = relationship("Region", back_populates="users")
+User.station = relationship("Station", back_populates="users")
+User.submissions = relationship("Submission", back_populates="user", cascade="all, delete-orphan")
+Submission.station = relationship("Station", back_populates="submissions")
+Submission.user = relationship("User", back_populates="submissions")
+StationCategory.stations = relationship("Station", back_populates="category", cascade="all, delete-orphan")
+Station.category = relationship("StationCategory", back_populates="stations")
+Station.alerts = relationship("AIAlert", back_populates="station", cascade="all, delete-orphan")
+AIAlert.station = relationship("Station", back_populates="alerts")

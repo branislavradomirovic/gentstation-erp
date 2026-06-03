@@ -1,14 +1,25 @@
-import os
 import streamlit as st
 import pandas as pd
 import folium
 from streamlit_folium import st_folium
 from ui.header import render_page_header
-from core.activity_logger import log_activity
-from core.database import test_redis_connection, DB_HOST, fetch_df
-from core.video_processor import test_ollama_connection, OLLAMA_BASE_URL
+from core.database import fetch_df, get_schema_readiness
 from ai_engine.risk_engine import run_risk_cycle
-from core.comm_service import test_smtp_connection
+
+
+def _resolve_column(df: pd.DataFrame, *candidates: str):
+    if df is None or df.empty:
+        return None
+    direct = set(df.columns)
+    for name in candidates:
+        if name in direct:
+            return name
+    lowered = {str(col).lower(): col for col in df.columns}
+    for name in candidates:
+        match = lowered.get(str(name).lower())
+        if match is not None:
+            return match
+    return None
 
 
 def get_status_emoji(unprocessed_count):
@@ -22,30 +33,23 @@ def get_status_emoji(unprocessed_count):
 
 
 def render(conn):
-    # --- 0. FORCE TOP ALIGNMENT (REMOVES GAP) ---
+    render_page_header("📊 Dashboard")
     st.markdown(
-        """
-        <style>
-            /* Remove padding from the main container */
-            .block-container {
-                padding-top: 1rem !important;
-                padding-bottom: 0rem !important;
-            }
-            /* Remove margin from the title to keep it flush */
-            h1 {
-                margin-top: 1.4rem !important;
-                padding-top: 0rem !important;
-            }
-        </style>
-    """,
+        '<div class="gs-page-intro">Track network health, recent AI activity, and risk concentration from one compact operations surface.</div>',
         unsafe_allow_html=True,
     )
 
-    # Use a more compact layout for the title and metrics
-    render_page_header("📊 Dashboard")
+    schema_state = get_schema_readiness(conn)
+    categories_ready = schema_state["is_ready"]
+    if not categories_ready:
+        st.warning(
+            "Category-aware dashboard features are limited because the Postgres schema is behind the current code."
+        )
+        for msg in schema_state["blockers"] + schema_state["warnings"]:
+            st.caption(msg)
 
     # --- 1. METRICS ROW ---
-    st.markdown("#### Key Performance Indicators")
+    st.markdown("#### Network Snapshot")
     col1, col2, col3, col4 = st.columns(4)
 
     try:
@@ -80,7 +84,7 @@ def render(conn):
                 st.session_state.active_page = "Employees"
                 st.rerun()
         with col4:
-            st.metric("Pending Tasks", pending_tasks)
+            st.metric("Open Queue", pending_tasks)
             if st.button("🗺️ View on Map", key="nav_map", width="stretch"):
                 st.session_state.active_page = "Map View"
                 st.rerun()
@@ -91,7 +95,7 @@ def render(conn):
     st.divider()
 
     # --- 2. REGIONAL STATUS TABLE (Existing Dashboard Element) ---
-    st.subheader("🌍 Regional Status Overview")
+    st.subheader("Regional Status")
     try:
         query_regions = """
             SELECT r.name as "Region", COUNT(s.id) as "Stations",
@@ -113,7 +117,7 @@ def render(conn):
         st.info("Regional table data not yet available.")
 
     # --- 2.5 MERCHANDISING INSIGHTS ---
-    st.subheader("🛒 Merchandising Performance")
+    st.subheader("Merchandising Performance")
     try:
         query_merch = """
             SELECT
@@ -127,20 +131,25 @@ def render(conn):
         """
         df_merch = fetch_df(conn, query_merch)
         if not df_merch.empty:
-            st.bar_chart(df_merch.set_index("Station"))
+            station_col = _resolve_column(df_merch, "Station", "station")
+            score_col = _resolve_column(df_merch, "Score", "score")
+            if station_col and score_col:
+                chart_df = df_merch.rename(
+                    columns={station_col: "Station", score_col: "Score"}
+                )
+                st.bar_chart(chart_df.set_index("Station")[["Score"]])
+            else:
+                st.info("Merchandising data is available, but expected chart columns were not returned.")
         else:
             st.info("No merchandising data available yet.")
     except Exception as e:
         conn.rollback()
-        st.warning(
-            "Merchandising analytics unavailable. If you still see a json_extract() error, "
-            "restart the Streamlit server so it picks up the PostgreSQL query changes."
-        )
+        st.warning(f"Merchandising analytics unavailable: {e}")
 
     st.divider()
 
     # --- 3. EXECUTIVE OPERATIONS OVERVIEW (TABS) ---
-    st.subheader("🧭 Executive & Risk Overview")
+    st.subheader("Risk & Activity")
 
     # Run risk engine to refresh rankings and anomalies
     risk_results = {}
@@ -157,62 +166,90 @@ def render(conn):
     )
 
     with tab1:
-        try:
-            query_stations = "SELECT id, name, physical_address, lat, lon FROM stations WHERE lat IS NOT NULL"
-            df_stats = fetch_df(conn, query_stations)
+        if not categories_ready:
+            st.info("Operational Map will be available after the station category migration is applied.")
+        else:
+            try:
+                query_stations = """
+                    SELECT s.id, s.name, sc.name as category, sc.color, sc.description, s.physical_address, s.lat, s.lon 
+                    FROM stations s 
+                    LEFT JOIN station_categories sc ON s.category_id = sc.id 
+                    WHERE s.lat IS NOT NULL
+                """
+                df_stats = fetch_df(conn, query_stations)
 
-            if not df_stats.empty:
-                m = folium.Map(
-                    location=[44.2108, 20.9224], zoom_start=7, tiles="CartoDB positron"
-                )
-
-                # Layer 1: Stations with Risk Coloring
-                fg_stations = folium.FeatureGroup(name="Stations & Risk")
-                for _, s in df_stats.iterrows():
-                    risk_data = risk_results.get(s["id"], {})
-                    risk_score = risk_data.get("risk", 0)
-                    color = (
-                        "red"
-                        if risk_score >= 70
-                        else "orange" if risk_score >= 40 else "green"
+                if not df_stats.empty:
+                    m = folium.Map(
+                        location=[44.2108, 20.9224], zoom_start=7, tiles="CartoDB positron"
                     )
 
-                    folium.Marker(
-                        [s["lat"], s["lon"]],
-                        popup=f"<b>{s['name']}</b><br>Risk Score: {risk_score}<br>{s['physical_address']}",
-                        tooltip=f"{s['name']} (Risk: {risk_score})",
-                        icon=folium.Icon(color=color, icon="gas-pump", prefix="fa"),
-                    ).add_to(fg_stations)
-                fg_stations.add_to(m)
+                    # Layer 1: Stations with Risk Coloring
+                    fg_stations = folium.FeatureGroup(name="Stations & Risk")
+                    for _, s in df_stats.iterrows():
+                        cat_color = s["color"] or "#808080"
+                        cat_desc = s["description"] or ""
+                        tooltip_text = f"{s['name']} ({s['category']})" + (f" - {cat_desc}" if cat_desc else "")
+                        
+                        # Custom HTML Marker
+                        marker_html = f'''
+                            <div style="
+                                background-color: {cat_color};
+                                width: 24px;
+                                height: 24px;
+                                border-radius: 50% 50% 50% 0;
+                                transform: rotate(-45deg);
+                                border: 2px solid white;
+                                display: flex;
+                                align-items: center;
+                                justify-content: center;
+                                box-shadow: 0 0 5px rgba(0,0,0,0.3);
+                            ">
+                                <div style="
+                                    width: 6px; 
+                                    height: 6px; 
+                                    background: white; 
+                                    border-radius: 50%;
+                                    transform: rotate(45deg);
+                                "></div>
+                            </div>
+                        '''
 
-                # Layer 2: Recent Activity (Red Circles)
-                fg_activity = folium.FeatureGroup(name="Recent Activity (24h)")
-                query_activity = """
-                    SELECT s.lat, s.lon, u.name || ' ' || u.surname as emp_name, sub.timestamp, s.name as station
-                    FROM submissions sub
-                    JOIN stations s ON sub.station_id = s.id
-                    JOIN users u ON sub.employee_id = u.id
-                    WHERE sub.timestamp >= NOW() - INTERVAL '1 DAY' AND s.lat IS NOT NULL
-                    ORDER BY sub.timestamp DESC LIMIT 50
-                """
-                df_act = fetch_df(conn, query_activity)
-                for _, row in df_act.iterrows():
-                    folium.CircleMarker(
-                        location=[row["lat"], row["lon"]],
-                        radius=6,
-                        color="red",
-                        fill=True,
-                        fill_opacity=0.6,
-                        popup=f"{row['emp_name']} @ {row['station']}<br>{row['timestamp']}",
-                    ).add_to(fg_activity)
-                fg_activity.add_to(m)
+                        folium.Marker(
+                            [s["lat"], s["lon"]],
+                            popup=f"<b>{s['name']}</b><br>Type: {s['category']}<br>{s['physical_address']}",
+                            tooltip=tooltip_text,
+                            icon=folium.DivIcon(icon_size=(24, 24), icon_anchor=(12, 24), html=marker_html)
+                        ).add_to(fg_stations)
+                    fg_stations.add_to(m)
 
-                folium.LayerControl().add_to(m)
-                st_folium(m, width="100%", height=500, key="dashboard_combined_map")
-            else:
-                st.info("Add coordinates to stations to see them on the map.")
-        except Exception as e:
-            st.error(f"Map Error: {e}")
+                    # Layer 2: Recent Activity (Red Circles)
+                    fg_activity = folium.FeatureGroup(name="Recent Activity (24h)")
+                    query_activity = """
+                        SELECT s.lat, s.lon, u.name || ' ' || u.surname as emp_name, sub.timestamp, s.name as station
+                        FROM submissions sub
+                        JOIN stations s ON sub.station_id = s.id
+                        JOIN users u ON sub.employee_id = u.id
+                        WHERE sub.timestamp >= NOW() - INTERVAL '1 DAY' AND s.lat IS NOT NULL
+                        ORDER BY sub.timestamp DESC LIMIT 50
+                    """
+                    df_act = fetch_df(conn, query_activity)
+                    for _, row in df_act.iterrows():
+                        folium.CircleMarker(
+                            location=[row["lat"], row["lon"]],
+                            radius=6,
+                            color="red",
+                            fill=True,
+                            fill_opacity=0.6,
+                            popup=f"{row['emp_name']} @ {row['station']}<br>{row['timestamp']}",
+                        ).add_to(fg_activity)
+                    fg_activity.add_to(m)
+
+                    folium.LayerControl().add_to(m)
+                    st_folium(m, width="100%", height=500, key="dashboard_combined_map")
+                else:
+                    st.info("Add coordinates to stations to see them on the map.")
+            except Exception as e:
+                st.error(f"Map Error: {e}")
 
     with tab2:
         df_stations = fetch_df(conn, "SELECT id, name, region_id FROM stations")

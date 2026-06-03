@@ -1,30 +1,7 @@
-from pathlib import Path
-
 import streamlit as st
 
 from core.auth import logout_user_streamlit
 from core.access_control import PAGE_CONFIG, has_access
-
-
-def get_logo_path():
-    base_path = Path(__file__).resolve().parents[1]
-    # Look for common logo filename variants (PNG or SVG), prefer compact
-    # sidebar-specific asset then the horizontal branding.
-    candidates = [
-        base_path / "assets" / "GSAI_SideBarn_transparent.png",
-        base_path / "assets" / "GSAI_SideBar_transparent.png",
-        base_path / "assets" / "GSI_SideBar_transparent.png",
-        base_path / "assets" / "GSAI_SideBarn.png",  # user's requested name (typo-tolerant)
-        base_path / "assets" / "GSAI_SideBar.png",
-        base_path / "assets" / "GSI_SideBar.png",
-        base_path / "assets" / "GSI_SideBar.svg",
-        base_path / "assets" / "GSAI_Horizontal.png",
-        base_path / "assets" / "GSAI_Horizontal.svg",
-    ]
-    for p in candidates:
-        if p.exists():
-            return str(p)
-    return None
 
 
 def display_sidebar(conn):
@@ -34,25 +11,52 @@ def display_sidebar(conn):
 
     if "active_page" not in st.session_state:
         st.session_state.active_page = "Dashboard"
-    elif st.session_state.active_page == "Role Center":
-        # One-time compatibility migration from the old route key.
-        st.session_state.active_page = "Personal Dashboard"
+    elif st.session_state.active_page not in PAGE_CONFIG:
+        st.session_state.active_page = "Dashboard"
 
     with st.sidebar:
         st.markdown(
             """
             <style>
+                .gs-sidebar-section {
+                    margin-top: 0.7rem;
+                    margin-bottom: 0.1rem;
+                    font-size: 0.72rem;
+                    text-transform: uppercase;
+                    letter-spacing: 0.08em;
+                    font-weight: 800;
+                    color: #5b6474;
+                }
+                .gs-app-meta {
+                    border: 1px solid rgba(15, 23, 42, 0.08);
+                    border-radius: 14px;
+                    background: linear-gradient(180deg, rgba(255,255,255,0.92), rgba(244,248,252,0.95));
+                    padding: 0.75rem 0.8rem;
+                    margin-top: 0.35rem;
+                    margin-bottom: 0.15rem;
+                }
+                .gs-app-name {
+                    font-size: 0.98rem;
+                    font-weight: 800;
+                    color: #111827;
+                }
+                .gs-app-desc {
+                    margin-top: 0.2rem;
+                    font-size: 0.82rem;
+                    line-height: 1.45;
+                    color: #5b6474;
+                }
                 .gs-user-meta {
-                    margin-top: 0.25rem;
-                    margin-bottom: 0.4rem;
+                    margin-top: 0.2rem;
+                    margin-bottom: 0.35rem;
                     display: grid;
-                    gap: 0.35rem;
+                    gap: 0.3rem;
                 }
                 .gs-meta-row {
-                    border: 1px solid rgba(13, 110, 253, 0.22);
-                    border-radius: 10px;
-                    background: rgba(13, 110, 253, 0.08);
-                    padding: 0.35rem 0.5rem;
+                    border: 1px solid rgba(13, 110, 253, 0.14);
+                    border-radius: 12px;
+                    background: linear-gradient(180deg, rgba(13, 110, 253, 0.08), rgba(13, 110, 253, 0.04));
+                    padding: 0.42rem 0.55rem;
                     line-height: 1.2;
                 }
                 .gs-meta-label {
@@ -64,7 +68,7 @@ def display_sidebar(conn):
                 }
                 .gs-meta-value {
                     margin-top: 0.1rem;
-                    font-size: 0.9rem;
+                    font-size: 0.88rem;
                     font-weight: 600;
                     color: #1f2937;
                     word-break: break-word;
@@ -74,32 +78,15 @@ def display_sidebar(conn):
             unsafe_allow_html=True,
         )
 
-        logo = get_logo_path()
-        if logo:
-            logo_path = Path(logo)
-            try:
-                # Render with explicit dimensions so the logo is clear and centered
-                if logo_path.suffix.lower() == ".svg":
-                    svg = logo_path.read_text()
-                    svg_escaped = svg.replace("\n", "").replace('"', "'")
-                    st.markdown(
-                        f"<div style='display:flex;justify-content:center;padding:6px 0;'><img src=\"data:image/svg+xml;utf8,{svg_escaped}\" style='width:120px;height:auto;display:block;border-radius:6px;margin:0 auto;' /></div>",
-                        unsafe_allow_html=True,
-                    )
-                else:
-                    # For PNG/JPG, use Streamlit's st.image with explicit width
-                    # and center it within a flex container for consistent layout.
-                    try:
-                        st.markdown("<div style='display:flex;justify-content:center;padding:6px 0;'>", unsafe_allow_html=True)
-                        st.image(str(logo_path), width=120)
-                        st.markdown("</div>", unsafe_allow_html=True)
-                    except Exception:
-                        st.markdown("<div style='display:flex;justify-content:center;padding:6px 0;'>", unsafe_allow_html=True)
-                        st.image(str(logo_path), use_container_width=False)
-                        st.markdown("</div>", unsafe_allow_html=True)
-            except Exception:
-                # Last-resort fallback
-                st.image(str(logo_path), use_container_width=True)
+        st.markdown(
+            """
+            <div class="gs-app-meta">
+                <div class="gs-app-name">GentStation AI</div>
+                <div class="gs-app-desc">Video reporting, operational risk scoring, and AI-driven station assessment in one workspace.</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
         st.markdown(
             f"""
             <div class="gs-user-meta">
@@ -131,23 +118,11 @@ def display_sidebar(conn):
                 st.session_state.active_page = pid
                 st.rerun()
 
-        # Home Dashboard is a direct menu item (no submenu).
         _nav_button("Dashboard", "Home Dashboard", "home_dashboard")
 
         menu_groups = [
             {
-                "title": "🕒 Time Management",
-                "pages": [
-                    (
-                        "Personal Dashboard",
-                        "Personal Dashboard",
-                        "time_personal_dashboard",
-                    ),
-                    ("Shifts", "Shifts & Attendance", "time_shifts_attendance"),
-                ],
-            },
-            {
-                "title": "🏢 Organization Management",
+                "title": "Network",
                 "pages": [
                     ("Regions", "Regions", "org_regions"),
                     ("Stations", "Stations", "org_stations"),
@@ -156,7 +131,7 @@ def display_sidebar(conn):
                 ],
             },
             {
-                "title": "🤖 AI Management",
+                "title": "AI Workspace",
                 "pages": [
                     ("AI Reports", "AI Reports", "ai_reports"),
                     ("AI Alerts", "AI Alerts", "ai_alerts"),
@@ -164,11 +139,11 @@ def display_sidebar(conn):
                 ],
             },
             {
-                "title": "⚙️ Settings Management",
+                "title": "Administration",
                 "pages": [
-                    ("Settings", "General Settings", "setting_root"),
+                    ("Settings", "Settings", "setting_root"),
                     ("Admin Users", "Admin Users", "setting_admin_users"),
-                    ("Audit Log", "System Audit Log", "setting_audit_log"),
+                    ("Audit Log", "Audit Log", "setting_audit_log"),
                     ("Help", "Help", "setting_help"),
                 ],
             },
@@ -180,15 +155,16 @@ def display_sidebar(conn):
             ]
             if not visible_pages:
                 continue
-            expanded = st.session_state.active_page in [
-                pid for pid, _, _ in visible_pages
-            ]
-            with st.expander(group["title"], expanded=expanded):
-                for pid, label, key_suffix in visible_pages:
-                    _nav_button(pid, label, key_suffix)
-                if group["title"] == "⚙️ Settings Management":
-                    if st.button("🚪 Logout", key="sidebar_logout", width="stretch"):
-                        logout_user_streamlit(st)
-                        st.rerun()
+            st.markdown(
+                f'<div class="gs-sidebar-section">{group["title"]}</div>',
+                unsafe_allow_html=True,
+            )
+            for pid, label, key_suffix in visible_pages:
+                _nav_button(pid, label, key_suffix)
+
+        st.divider()
+        if st.button("🚪 Logout", key="sidebar_logout", width="stretch"):
+            logout_user_streamlit(st)
+            st.rerun()
 
     return st.session_state.active_page

@@ -29,7 +29,7 @@ load_dotenv()
 
 from core.database import get_connection, test_redis_connection
 from core.video_processor import parse_station_video
-from core.comm_service import send_ai_report_email
+from core.comm_service import send_ai_report_email, send_submission_result_telegram
 
 
 # ---------------------------------------------------------------------------
@@ -49,6 +49,9 @@ POLL_INTERVAL_SECONDS = int(os.getenv("AI_WORKER_POLL_INTERVAL_SECONDS", "10"))
 EMPTY_BACKOFF_MAX_SECONDS = int(os.getenv("AI_WORKER_EMPTY_BACKOFF_MAX_SECONDS", "60"))
 AI_MAX_RETRIES = int(os.getenv("AI_WORKER_MAX_RETRIES", "3"))
 AI_MEMORY_LIMIT_MB = int(os.getenv("AI_WORKER_MEMORY_LIMIT_MB", "2048"))
+STUCK_PROCESSING_TIMEOUT_SECONDS = int(
+    os.getenv("AI_WORKER_STUCK_TIMEOUT_SECONDS", "600")
+)
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 DEDUPE_KEY_PREFIX = "gsai:dedupe:"
@@ -383,6 +386,7 @@ def mark_failed(sub_id, error):
             db_pid,
             error,
         )
+        return new_status
 
 
 def reset_stuck_jobs(timeout=1800):
@@ -422,6 +426,36 @@ def record_inference_latency(sub_id: int, model: str, latency: float):
         logger.warning("Could not record latency: %s", e)
 
 
+def cleanup_processed_media(sub_id: int, video_path: Optional[str]) -> None:
+    """
+    Delete processed media from local storage and clear the stored path so the
+    platform does not retain uploaded videos after successful analysis.
+    """
+    if not video_path:
+        return
+
+    with suppress(Exception):
+        path = Path(video_path)
+        if path.exists():
+            path.unlink()
+
+    try:
+        with closing(_get_connection()) as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                UPDATE submissions
+                SET video_path = NULL,
+                    audio_path = NULL
+                WHERE id = %s
+                """,
+                (sub_id,),
+            )
+            conn.commit()
+    except Exception as e:
+        logger.warning("Could not clear stored media path for submission %s: %s", sub_id, e)
+
+
 def process_job(job: SubmissionJob):
     start = time.time()
     db_pid = "unknown"
@@ -438,13 +472,26 @@ def process_job(job: SubmissionJob):
 
     mark_done(job.sub_id, result)
     record_inference_latency(job.sub_id, result.get("_model_used", "unknown"), latency)
+    cleanup_processed_media(job.sub_id, job.video_path)
 
     try:
         with closing(_get_connection()) as conn:
             db_pid = conn.get_backend_pid()
-            send_ai_report_email(conn, job.station_id, result)
+            try:
+                send_ai_report_email(conn, job.station_id, result)
+            except Exception as e:
+                logger.warning("AI report email failed for job %s: %s", job.sub_id, e)
+
+            try:
+                send_submission_result_telegram(conn, job.sub_id, report_data=result)
+            except Exception as e:
+                logger.warning(
+                    "Telegram completion notification failed for job %s: %s",
+                    job.sub_id,
+                    e,
+                )
     except Exception as e:
-        logger.warning("Email failed: %s", e)
+        logger.warning("Completion notification connection failed: %s", e)
 
     logger.info(
         "Processed job %s in %.2fs [Final DB PID: %s]",
@@ -469,7 +516,7 @@ def main():
 
     while True:
         try:
-            reset_stuck_jobs()
+            reset_stuck_jobs(STUCK_PROCESSING_TIMEOUT_SECONDS)
 
             # Check Redis before proceeding (Backoff if offline)
             # Increased timeout to 5 seconds to be more lenient during network blips
@@ -519,7 +566,21 @@ def main():
                     process_job(job)
                 except Exception as e:
                     logger.error("Job %s failed: %s", job.sub_id, e)
-                    mark_failed(job.sub_id, str(e))
+                    final_status = mark_failed(job.sub_id, str(e))
+                    if final_status == "failed":
+                        try:
+                            with closing(_get_connection()) as conn:
+                                send_submission_result_telegram(
+                                    conn,
+                                    job.sub_id,
+                                    error_message=str(e),
+                                )
+                        except Exception as notify_err:
+                            logger.warning(
+                                "Telegram failure notification failed for job %s: %s",
+                                job.sub_id,
+                                notify_err,
+                            )
 
             update_ai_status("idle")
 

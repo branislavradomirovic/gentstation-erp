@@ -1,15 +1,44 @@
 # pages/admin_users.py
 import streamlit as st
+import re
 import pandas as pd
+from sqlalchemy import select, func
 from core.database import get_connection
 from core.activity_logger import log_activity
 from core.auth import create_user, hash_password, verify_password
 from core.comm_service import send_activation_email
 from ui.header import render_page_header
+from core.database import get_session
+from core.models import User, Station, Region
 
 
 def render(conn):
-    render_page_header("🔧 User Management (Admin)")
+    render_page_header("🔧 System Administration")
+
+    # --- 0. PERSISTENT STATE ---
+    if "selected_admin_user_id" not in st.session_state:
+        st.session_state.selected_admin_user_id = None
+
+    # --- 1. DATA PREPARATION & METRICS ---
+    with get_session() as session:
+        total_users = session.scalar(select(func.count(User.id)))
+        active_users = session.scalar(select(func.count(User.id)).where(User.is_active == True))
+        locked_users = session.scalar(select(func.count(User.id)).where(User.locked_until.isnot(None)))
+
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Total System Users", total_users or 0)
+        m2.metric("Active Accounts", active_users or 0)
+        m3.metric("Security Lockouts", locked_users or 0)
+        st.divider()
+
+        # Fetch existing users for the directory
+        stmt = select(
+            User.id, User.username, User.email, User.role, User.is_active, 
+            User.failed_attempts, User.locked_until,
+            User.station_id, User.region_id
+        ).order_by(User.id.desc())
+        
+        df_users = pd.read_sql_query(stmt, session.bind)
 
     # --- SYSTEM MAINTENANCE CONTROL ---
     with st.expander("⚙️ System Maintenance", expanded=False):
@@ -70,12 +99,15 @@ def render(conn):
             except Exception as e:
                 st.error(f"Failed to save: {e}")
 
-    # Only accessible to admins via app.py permissions check (app should only call render for admins)
-    st.markdown("### Create new system user")
+    st.divider()
+    # --- 2. CREATE NEW USER ---
+    # Move options fetching up so they are available for both Create and Edit forms
     stations_df = pd.read_sql_query("SELECT id, name FROM stations ORDER BY name", conn)
     station_options = [(row["name"], row["id"]) for _, row in stations_df.iterrows()]
     regions_df = pd.read_sql_query("SELECT id, name FROM regions ORDER BY name", conn)
     region_options = [(row["name"], row["id"]) for _, row in regions_df.iterrows()]
+
+    st.markdown("### Create new system user")
 
     with st.form("create_user_form"):
         c_a, c_b = st.columns(2)
@@ -111,8 +143,12 @@ def render(conn):
 
         pwd = st.text_input("Temporary password", value="", type="password")
         if st.form_submit_button("Create user"):
-            if not username or not pwd:
+            email_regex = r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$'
+            clean_user = (username or "").strip()
+            if not clean_user or not pwd:
                 st.error("Username and password required")
+            elif email and not re.match(email_regex, (email or "").strip()):
+                st.error("A valid email address is required.")
             elif role in ("Employee", "Gas Station Manager") and not station_id:
                 st.error("Station is required for this role.")
             elif role == "Region Manager" and not region_id:
@@ -120,12 +156,12 @@ def render(conn):
             else:
                 try:
                     u = create_user(
-                        username=username,
+                        username=clean_user,
                         password=pwd,
-                        email=email or None,
+                        email=(email or "").strip() or None,
                         role=role,
-                        name=first_name.strip() or None,
-                        surname=surname.strip() or None,
+                        name=(first_name or "").strip() or None,
+                        surname=(surname or "").strip() or None,
                         station_id=station_id,
                         region_id=region_id,
                     )  # create_user now handles all user fields
@@ -142,100 +178,165 @@ def render(conn):
                     st.error(f"Failed to create user: {e}")
 
     st.divider()
-    st.markdown("### Existing users")
-    df = pd.read_sql_query(
-        "SELECT id, username, email, role, is_active, created_at, failed_attempts, locked_until FROM users ORDER BY id DESC",
-        conn,
-    )
-    if df.empty:
+    # --- 3. USER DIRECTORY ---
+    st.markdown("### 👥 Existing System Users")
+    st.caption("Click a row to manage account details, security, and permissions.")
+
+    if df_users.empty:
         st.info("No users yet.")
-        return
-
-    st.dataframe(
-        df[
-            [
-                "id",
-                "username",
-                "email",
-                "role",
-                "is_active",
-                "failed_attempts",
-                "locked_until",
-            ]
-        ],
-        width="stretch",
-        hide_index=True,
-    )
-
-    st.divider()
-    st.markdown("### Edit / Deactivate user")
-    uid = st.selectbox("Select user id", df["id"].tolist())
-    if uid:
-        row = df[df["id"] == uid].iloc[0]
-        st.write(
-            f"Username: **{row['username']}** | Role: **{row['role']}** | Active: **{row['is_active']}**"
-        )
-        st.write(
-            f"Failed Attempts: **{row['failed_attempts']}** | Locked Until: **{row['locked_until'] or 'Not Locked'}**"
+    else:
+        selection_event = st.dataframe(
+            df_users,
+            use_container_width=True,
+            hide_index=True,
+            on_select="rerun",
+            selection_mode="single-row",
+            key="admin_user_directory",
+            column_config={
+                "id": st.column_config.NumberColumn("ID", width="small"),
+                "is_active": st.column_config.CheckboxColumn("Active"),
+                "locked_until": st.column_config.DatetimeColumn("Locked Until"),
+                "station_id": None,
+                "region_id": None
+            }
         )
 
-        # Action buttons in columns for better layout
-        cols = st.columns(5)
+        # Update state based on selection
+        rows = selection_event.get("selection", {}).get("rows", [])
+        if rows:
+            st.session_state.selected_admin_user_id = int(df_users.iloc[rows[0]]["id"])
 
-        # Unlock button - only shows if user is locked
-        if row["locked_until"]:
-            if cols[0].button("🔓 Unlock User", width="stretch", type="primary"):
-                conn.execute(
-                    "UPDATE users SET failed_attempts = 0, locked_until = NULL WHERE id = %s",
-                    (uid,),
-                )
-                conn.commit()
-                log_activity(conn, "UNLOCK_USER", f"Manually unlocked user ID {uid}")
-                st.success(f"User {row['username']} has been unlocked.")
-                st.rerun()
+    if st.session_state.selected_admin_user_id:
+        selected_id = st.session_state.selected_admin_user_id
+        curr_row = df_users[df_users["id"] == selected_id]
+        if curr_row.empty:
+            st.session_state.selected_admin_user_id = None
+            st.rerun()
+        
+        user_rec = curr_row.iloc[0]
 
-        if cols[1].button("Deactivate user", width="stretch"):
-            conn.execute("UPDATE users SET is_active = FALSE WHERE id = %s", (uid,))
-            conn.commit()
-            log_activity(conn, "DEACTIVATE_USER", f"User ID {uid}")
-            st.success("User deactivated.")
-        if cols[2].button("Activate user", width="stretch"):
-            conn.execute("UPDATE users SET is_active = TRUE WHERE id = %s", (uid,))
-            conn.commit()
-            log_activity(conn, "ACTIVATE_USER", f"User ID {uid}")
-            st.success("User activated.")
-        if cols[3].button("📧 Resend Activation", type="primary", width="stretch"):
-            sent, msg = send_activation_email(conn, uid, reset_password=True)
-            if sent:
-                st.success(msg)
-            else:
-                st.error(msg)
+        st.divider()
+        c_title, c_close = st.columns([5, 1])
+        c_title.subheader(f"⚙️ Manage User: {user_rec['username']}")
+        if c_close.button("Close ✖️", key="close_admin_mgmt", use_container_width=True):
+            st.session_state.selected_admin_user_id = None
+            st.rerun()
 
-        if cols[4].button("🗑️ Delete user", type="secondary", width="stretch"):
-            try:
-                conn.execute("DELETE FROM users WHERE id = %s", (uid,))
-                conn.commit()
-                log_activity(conn, "DELETE_USER", f"User ID {uid}")
-                st.success("User deleted.")
-            except Exception as e:
-                st.error("Could not delete user: " + str(e))
+        tab_details, tab_security = st.tabs(["📝 Profile Details", "🔑 Security & Access"])
 
-    st.divider()
-    st.markdown("### Reset password")
-    uid_reset = st.selectbox(
-        "Select user to reset password", df["id"].tolist(), key="reset_uid"
-    )
-    new_pw = st.text_input("New temporary password", type="password", key="reset_pw")
-    if st.button("Reset password button"):
-        if not new_pw:
-            st.error("Provide new password.")
-        else:
-            conn.execute(
-                "UPDATE users SET password_hash = %s , updated_at = %s WHERE id = %s",
-                (hash_password(new_pw), pd.Timestamp.now().isoformat(), uid_reset),
-            )
-            conn.commit()
-            log_activity(conn, "RESET_PASSWORD", f"Reset password for user {uid_reset}")
-            st.success(
-                "Password reset. Share temporary password securely with the user."
-            )
+        with tab_details:
+            st.write(f"Account Role: **{user_rec['role']}**")
+            new_role = st.selectbox("Role", ["General Manager", "Region Manager", "Gas Station Manager", "Employee"], 
+                                    index=["General Manager", "Region Manager", "Gas Station Manager", "Employee"].index(user_rec["role"]),
+                                    key=f"role_selector_edit_{selected_id}")
+
+            with st.form(f"edit_admin_user_{selected_id}"):
+                new_email = st.text_input("Email Address", value=user_rec["email"] or "")
+
+                # Assignment logic for Edit Form
+                edit_station_id = None
+                edit_region_id = None
+
+                if new_role in ("Employee", "Gas Station Manager"):
+                    curr_st_id = user_rec["station_id"]
+                    st_idx = 0
+                    if pd.notna(curr_st_id):
+                        for i, opt in enumerate(station_options):
+                            if opt[1] == int(curr_st_id):
+                                st_idx = i + 1
+                                break
+                    sel_st = st.selectbox("Assign Station (Required)", options=[(None, None)] + station_options, index=st_idx, format_func=lambda x: x[0] if x[0] else "Select station...")
+                    edit_station_id = sel_st[1]
+                elif new_role == "Region Manager":
+                    curr_reg_id = user_rec["region_id"]
+                    reg_idx = 0
+                    if pd.notna(curr_reg_id):
+                        for i, opt in enumerate(region_options):
+                            if opt[1] == int(curr_reg_id):
+                                reg_idx = i + 1
+                                break
+                    sel_reg = st.selectbox("Assign Region (Required)", options=[(None, None)] + region_options, index=reg_idx, format_func=lambda x: x[0] if x[0] else "Select region...")
+                    edit_region_id = sel_reg[1]
+
+                if st.form_submit_button("💾 Save Profile Changes", use_container_width=True):
+                    # Input Validation
+                    email_regex = r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$'
+                    
+                    if not re.match(email_regex, (new_email or "").strip()):
+                        st.error("A valid email address is required.")
+                    elif new_role == "Region Manager" and not edit_region_id:
+                        st.error("Region Manager requires a region assignment.")
+                    elif new_role in ("Employee", "Gas Station Manager") and not edit_station_id:
+                        st.error("Station is required for this role.")
+                    else:
+                        conn.execute(
+                            "UPDATE users SET email = %s, role = %s, station_id = %s, region_id = %s WHERE id = %s", 
+                            ((new_email or "").strip() or None, new_role, edit_station_id, edit_region_id, selected_id)
+                        )
+                        conn.commit()
+                        st.success("Profile updated.")
+                        st.rerun()
+
+            # --- DELETE CONFIRMATION ---
+            st.divider()
+            if st.button("🗑️ Delete User Account", key=f"del_admin_{selected_id}", type="secondary", use_container_width=True):
+                st.session_state[f"confirm_admin_del_{selected_id}"] = True
+            
+            if st.session_state.get(f"confirm_admin_del_{selected_id}"):
+                st.warning(f"⚠️ **Confirm**: Delete `{user_rec['username']}`? All settings and profile data will be lost.")
+                c_d1, c_d2 = st.columns(2)
+                if c_d1.button("✅ Yes, Delete", key=f"do_admin_del_{selected_id}", type="primary", use_container_width=True):
+                    try:
+                        conn.execute("DELETE FROM users WHERE id = %s", (selected_id,))
+                        conn.commit()
+                        log_activity(conn, "DELETE_USER", f"Deleted ID {selected_id}")
+                        st.session_state.selected_admin_user_id = None
+                        st.session_state.pop(f"confirm_admin_del_{selected_id}", None)
+                        st.success("User deleted.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Could not delete: {e}")
+                if c_d2.button("❌ Cancel", key=f"cancel_admin_del_{selected_id}", use_container_width=True):
+                    st.session_state.pop(f"confirm_admin_del_{selected_id}", None)
+                    st.rerun()
+
+        with tab_security:
+            col_s1, col_col_s2 = st.columns(2)
+            with col_s1:
+                st.write("**Account Status**")
+                if user_rec["is_active"]:
+                    if st.button("Deactivate Account", key=f"deact_{selected_id}", use_container_width=True):
+                        conn.execute("UPDATE users SET is_active = FALSE WHERE id = %s", (selected_id,))
+                        conn.commit()
+                        st.rerun()
+                else:
+                    if st.button("Activate Account", key=f"act_{selected_id}", type="primary", use_container_width=True):
+                        conn.execute("UPDATE users SET is_active = TRUE WHERE id = %s", (selected_id,))
+                        conn.commit()
+                        st.rerun()
+
+                if user_rec["locked_until"]:
+                    if st.button("🔓 Unlock Account", key=f"unlock_{selected_id}", type="primary", use_container_width=True):
+                        conn.execute("UPDATE users SET failed_attempts = 0, locked_until = NULL WHERE id = %s", (selected_id,))
+                        conn.commit()
+                        st.rerun()
+
+            with col_col_s2:
+                st.write("**Credentials**")
+                if st.button("📧 Resend Activation Email", key=f"resend_act_{selected_id}", use_container_width=True):
+                    sent, msg = send_activation_email(conn, selected_id, reset_password=True)
+                    if sent: st.success(msg)
+                    else: st.error(msg)
+
+            st.divider()
+            st.write("**Manual Password Reset**")
+            with st.form(f"manual_reset_{selected_id}"):
+                manual_pw = st.text_input("New Temporary Password", type="password")
+                if st.form_submit_button("Reset Password", use_container_width=True):
+                    if not manual_pw:
+                        st.error("Enter a password.")
+                    else:
+                        conn.execute("UPDATE users SET password_hash = %s, updated_at = %s, force_password_change = TRUE WHERE id = %s", 
+                                     (hash_password(manual_pw), pd.Timestamp.now().isoformat(), selected_id))
+                        conn.commit()
+                        st.success("Password reset successfully.")

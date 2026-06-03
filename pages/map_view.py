@@ -4,6 +4,7 @@ import pandas as pd
 import folium
 from streamlit_folium import st_folium
 from ui.header import render_page_header
+from core.database import get_schema_readiness
 
 
 def get_station_status(conn, station_id):
@@ -27,18 +28,56 @@ def get_station_status(conn, station_id):
 def render(conn):
     render_page_header("🗺️ Network Status Map")
     st.markdown(
-        "Live status of all stations based on pending submissions. 🟢: OK, 🟡: Pending, 🔴: High Volume."
+        '<div class="gs-page-intro">Review station coverage, queued workload, and recent activity geographically. Border color reflects queue pressure while the inner marker color reflects station category.</div>',
+        unsafe_allow_html=True,
     )
+
+    schema_state = get_schema_readiness(conn)
+    if not schema_state["is_ready"]:
+        st.warning(
+            "Map View is unavailable because the Postgres schema is behind the current code."
+        )
+        for msg in schema_state["blockers"] + schema_state["warnings"]:
+            st.caption(msg)
+        return
 
     try:
         stations_df = pd.read_sql_query(
-            "SELECT id, name, lat, lon FROM stations WHERE lat IS NOT NULL AND lon IS NOT NULL",
+            """
+            SELECT s.id, s.name, sc.name as category, sc.color, sc.description, s.lat, s.lon
+            FROM stations s
+            LEFT JOIN station_categories sc ON s.category_id = sc.id
+            WHERE s.lat IS NOT NULL AND s.lon IS NOT NULL
+            """,
             conn,
         )
 
         if stations_df.empty:
             st.info("No stations with coordinates found in the database.")
             return
+
+        active_row = conn.execute(
+            "SELECT COUNT(DISTINCT station_id) FROM submissions WHERE timestamp >= NOW() - INTERVAL '1 HOUR'"
+        ).fetchone()
+        high_volume = 0
+        pending_total = 0
+        for station_id in stations_df["id"].tolist():
+            _color, pending = get_station_status(conn, station_id)
+            pending_total += pending
+            if pending >= 3:
+                high_volume += 1
+
+        overview_tab, map_tab = st.tabs(["📊 Overview", "🗺️ Interactive Map"])
+
+        with overview_tab:
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Mapped Stations", int(len(stations_df)))
+            m2.metric("Active in Last Hour", int(active_row[0] if active_row else 0))
+            m3.metric("High-Volume Stations", int(high_volume))
+            m4.metric("Pending Reports", int(pending_total))
+            st.caption(
+                "Use the map tab to inspect queue pressure, recent activity, and high-risk alerts by station."
+            )
 
         # Create map without a specific center; we will fit it to the markers' bounds later.
         m = folium.Map(tiles="CartoDB positron")
@@ -69,6 +108,24 @@ def render(conn):
             </style>
         """
             )
+        )
+
+        # --- Build Legend HTML ---
+        legend_html = '''
+             <div style="position: absolute; bottom: 50px; left: 50px; width: 170px; 
+             border:2px solid rgba(0,0,0,0.1); z-index:9999; font-size:12px;
+             background-color: rgba(255, 255, 255, 0.9); padding: 10px; border-radius: 8px; 
+             box-shadow: 0 0 10px rgba(0,0,0,0.1); font-family: sans-serif;">
+             <b style="display:block; margin-bottom: 5px;">Map Legend</b>
+             <div style="margin-bottom: 3px;"><span style="color:#28a745; font-size:14px;">●</span> OK (0 pending)</div>
+             <div style="margin-bottom: 3px;"><span style="color:#fd7e14; font-size:14px;">●</span> Pending (1-2)</div>
+             <div style="margin-bottom: 3px;"><span style="color:#dc3545; font-size:14px;">●</span> High Volume (3+)</div>
+             <hr style="margin: 5px 0;">
+             <div style="margin-bottom: 3px;"><span style="color:#ff3333; font-size:14px;">○</span> Recent Activity (1h)</div>
+             <small style="color: #666; display:block; margin-top: 5px;"><i>Marker inner color represents Category.</i></small>
+             </div>
+             '''
+        m.get_root().html.add_child(folium.Element(legend_html)
         )
 
         # --- Fetch Active Stations (Last 1 hour) ---
@@ -103,17 +160,45 @@ def render(conn):
         fg_stations = folium.FeatureGroup(name="Station Status")
         for _, station in stations_df.iterrows():
             color, pending = get_station_status(conn, station["id"])
-            popup_html = f"<b>{station['name']}</b><br>Status: <b>{color.upper()}</b><br>Pending Reports: {pending}<br><small>(Click marker to edit)</small>"
 
-            folium.CircleMarker(
+            cat_color = station.get("color") or "#808080"
+            cat_desc = station.get("description") or ""
+            tooltip_text = f"{station['name']} ({station['category']}) - {pending} pending" + (f" - {cat_desc}" if cat_desc else "")
+            
+            # Custom Teardrop Marker
+            # The border color reflects the pending status (Green/Orange/Red)
+            status_border = "#28a745" if color == "green" else "#fd7e14" if color == "orange" else "#dc3545"
+            
+            marker_html = f'''
+                <div style="
+                    background-color: {cat_color};
+                    width: 30px;
+                    height: 30px;
+                    border-radius: 50% 50% 50% 0;
+                    transform: rotate(-45deg);
+                    border: 3px solid {status_border};
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    box-shadow: 0 0 8px rgba(0,0,0,0.4);
+                ">
+                    <div style="
+                        width: 8px; 
+                        height: 8px; 
+                        background: white; 
+                        border-radius: 50%;
+                        transform: rotate(45deg);
+                    "></div>
+                </div>
+            '''
+
+            popup_html = f"<b>{station['name']}</b><br>Type: {station['category']}<br>Pending Reports: {pending}<br><small>(Click marker to edit)</small>"
+
+            folium.Marker(
                 location=[station["lat"], station["lon"]],
-                radius=10,
-                color=color,
-                fill=True,
-                fill_color=color,
-                fill_opacity=0.7,
                 popup=folium.Popup(popup_html, max_width=200),
-                tooltip=f"{station['name']} ({pending} pending)",
+                tooltip=tooltip_text,
+                icon=folium.DivIcon(icon_size=(30, 30), icon_anchor=(15, 30), html=marker_html)
             ).add_to(fg_stations)
 
         fg_stations.add_to(m)
@@ -159,28 +244,29 @@ def render(conn):
         # Add Layer Control to toggle layers
         folium.LayerControl().add_to(m)
 
-        map_data = st_folium(
-            m, width="100%", height=700, returned_objects=["last_object_clicked"]
-        )
+        with map_tab:
+            map_data = st_folium(
+                m, width="100%", height=700, returned_objects=["last_object_clicked"]
+            )
 
-        # Handle marker click to redirect
-        if map_data and map_data.get("last_object_clicked"):
-            clicked = map_data["last_object_clicked"]
-            # Find the station that matches the clicked coordinates (using small tolerance)
-            c_lat, c_lon = clicked["lat"], clicked["lng"]
+            # Handle marker click to redirect
+            if map_data and map_data.get("last_object_clicked"):
+                clicked = map_data["last_object_clicked"]
+                # Find the station that matches the clicked coordinates (using small tolerance)
+                c_lat, c_lon = clicked["lat"], clicked["lng"]
 
-            match = stations_df[
-                (stations_df["lat"].sub(c_lat).abs() < 0.0001)
-                & (stations_df["lon"].sub(c_lon).abs() < 0.0001)
-            ]
+                match = stations_df[
+                    (stations_df["lat"].sub(c_lat).abs() < 0.0001)
+                    & (stations_df["lon"].sub(c_lon).abs() < 0.0001)
+                ]
 
-            if not match.empty:
-                s_id = int(match.iloc[0]["id"])
-                s_name = match.iloc[0]["name"]
-                if st.button(f"📝 Go to Details for {s_name}", type="primary"):
-                    st.session_state["active_page"] = "Stations"
-                    st.session_state["target_station_id"] = s_id
-                    st.rerun()
+                if not match.empty:
+                    s_id = int(match.iloc[0]["id"])
+                    s_name = match.iloc[0]["name"]
+                    if st.button(f"📝 Go to Details for {s_name}", type="primary"):
+                        st.session_state["active_page"] = "Stations"
+                        st.session_state["target_station_id"] = s_id
+                        st.rerun()
 
     except Exception as e:
         st.error(f"Failed to load map view: {e}")

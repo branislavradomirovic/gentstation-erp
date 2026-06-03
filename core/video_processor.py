@@ -12,10 +12,8 @@ import os
 import time
 import logging
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 import numpy as np
-from contextlib import closing
 
 import requests
 from dotenv import load_dotenv
@@ -31,11 +29,13 @@ except Exception:  # pragma: no cover - optional dependency
 
 # Configuration
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:14b-instruct")
-_vision_env = (os.getenv("OLLAMA_VISION_MODEL", "bakllava") or "").strip()
-OLLAMA_VISION_MODEL = (
-    "" if _vision_env.lower() in {"", "none", "null", "false", "0"} else _vision_env
-)
+_single_model_env = (
+    os.getenv("OLLAMA_VISION_MODEL")
+    or os.getenv("OLLAMA_MODEL")
+    or "bakllava:latest"
+).strip()
+OLLAMA_MODEL = _single_model_env or "bakllava:latest"
+OLLAMA_VISION_MODEL = OLLAMA_MODEL
 OLLAMA_LOCAL_ONLY = os.getenv("OLLAMA_LOCAL_ONLY", "1").strip().lower() in {
     "1",
     "true",
@@ -46,61 +46,66 @@ FRAME_SAMPLES = int(os.getenv("VIDEO_FRAME_SAMPLES", "6"))
 MAX_FRAME_DIMENSION = int(os.getenv("VIDEO_MAX_FRAME_DIMENSION", "640"))
 
 DEFAULT_PROMPT_TEMPLATE = """
-You are an expert Fuel Retail Operations Auditor analyzing gas-station CCTV.
+Ti si ekspert za operativnu reviziju fuel retail objekata i analiziraš video snimak benzinske stanice.
 
-VIDEO METADATA:
-- File: {file_name}
-- Size: {file_size_bytes} bytes
-- Decoder: {decoder}
+METAPODACI O VIDEU:
+- Fajl: {file_name}
+- Veličina: {file_size_bytes} bajtova
+- Dekoder: {decoder}
 - FPS: {fps}
-- Frames: {frame_count}
-- Duration: {duration_s} seconds
+- Broj frejmova: {frame_count}
+- Trajanje: {duration_s} sekundi
 
-SAMPLED FRAMES:
+UZORKOVANI FREJMOVI:
 {frame_lines}
 
 {analysis_mode}
 
-Evaluate both safety and commercial execution using observable evidence.
+Proceni i bezbednost i komercijalnu izvedbu isključivo na osnovu vidljivih dokaza.
 
-SAFETY CHECKLIST (prioritize high-risk items):
-- Slip/trip hazards (spills, clutter, blocked aisles, cables, wet floors)
-- Fire and fuel risks (smoking, open flames, unsafe fuel handling)
-- PPE and compliance behaviors (uniform/PPE use, restricted-area discipline)
-- Emergency readiness (visible extinguishers, clear exits, unobstructed access)
-- Forecourt and traffic safety (vehicle/pedestrian conflict, unsafe parking)
+BEZBEDNOSNA KONTROLNA LISTA (prioritet imaju visoki rizici):
+- Opasnosti od klizanja i spoticanja (prosipanja, nered, blokirani prolazi, kablovi, mokar pod)
+- Požarni i gorivni rizici (pušenje, otvoren plamen, nebezbedno rukovanje gorivom)
+- PPE i usklađenost sa pravilima (uniforma/PPE, disciplina u zabranjenim zonama)
+- Spremnost za vanredne situacije (vidljivi aparati, čisti izlazi, slobodan pristup)
+- Bezbednost platoa i saobraćaja (sukob vozila i pešaka, nebezbedno parkiranje)
 
-COMMERCIAL CHECKLIST:
-- Shelf availability and facing quality in key categories
-- Out-of-stock or low-stock visibility
-- Promotional execution (signage placement, campaign visibility)
-- Checkout/queue flow and service readiness
-- General store presentation quality affecting conversion
+KOMERCIJALNA KONTROLNA LISTA:
+- Dostupnost robe i urednost rafova u ključnim kategorijama
+- Vidljivi out-of-stock i low-stock problemi
+- Izvedba promocija (pozicija signalizacije, vidljivost kampanje)
+- Protok na kasi / u redu i spremnost usluge
+- Opšti utisak prodajnog prostora koji utiče na konverziju
 
-Assess the following KPIs on a 1-10 scale (10 is best):
-- cleanliness_score: housekeeping and visual order
-- safety_score: hazard control and compliance
-- staff_score: staff professionalism, readiness, and process discipline
-- merchandising_score: product availability, facing, and promo execution
+Oceni sledeće KPI-jeve na skali 1-10 (10 je najbolje):
+- cleanliness_score: čistoća i vizuelni red
+- safety_score: kontrola rizika i usklađenost
+- staff_score: profesionalnost, spremnost i disciplina zaposlenih
+- merchandising_score: dostupnost robe, urednost i promo izvedba
 
-Return ONLY valid JSON with exactly these keys:
+Vrati ISKLJUČIVO validan JSON sa tačno ovim ključevima.
+Sva tekstualna polja moraju biti na srpskom jeziku, latinica, kratko i operativno.
+
+Vrati samo ovaj JSON:
 {{
   "cleanliness_score": <int from 1-10>,
   "safety_score": <int from 1-10>,
   "staff_score": <int from 1-10>,
   "merchandising_score": <int from 1-10>,
-  "hazards": ["<specific hazard 1>", "<specific hazard 2>"],
-  "stock_issues": ["<empty shelf location>", "<low stock item>"],
+  "overall_risk_score": <float from 0-100 where higher is worse>,
+  "hazards": ["<konkretna opasnost 1>", "<konkretna opasnost 2>"],
+  "stock_issues": ["<prazna pozicija>", "<artikl sa niskim stanjem>"],
+  "improvement_actions": ["<kratka akcija 1>", "<kratka akcija 2>", "<kratka akcija 3>"],
   "customer_activity": "<low|medium|high>",
   "confidence": <float from 0.0-1.0>,
-  "summary": "<2-3 sentence executive summary>"
+  "summary": "<izvršni sažetak od 2-3 kratke rečenice>"
 }}
 
-Scoring policy:
-- Penalize safety_score aggressively when critical hazards are visible.
-- Penalize merchandising_score when stock or promo execution is weak.
-- Keep hazards and stock_issues concrete and operational (avoid generic wording).
-- If evidence is weak/obscured, reduce confidence and say so in summary.
+Pravila ocenjivanja:
+- Snažno obori safety_score kada su vidljivi kritični bezbednosni rizici.
+- Obori merchandising_score kada su stanje robe ili promo izvedba slabi.
+- Hazards i stock_issues moraju biti konkretni i operativni, bez generičkih formulacija.
+- Ako su dokazi slabi ili kadar nije jasan, smanji confidence i to naglasi u sažetku.
 """
 
 
@@ -263,7 +268,7 @@ def _build_prompt(
     try:
         from core.database import get_connection
 
-        with closing(get_connection()) as conn:
+        with get_connection() as conn:
             row = conn.execute(
                 "SELECT value FROM system_settings WHERE key='ai_custom_prompt'"
             ).fetchone()
@@ -280,9 +285,9 @@ def _build_prompt(
     )
 
     analysis_mode = (
-        "These sampled frames are attached to the request."
+        "Uz zahtev su priloženi uzorkovani frejmovi."
         if use_images
-        else "Frame extraction was unavailable, so you are analyzing the metadata and any available video context only."
+        else "Izdvajanje frejmova nije bilo dostupno, zato analizu radiš samo na osnovu metapodataka i eventualnog dostupnog konteksta."
     )
 
     return template.format(
@@ -298,45 +303,6 @@ def _build_prompt(
 
 
 def _select_model(use_images: bool) -> str:
-    try:
-        from core.database import get_connection
-
-        with closing(get_connection()) as conn:
-            cur = conn.cursor()
-
-            # 1. Check if Auto-Scale is active
-            cur.execute(
-                "SELECT value FROM system_settings WHERE key='ai_auto_scale_active'"
-            )
-            row_scale = cur.fetchone()
-            if row_scale and row_scale[0] == "1":
-                cur.execute(
-                    "SELECT value FROM system_settings WHERE key='ai_auto_scale_down_model'"
-                )
-                row_failover = cur.fetchone()
-                if row_failover and row_failover[0]:
-                    return row_failover[0]
-
-            # 2. Check for standard overrides
-            if use_images:
-                cur.execute(
-                    "SELECT value FROM system_settings WHERE key='ollama_vision_model_override'"
-                )
-                row = cur.fetchone()
-                if row and row[0]:
-                    return row[0]
-                if OLLAMA_VISION_MODEL:
-                    return OLLAMA_VISION_MODEL
-
-            cur.execute(
-                "SELECT value FROM system_settings WHERE key='ollama_model_override'"
-            )
-            row = cur.fetchone()
-            if row and row[0]:
-                return row[0]
-    except Exception as e:
-        logger.debug("Could not fetch model override from DB: %s", e)
-
     return OLLAMA_MODEL
 
 
@@ -436,20 +402,22 @@ def _parse_result(response_text: str) -> Dict[str, Any]:
             )
         result = json.loads(json_match.group())
 
-    required_fields = [
-        "cleanliness_score",
-        "safety_score",
-        "staff_score",
-        "merchandising_score",
-        "hazards",
-        "stock_issues",
-        "customer_activity",
-        "confidence",
-        "summary",
-    ]
-    for field in required_fields:
+    defaults = {
+        "cleanliness_score": 5,
+        "safety_score": 5,
+        "staff_score": 5,
+        "merchandising_score": 5,
+        "overall_risk_score": None,
+        "hazards": [],
+        "stock_issues": [],
+        "improvement_actions": [],
+        "customer_activity": "low",
+        "confidence": 0.5,
+        "summary": "Sažetak nije dostupan.",
+    }
+    for field, default_value in defaults.items():
         if field not in result:
-            raise ValueError(f"Missing required field in response: {field}")
+            result[field] = default_value
 
     for score_field in [
         "cleanliness_score",
@@ -458,25 +426,211 @@ def _parse_result(response_text: str) -> Dict[str, Any]:
         "merchandising_score",
     ]:
         score = result[score_field]
-        if not isinstance(score, (int, float)) or not (1 <= score <= 10):
-            result[score_field] = max(1, min(10, int(score)))
+        try:
+            result[score_field] = max(1, min(10, int(float(score))))
+        except Exception:
+            result[score_field] = 5
 
-    if not isinstance(result["confidence"], (int, float)):
+    if isinstance(result["confidence"], list):
+        numeric_values = [float(v) for v in result["confidence"] if isinstance(v, (int, float))]
+        result["confidence"] = (
+            sum(numeric_values) / len(numeric_values) if numeric_values else 0.5
+        )
+    elif not isinstance(result["confidence"], (int, float)):
         result["confidence"] = 0.5
     else:
         result["confidence"] = max(0.0, min(1.0, float(result["confidence"])))
 
+    try:
+        if result.get("overall_risk_score") is not None:
+            result["overall_risk_score"] = max(
+                0.0, min(100.0, float(result["overall_risk_score"]))
+            )
+    except Exception:
+        result["overall_risk_score"] = None
+
     return result
 
 
+def _derived_risk_score(result: Dict[str, Any]) -> float:
+    safety = float(result.get("safety_score", 5) or 5)
+    cleanliness = float(result.get("cleanliness_score", 5) or 5)
+    staff = float(result.get("staff_score", 5) or 5)
+    merchandising = float(result.get("merchandising_score", 5) or 5)
+    hazards = result.get("hazards") or []
+    stock_issues = result.get("stock_issues") or []
+    hazard_penalty = min(25.0, len(hazards) * 9.0)
+    stock_penalty = min(12.0, len(stock_issues) * 4.0)
+    base = (
+        ((10.0 - safety) / 10.0) * 42.0
+        + ((10.0 - cleanliness) / 10.0) * 18.0
+        + ((10.0 - staff) / 10.0) * 18.0
+        + ((10.0 - merchandising) / 10.0) * 22.0
+    )
+    return round(min(100.0, max(0.0, base + hazard_penalty + stock_penalty)), 2)
+
+
+def _synthesized_summary(result: Dict[str, Any]) -> str:
+    safety = int(result.get("safety_score", 5) or 5)
+    cleanliness = int(result.get("cleanliness_score", 5) or 5)
+    staff = int(result.get("staff_score", 5) or 5)
+    merchandising = int(result.get("merchandising_score", 5) or 5)
+    risk = float(result.get("overall_risk_score") or _derived_risk_score(result))
+    hazards = result.get("hazards") or []
+    stock_issues = result.get("stock_issues") or []
+
+    biggest_gap = min(
+        [
+            ("bezbednosna disciplina", safety),
+            ("standardi čistoće", cleanliness),
+            ("spremnost zaposlenih", staff),
+            ("merchandising izvedba", merchandising),
+        ],
+        key=lambda item: item[1],
+    )[0]
+
+    first_sentence = (
+        f"Ukupan operativni rizik iznosi {risk:.1f}/100, a najviše ga podiže {biggest_gap}."
+    )
+    if hazards:
+        second_sentence = f"Najvažniji uočeni rizik: {str(hazards[0]).strip()}."
+    elif stock_issues:
+        second_sentence = f"Ključni komercijalni problem: {str(stock_issues[0]).strip()}."
+    else:
+        second_sentence = (
+            "Nije izdvojen jedan dominantan rizik, ali snimak i dalje zahteva menadžersku proveru."
+        )
+    return f"{first_sentence} {second_sentence}"
+
+
+def _derived_improvement_actions(result: Dict[str, Any]) -> List[str]:
+    actions: List[str] = []
+    safety = int(result.get("safety_score", 5) or 5)
+    cleanliness = int(result.get("cleanliness_score", 5) or 5)
+    staff = int(result.get("staff_score", 5) or 5)
+    merchandising = int(result.get("merchandising_score", 5) or 5)
+    hazards = result.get("hazards") or []
+    stock_issues = result.get("stock_issues") or []
+
+    if safety <= 7:
+        actions.append("Pregledaj plato i ukloni sve neposredne bezbednosne rizike pre naredne smene.")
+    if cleanliness <= 7:
+        actions.append("Sprovedi ciljano čišćenje kritičnih tačaka, prosipanja i površina vidljivih kupcima.")
+    if staff <= 7:
+        actions.append("Usmeri zaposlene u smeni na disciplinu rada, PPE i očekivani nivo usluge.")
+    if merchandising <= 7:
+        actions.append("Doteraj rafove i ispravi low-stock ili promašaje u promo izvedbi na prioritetnim pozicijama.")
+    if hazards:
+        actions.append(f"Prvo otkloni prijavljeni rizik: {str(hazards[0]).strip()}.")
+    if stock_issues:
+        actions.append(f"Dopuni robu ili ispravi najuočljiviji problem: {str(stock_issues[0]).strip()}.")
+
+    if not actions:
+        actions.append("Zadrži postojeći standard i nastavi sa rutinskim operativnim proverama.")
+    while len(actions) < 3:
+        actions.append("Obavi menadžerski obilazak i potvrdi korekciju na sledećem snimku.")
+    return actions[:3]
+
+
+def _is_low_information_result(result: Dict[str, Any], response_text: str) -> bool:
+    response_trimmed = (response_text or "").strip()
+    scores = [
+        int(result.get("cleanliness_score", 5) or 5),
+        int(result.get("safety_score", 5) or 5),
+        int(result.get("staff_score", 5) or 5),
+        int(result.get("merchandising_score", 5) or 5),
+    ]
+    hazards = result.get("hazards") or []
+    stock_issues = result.get("stock_issues") or []
+    summary = str(result.get("summary", "") or "").strip()
+    return (
+        response_trimmed in {"", "{}", "null"}
+        or (
+            summary in {"", "No summary provided.", "Sažetak nije dostupan."}
+            and all(score == 5 for score in scores)
+            and not hazards
+            and not stock_issues
+        )
+    )
+
+
+def _build_retry_prompt(
+    metadata: Dict[str, Any], frames: List[VideoFrame], use_images: bool, previous_response: str
+) -> str:
+    frame_lines = (
+        "\n".join(
+            f"- Frame {frame.index} at {frame.timestamp_s:.2f}s" for frame in frames
+        )
+        or "- No extractable frames were available."
+    )
+    analysis_mode = (
+        "Koristi priložene slike kao primarni dokaz."
+        if use_images
+        else "Slike frejmova nisu dostupne, zato odgovor zasnivaj samo na metapodacima i delimično dostupnim dokazima."
+    )
+    return f"""
+U prethodnom pokušaju vratio si nepotpun odgovor:
+{previous_response[:400] or "<empty response>"}
+
+Ponovo analiziraj ovaj snimak benzinske stanice i vrati ISKLJUČIVO JSON.
+
+VIDEO:
+- Fajl: {metadata.get('file_name')}
+- Veličina: {metadata.get('file_size_bytes')} bajtova
+- Dekoder: {metadata.get('decoder')}
+- FPS: {metadata.get('fps', 'unknown')}
+- Broj frejmova: {metadata.get('frame_count', 'unknown')}
+- Trajanje: {metadata.get('duration_s', 'unknown')} sekundi
+
+UZORKOVANI FREJMOVI:
+{frame_lines}
+
+{analysis_mode}
+
+Zahtevi:
+- Ne vraćaj prazan objekat.
+- Ne izmišljaj sigurnost. Ako nisi siguran, smanji confidence, ali ipak daj najbolju procenu.
+- summary mora imati 2 kratke rečenice na srpskom.
+- improvement_actions mora sadržati tačno 3 kratke akcije na srpskom.
+
+Vrati tačno ovu JSON šemu:
+{{
+  "cleanliness_score": 1-10,
+  "safety_score": 1-10,
+  "staff_score": 1-10,
+  "merchandising_score": 1-10,
+  "overall_risk_score": 0-100,
+  "hazards": ["item 1", "item 2"],
+  "stock_issues": ["item 1", "item 2"],
+  "improvement_actions": ["action 1", "action 2", "action 3"],
+  "customer_activity": "low|medium|high",
+  "confidence": 0.0-1.0,
+  "summary": "rečenica jedan. rečenica dva."
+}}
+"""
+
+
 def _normalize_result(result: Dict[str, Any]) -> Dict[str, Any]:
-    for key in ("hazards", "stock_issues"):
+    for key in ("hazards", "stock_issues", "improvement_actions"):
         value = result.get(key, [])
         if isinstance(value, str):
             result[key] = [value]
         elif not isinstance(value, list):
             result[key] = []
-    result["summary"] = str(result.get("summary", "")).strip() or "No summary provided."
+    result["customer_activity"] = str(
+        result.get("customer_activity", "low") or "low"
+    ).strip().lower()
+    if result["customer_activity"] not in {"low", "medium", "high"}:
+        result["customer_activity"] = "low"
+    if result.get("overall_risk_score") in (None, ""):
+        result["overall_risk_score"] = _derived_risk_score(result)
+    result["summary"] = str(result.get("summary", "")).strip() or _synthesized_summary(
+        result
+    )
+    if result["summary"] in {"No summary provided.", "Sažetak nije dostupan."}:
+        result["summary"] = _synthesized_summary(result)
+    if not result.get("improvement_actions"):
+        result["improvement_actions"] = _derived_improvement_actions(result)
     return result
 
 
@@ -495,73 +649,47 @@ def parse_station_video(video_path: str) -> dict:
     logger.debug("Processing video: %s", video_path)
     metadata = _load_video_metadata(video_path)
 
-    vision_ready = cv2 is not None and bool(OLLAMA_VISION_MODEL)
+    model = _select_model(True)
+    vision_ready = cv2 is not None and bool(model)
     frames: List[VideoFrame] = []
     if vision_ready:
         frames = sample_frames(video_path, FRAME_SAMPLES)
     elif cv2 is None:
         logger.debug("OpenCV is not installed; using metadata-only analysis.")
-    elif not OLLAMA_VISION_MODEL:
+    elif not model:
         logger.debug(
-            "OLLAMA_VISION_MODEL is not configured; using metadata-only analysis."
+            "No Ollama model is configured; using metadata-only analysis."
         )
 
     use_images = bool(frames) and vision_ready
-    configured_vision_model = _select_model(True) if OLLAMA_VISION_MODEL else None
-    configured_text_model = _select_model(False)
-    vision_result = None
-    text_result = None
-    vision_error = None
-    text_error = None
+    prompt = _build_prompt(metadata, frames if use_images else [], use_images)
+    images = [f.image_b64 for f in frames] if use_images else None
 
-    # Pass 1: Vision model (if frames are available)
-    if use_images:
-        vision_model = configured_vision_model or _select_model(True)
-        vision_prompt = _build_prompt(metadata, frames, True)
-        try:
-            vision_response_text = call_ollama(
-                vision_prompt, vision_model, [f.image_b64 for f in frames]
-            )
-            vision_result = _normalize_result(_parse_result(vision_response_text))
-            vision_result["_model_used"] = vision_model
-            vision_result["_raw_response"] = vision_response_text
-        except Exception as e:
-            vision_error = str(e)
-
-    # Pass 2: Text model (always run to provide second-opinion output)
-    text_model = configured_text_model
-    text_prompt = _build_prompt(metadata, [], False)
     try:
-        text_response_text = call_ollama(text_prompt, text_model, None)
-        text_result = _normalize_result(_parse_result(text_response_text))
-        text_result["_model_used"] = text_model
-        text_result["_raw_response"] = text_response_text
+        response_text = call_ollama(prompt, model, images)
+        model_output = _normalize_result(_parse_result(response_text))
+        if _is_low_information_result(model_output, response_text):
+            retry_prompt = _build_retry_prompt(
+                metadata, frames if use_images else [], use_images, response_text
+            )
+            retry_response = call_ollama(retry_prompt, model, images)
+            retry_output = _normalize_result(_parse_result(retry_response))
+            if not _is_low_information_result(retry_output, retry_response):
+                response_text = retry_response
+                model_output = retry_output
+        model_output["_model_used"] = model
+        model_output["_raw_response"] = response_text
     except Exception as e:
-        text_error = str(e)
+        raise RuntimeError(f"Ollama analysis failed for model '{model}': {e}") from e
 
-    # Final chosen result: prefer vision when available, otherwise text.
-    if vision_result:
-        result = dict(vision_result)
-        result["_model_used"] = vision_result.get("_model_used")
-    elif text_result:
-        result = dict(text_result)
-        result["_model_used"] = text_result.get("_model_used")
-    else:
-        raise RuntimeError(
-            f"Ollama analysis failed. Vision error: {vision_error}. Text error: {text_error}"
-        )
-
-    # Include both model outputs for UI visibility/debugging.
-    result["_vision_model"] = (
-        vision_result.get("_model_used") if vision_result else configured_vision_model
-    )
-    result["_vision_output"] = vision_result
-    result["_vision_error"] = vision_error
-    result["_llm_model"] = (
-        text_result.get("_model_used") if text_result else configured_text_model
-    )
-    result["_llm_output"] = text_result
-    result["_llm_error"] = text_error
+    result = dict(model_output)
+    result["_model_used"] = model
+    result["_vision_model"] = model
+    result["_vision_output"] = model_output if use_images else None
+    result["_vision_error"] = None
+    result["_llm_model"] = model
+    result["_llm_output"] = None if use_images else model_output
+    result["_llm_error"] = None
     result["_analysis_metadata"] = {
         "vision_used": bool(use_images),
         "frames_sampled": len(frames),

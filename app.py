@@ -153,6 +153,18 @@ def start_background_workers():
 st.markdown(
     """
     <style>
+        .block-container {
+            padding-top: 1.1rem !important;
+            padding-bottom: 1.25rem !important;
+            max-width: 1440px;
+        }
+
+        [data-testid="stAppViewContainer"] {
+            background:
+                radial-gradient(circle at top right, rgba(11, 94, 215, 0.06), transparent 28%),
+                linear-gradient(180deg, #f7f9fc 0%, #f4f7fb 45%, #eef3f8 100%);
+        }
+
         /* Hide the default Streamlit auto-navigation */
         [data-testid="stSidebarNav"] { display: none !important; }
 
@@ -174,7 +186,7 @@ st.markdown(
 
         /* INCREASED VERTICAL SPACING between sidebar components */
         [data-testid="stVerticalBlock"] {
-            gap: 1.5rem !important;
+            gap: 0.9rem !important;
         }
 
         /* Ensure the logo image stays flush */
@@ -190,11 +202,92 @@ st.markdown(
             margin: 6px auto !important;
         }
 
-        /* UI Polish: Rounded buttons and taller height for breathability */
+        [data-testid="stSidebar"] .block-container,
+        [data-testid="stSidebarContent"] > div {
+            gap: 0.65rem !important;
+        }
+
+        /* UI polish: compact, consistent controls */
         .stButton button {
-            border-radius: 8px;
-            height: 2.8em;
-            margin-top: 0.2rem;
+            border-radius: 10px;
+            min-height: 2.5rem;
+            margin-top: 0.1rem;
+            font-weight: 600;
+            border: 1px solid rgba(15, 23, 42, 0.08);
+        }
+
+        .stButton button[kind="primary"] {
+            box-shadow: 0 10px 18px rgba(11, 94, 215, 0.14);
+        }
+
+        div[data-testid="stMetric"] {
+            background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(246,248,251,0.96));
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            border-radius: 14px;
+            padding: 0.8rem 0.95rem;
+            box-shadow: 0 10px 24px rgba(15, 23, 42, 0.05);
+        }
+
+        div[data-testid="stMetricLabel"] {
+            font-size: 0.8rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+        }
+
+        div[data-testid="stDataFrame"] {
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            border-radius: 14px;
+            overflow: hidden;
+        }
+
+        div[data-testid="stExpander"] {
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            border-radius: 14px;
+            background: rgba(255,255,255,0.78);
+        }
+
+        div[data-testid="stAlert"] {
+            border-radius: 14px;
+        }
+
+        div[data-baseweb="tab-list"] {
+            gap: 0.35rem;
+        }
+
+        button[data-baseweb="tab"] {
+            border-radius: 999px !important;
+            padding: 0.35rem 0.85rem !important;
+            background: rgba(15, 23, 42, 0.04) !important;
+        }
+
+        button[data-baseweb="tab"][aria-selected="true"] {
+            background: rgba(11, 94, 215, 0.12) !important;
+        }
+
+        .gs-surface {
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            border-radius: 16px;
+            background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(247,249,252,0.95));
+            box-shadow: 0 14px 30px rgba(15, 23, 42, 0.05);
+            padding: 1rem 1.05rem;
+        }
+
+        .gs-page-intro {
+            margin-top: -0.2rem;
+            margin-bottom: 0.75rem;
+            color: #5b6474;
+            font-size: 0.95rem;
+            line-height: 1.5;
+        }
+
+        .gs-section-kicker {
+            font-size: 0.76rem;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: #0b5ed7;
+            font-weight: 800;
+            margin-bottom: 0.35rem;
         }
 
         footer { visibility: hidden; }
@@ -208,6 +301,141 @@ st.markdown(
             background-color: rgba(240, 242, 246, 0.75);
             border-radius: 10px;
             backdrop-filter: blur(5px);
+        }
+
+        .login-shell {
+            display: grid;
+            grid-template-columns: minmax(0, 1.15fr) minmax(320px, 0.85fr);
+            gap: 2rem;
+            align-items: stretch;
+            margin: 0.35rem auto 0 auto;
+        }
+
+        .login-panel {
+            border: 1px solid rgba(15, 23, 42, 0.10);
+            border-radius: 18px;
+            background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(245,247,250,0.96));
+            box-shadow: 0 20px 60px rgba(15, 23, 42, 0.10);
+            padding: 1.5rem 1.6rem;
+            min-height: 100%;
+        }
+
+        [data-testid="stHeader"] {
+            height: 0rem !important;
+            background: transparent !important;
+        }
+
+        [data-testid="stToolbar"] {
+            top: 0.35rem !important;
+        }
+
+        .login-brand-panel [data-testid="stImage"] img {
+            max-height: 88px;
+            width: auto !important;
+            object-fit: contain;
+        }
+
+        .login-brand-panel {
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            gap: 1.5rem;
+        }
+
+        .login-brand-copy {
+            display: grid;
+            gap: 0.9rem;
+        }
+
+        .login-kicker {
+            font-size: 0.78rem;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: #0b5ed7;
+        }
+
+        .login-title {
+            margin: 0;
+            font-size: 2rem;
+            line-height: 1.08;
+            color: #111827;
+        }
+
+        .login-subtitle {
+            margin: 0;
+            font-size: 1rem;
+            line-height: 1.65;
+            color: #4b5563;
+            max-width: 38rem;
+        }
+
+        .login-brand-panel .login-disclaimer {
+            margin-top: 0;
+            padding: 1rem 1.1rem;
+            text-align: left;
+            font-size: 0.96rem;
+            line-height: 1.6;
+            color: #374151;
+            background: rgba(255,255,255,0.72);
+            border: 1px solid rgba(148, 163, 184, 0.28);
+            border-radius: 14px;
+        }
+
+        .login-brand-actions {
+            display: grid;
+            gap: 0.9rem;
+            align-content: start;
+        }
+
+        .login-form-panel {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+        }
+
+        .login-form-header {
+            margin-bottom: 0.6rem;
+        }
+
+        .login-form-title {
+            margin: 0;
+            font-size: 1.5rem;
+            line-height: 1.2;
+            color: #111827;
+        }
+
+        .login-form-subtitle {
+            margin: 0.55rem 0 0 0;
+            font-size: 0.95rem;
+            line-height: 1.55;
+            color: #6b7280;
+        }
+
+        .login-status {
+            margin: 0.65rem 0 1rem 0;
+            padding: 0.8rem 0.95rem;
+            border-radius: 12px;
+            font-size: 0.9rem;
+            background: rgba(11, 94, 215, 0.08);
+            border: 1px solid rgba(11, 94, 215, 0.14);
+            color: #0f172a;
+        }
+
+        @media (max-width: 900px) {
+            .login-shell {
+                grid-template-columns: 1fr;
+                gap: 1.2rem;
+                margin-top: 0.2rem;
+            }
+
+            .login-panel {
+                padding: 1.4rem;
+            }
+
+            .login-title {
+                font-size: 1.65rem;
+            }
         }
     </style>
 """,
@@ -239,7 +467,30 @@ if st.session_state.get("dark_mode"):
     )
 
 # Core imports
-from core.database import get_connection
+from core.database import Base
+from sqlalchemy.orm import configure_mappers
+try:
+    # Import models package to register classes in the SQLAlchemy registry
+    import core.models
+
+    # 1. Check mapped class names (Crucial for resolving relationship strings like "Submission")
+    registered_classes = [name for name in Base.registry._class_registry.keys() if not name.startswith("_")]
+    logger.info("SQLAlchemy Class Registry: %s", ", ".join(registered_classes))
+
+    # 2. Check physical table names
+    table_names = list(Base.metadata.tables.keys())
+    logger.info("SQLAlchemy Metadata Tables: %s", ", ".join(table_names))
+
+    # Force SQLAlchemy to initialize relationships immediately to catch errors early
+    configure_mappers()
+except Exception as e:
+    logger.error("Database mapper initialization failed: %s", e)
+    st.error(f"❌ Database Configuration Error: {e}")
+    st.info("Check if all models (including Submission) are imported in core/models/__init__.py")
+    st.stop()
+
+
+from core.database import get_connection, get_schema_readiness
 from core.auth import (
     login_user_streamlit,
     logout_user_streamlit,
@@ -250,8 +501,6 @@ from core.config import LOGIN_DISCLAIMER_HTML, FOOTER_DISCLAIMER_TEXT
 
 # Page imports
 import pages.dashboard as dashboard
-import pages.role_center as role_center
-import pages.shifts as shifts
 import pages.regions as regions
 import pages.stations as stations
 import pages.map_view as map_view
@@ -503,51 +752,77 @@ try:
         st.markdown(
             """
             <style>
-                /* Pull login content to the top of the viewport. */
                 [data-testid="stAppViewContainer"] .main .block-container {
-                    padding-top: 0.1rem !important; /* Adjusted for higher placement */
-                    margin-top: 0 !important;
+                    padding-top: 0.25rem !important;
+                    padding-bottom: 1.5rem !important;
+                    max-width: 1120px !important;
                 }
             </style>
             """,
             unsafe_allow_html=True,
         )
 
-        # Center logo and login form in the same column for visual alignment.
-        _, content_col, _ = st.columns([1, 1.4, 1], vertical_alignment="top")
-        with content_col:
-            # Prefer the GenStation horizontal logo. If missing, fall back to the
-            # official login screenshot so the page still looks correct instead of
-            # falling back to the old Opus branding.
-            preferred = Path("assets/GSAI_Horizontal.png")
-            fallback = Path("assets/LogIn.png")
-            logo_path = preferred if preferred.exists() else (fallback if fallback.exists() else None)
-            if logo_path:
-                # Constrain height to keep the logo compact and positioned near the top
-                st.image(str(logo_path), width=520)
+        left_col, right_col = st.columns([1.25, 0.95], gap="large", vertical_alignment="top")
+        with left_col:
+            st.markdown('<div class="login-panel login-brand-panel">', unsafe_allow_html=True)
+            logo_path = Path("assets/GSAI_Horizontal.png")
+            if not logo_path.exists():
+                logo_path = Path("assets/OpusLogo.png")
+            if logo_path.exists():
+                st.image(str(logo_path), use_container_width=True)
+            st.markdown(
+                """
+                <div class="login-brand-copy">
+                    <div class="login-kicker">Operational Video Intelligence</div>
+                    <h1 class="login-title">GentStationAI</h1>
+                    <p class="login-subtitle">
+                        Centralized video reporting, AI risk assessment, and station oversight in one streamlined workspace.
+                    </p>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            st.markdown('<div class="login-brand-actions">', unsafe_allow_html=True)
+            if st.button("Forgot Password?", type="secondary", use_container_width=True):
+                st.session_state["show_forgot_pw"] = True
+            st.markdown(LOGIN_DISCLAIMER_HTML, unsafe_allow_html=True)
+            st.markdown("</div>", unsafe_allow_html=True)
+            st.markdown("</div>", unsafe_allow_html=True)
 
-            # Add a bit of space before the form
-            st.markdown("<br>", unsafe_allow_html=True)
+        with right_col:
+            st.markdown('<div class="login-panel login-form-panel">', unsafe_allow_html=True)
+            st.markdown(
+                """
+                <div class="login-form-header">
+                    <h2 class="login-form-title">Sign in</h2>
+                    <p class="login-form-subtitle">
+                        Use your GentStationAI account to access dashboards, reporting, and station operations.
+                    </p>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
-            # --- SYSTEM STATUS WIDGET ---
+            status_markup = '<div class="login-status">System status: Operational</div>'
             try:
                 sys_row = conn.execute(
                     "SELECT value FROM system_settings WHERE key='maintenance_mode'"
                 ).fetchone()
                 if sys_row and sys_row[0] == "1":
-                    st.warning(
-                        "🛠️ **MAINTENANCE MODE**\n\nLogin restricted to Administrators.",
-                        icon="⚠️",
+                    status_markup = (
+                        '<div class="login-status">'
+                        "<strong>Maintenance mode is active.</strong><br>"
+                        "Login is currently restricted to General Manager accounts."
+                        "</div>"
                     )
-                else:
-                    st.caption("🟢 System Status: **Operational**")
             except Exception:
                 pass
+            st.markdown(status_markup, unsafe_allow_html=True)
 
             with st.form("login_form"):
                 cred = st.text_input("Username or Email")
                 pw = st.text_input("Password", type="password")
-                ack = st.checkbox("I acknowledge the disclaimer below")
+                ack = st.checkbox("I acknowledge the AI usage disclaimer")
 
                 submitted = st.form_submit_button("Login", width="stretch")
 
@@ -561,10 +836,6 @@ try:
                         else:
                             st.error(msg)
 
-            # --- FORGOT PASSWORD ---
-            if st.button("Forgot Password?", type="secondary"):
-                st.session_state["show_forgot_pw"] = True
-
             if st.session_state.get("show_forgot_pw"):
                 with st.form("forgot_pw_form"):
                     st.subheader("Reset Your Password")
@@ -576,9 +847,7 @@ try:
                             send_password_reset_email(conn, email_to_reset)
                         else:
                             st.error("Please enter an email address.")
-
-        # Render disclaimer outside the centered login column so it spans the full page content width.
-        st.markdown(LOGIN_DISCLAIMER_HTML, unsafe_allow_html=True)
+            st.markdown("</div>", unsafe_allow_html=True)
 
         st.stop()
 
@@ -606,6 +875,17 @@ try:
     except Exception:
         pass
 
+    try:
+        schema_state = get_schema_readiness(conn)
+        if not schema_state["is_ready"]:
+            st.warning(
+                "Postgres schema is behind the current application code. Some pages are intentionally limited until migrations are applied."
+            )
+            for msg in schema_state["blockers"] + schema_state["warnings"]:
+                st.caption(msg)
+    except Exception as e:
+        logger.warning("Schema readiness check failed: %s", e)
+
     # Fallback
     if not selected_page:
         selected_page = "Dashboard"
@@ -615,8 +895,6 @@ try:
         """Returns a mapping of page IDs to their respective render functions."""
         return {
             "Dashboard": dashboard.render,
-            "Personal Dashboard": role_center.render,
-            "Shifts": shifts.render,
             "Regions": regions.render,
             "Stations": stations.render,
             "Map View": map_view.render,

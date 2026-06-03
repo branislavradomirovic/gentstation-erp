@@ -8,7 +8,8 @@ from core.activity_logger import log_activity
 def render(conn):
     render_page_header("🚨 AI Alerts & Incidents")
     st.markdown(
-        "Manage and track AI-detected safety hazards, operational anomalies, and other critical incidents."
+        '<div class="gs-page-intro">Review urgent AI-detected findings from one consolidated workspace, then acknowledge or resolve them without leaving the page.</div>',
+        unsafe_allow_html=True,
     )
 
     # --- 1. FILTERS ---
@@ -59,51 +60,74 @@ def render(conn):
     query += " ORDER BY a.created_at DESC LIMIT 500"
     alerts_df = pd.read_sql_query(query, conn, params=params)
 
-    st.divider()
-    st.subheader("Alerts Feed")
+    summary_tab, feed_tab = st.tabs(["Summary", "Alerts Feed"])
 
-    if alerts_df.empty:
-        st.info("No alerts match the current filters.")
-    else:
-        for _, row in alerts_df.iterrows():
-            icon = {"HIGH": "🚨", "MEDIUM": "⚠️", "LOW": "ℹ️"}.get(row["severity"], "ℹ️")
-            st.container(border=True).markdown(
-                f"""
-                **{icon} [{row['status'].upper()}]** at **{row['station_name']}**
-
-                *Timestamp: {row['created_at']}*
-
-                {row['message']}
-            """
+    with summary_tab:
+        total_alerts = 0 if alerts_df.empty else int(len(alerts_df))
+        high_count = 0 if alerts_df.empty else int((alerts_df["severity"] == "HIGH").sum())
+        ack_count = 0 if alerts_df.empty else int((alerts_df["status"] == "acknowledged").sum())
+        unresolved_count = 0 if alerts_df.empty else int(
+            alerts_df["status"].isin(["new", "acknowledged"]).sum()
+        )
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Filtered Alerts", total_alerts)
+        m2.metric("High Severity", high_count)
+        m3.metric("Acknowledged", ack_count)
+        m4.metric("Open Incidents", unresolved_count)
+        if alerts_df.empty:
+            st.info("No alerts match the current filters.")
+        else:
+            station_summary = (
+                alerts_df.groupby(["station_name", "severity"])
+                .size()
+                .reset_index(name="Count")
+                .sort_values(["Count", "station_name"], ascending=[False, True])
             )
+            st.dataframe(station_summary, use_container_width=True, hide_index=True)
 
-            b_cols = st.columns(8)
-            if row["status"] != "acknowledged":
-                if b_cols[0].button(
-                    "Acknowledge", key=f"ack_{row['id']}", width="stretch"
-                ):
-                    conn.execute(
-                        "UPDATE ai_alerts SET status = 'acknowledged' WHERE id = %s",
-                        (row["id"],),
-                    )
-                    conn.commit()
-                    log_activity(
-                        conn, "ACK_ALERT", f"Acknowledged alert ID {row['id']}"
-                    )
-                    st.rerun()
-            if row["status"] != "resolved":
-                if b_cols[1].button(
-                    "Resolve",
-                    key=f"res_{row['id']}",
-                    width="stretch",
-                    help="Mark this incident as resolved and move it to the historical archive.",
-                ):
-                    conn.execute(
-                        "UPDATE ai_alerts SET status = 'resolved' WHERE id = %s",
-                        (row["id"],),
-                    )
-                    conn.commit()
-                    log_activity(
-                        conn, "RESOLVE_ALERT", f"Resolved alert ID {row['id']}"
-                    )
-                    st.rerun()
+    with feed_tab:
+        if alerts_df.empty:
+            st.info("No alerts match the current filters.")
+        else:
+            for _, row in alerts_df.iterrows():
+                icon = {"HIGH": "🚨", "MEDIUM": "⚠️", "LOW": "ℹ️"}.get(row["severity"], "ℹ️")
+                st.container(border=True).markdown(
+                    f"""
+                    **{icon} [{row['status'].upper()}]** at **{row['station_name']}**
+
+                    *Timestamp: {row['created_at']}*
+
+                    {row['message']}
+                """
+                )
+
+                b_cols = st.columns(8)
+                if row["status"] != "acknowledged":
+                    if b_cols[0].button(
+                        "Acknowledge", key=f"ack_{row['id']}", width="stretch"
+                    ):
+                        conn.execute(
+                            "UPDATE ai_alerts SET status = 'acknowledged' WHERE id = %s",
+                            (row["id"],),
+                        )
+                        conn.commit()
+                        log_activity(
+                            conn, "ACK_ALERT", f"Acknowledged alert ID {row['id']}"
+                        )
+                        st.rerun()
+                if row["status"] != "resolved":
+                    if b_cols[1].button(
+                        "Resolve",
+                        key=f"res_{row['id']}",
+                        width="stretch",
+                        help="Mark this incident as resolved and move it to the historical archive.",
+                    ):
+                        conn.execute(
+                            "UPDATE ai_alerts SET status = 'resolved' WHERE id = %s",
+                            (row["id"],),
+                        )
+                        conn.commit()
+                        log_activity(
+                            conn, "RESOLVE_ALERT", f"Resolved alert ID {row['id']}"
+                        )
+                        st.rerun()

@@ -4,8 +4,6 @@ from core.database import get_connection
 # Mapping from page ID to the help tab name in pages/help.py
 HELP_TAB_MAP = {
     "Dashboard": "Overview & submission",
-    "Personal Dashboard": "Overview & submission",
-    "Shifts": "Management Modules",
     "Regions": "Management Modules",
     "Stations": "Management Modules",
     "Employees": "Management Modules",
@@ -40,25 +38,66 @@ def render_page_header(title: str):
     except Exception:
         pass
 
-    # Determine layout based on visible elements
-    show_alerts = alert_count > 0
-    show_help = help_tab_name is not None
+    st.markdown(
+        """
+        <style>
+            .gs-page-header {
+                display:flex;
+                justify-content:space-between;
+                align-items:flex-start;
+                gap:1rem;
+                margin-bottom:0.9rem;
+                padding:0.15rem 0 0 0;
+            }
+            .gs-page-header-copy {
+                display:grid;
+                gap:0.2rem;
+            }
+            .gs-page-header-eyebrow {
+                font-size:0.76rem;
+                font-weight:700;
+                text-transform:uppercase;
+                letter-spacing:0.08em;
+                color:#0b5ed7;
+            }
+            .gs-page-header-title {
+                margin:0;
+                font-size:1.85rem;
+                line-height:1.1;
+                color:#111827;
+            }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
-    if show_alerts and show_help:
-        col1, col2, col3 = st.columns([0.8, 0.1, 0.1])
+    action_count = int(alert_count > 0) + int(help_tab_name is not None)
+    if action_count == 2:
+        col1, col2, col3 = st.columns([0.78, 0.11, 0.11], vertical_alignment="bottom")
         alert_col, help_col = col2, col3
-    elif show_alerts:
-        col1, col2 = st.columns([0.9, 0.1])
+    elif alert_count > 0:
+        col1, col2 = st.columns([0.89, 0.11], vertical_alignment="bottom")
         alert_col, help_col = col2, None
-    elif show_help:
-        col1, col2 = st.columns([0.9, 0.1])
+    elif help_tab_name is not None:
+        col1, col2 = st.columns([0.89, 0.11], vertical_alignment="bottom")
         alert_col, help_col = None, col2
     else:
         col1 = st.container()
         alert_col, help_col = None, None
 
+    section_name = page_id or "Workspace"
     with col1:
-        st.title(title)
+        st.markdown(
+            f"""
+            <div class="gs-page-header">
+                <div class="gs-page-header-copy">
+                    <div class="gs-page-header-eyebrow">{section_name}</div>
+                    <h1 class="gs-page-header-title">{title}</h1>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
     if alert_col:
         with alert_col:

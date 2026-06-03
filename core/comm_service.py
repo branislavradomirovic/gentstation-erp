@@ -2,6 +2,8 @@ import os
 import smtplib
 import time
 import string
+import requests
+from typing import Optional, Dict
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.image import MIMEImage
@@ -35,6 +37,126 @@ def _smtp_settings():
         os.getenv("SMTP_USER"),
         os.getenv("SMTP_PASS"),
     )
+
+
+def _telegram_bot_token() -> Optional[str]:
+    return os.getenv("TELEGRAM_BOT_TOKEN")
+
+
+def _truncate_text(value: str, limit: int = 120) -> str:
+    text = " ".join(str(value or "").split()).strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _risk_band(risk_score: float) -> str:
+    if risk_score >= 70:
+        return "Visok"
+    if risk_score >= 40:
+        return "Srednji"
+    return "Nizak"
+
+
+def _short_risk_feedback(risk_score: float, report_data: dict) -> str:
+    hazards = report_data.get("hazards") or []
+    if isinstance(hazards, str):
+        hazards = [hazards]
+    top_hazard = _truncate_text(hazards[0], 60) if hazards else ""
+
+    if risk_score >= 70:
+        return f"Potrebna je hitna reakcija{': ' + top_hazard if top_hazard else '.'}"
+    if risk_score >= 40:
+        return f"Uočen je operativni rizik{': ' + top_hazard if top_hazard else '.'}"
+    return "Na snimku je uočen nizak nivo vidljivog rizika."
+
+
+def send_submission_result_telegram(
+    conn,
+    submission_id: int,
+    report_data: Optional[Dict] = None,
+    error_message: Optional[str] = None,
+) -> bool:
+    """
+    Notify the uploader in Telegram when AI processing finishes.
+    Sends a short risk-oriented summary on success and a retry-friendly message
+    on failure. Returns True when Telegram accepted the message.
+    """
+    token = _telegram_bot_token()
+    if not token:
+        logger.debug("Telegram bot token missing. Completion notification skipped.")
+        return False
+
+    row = conn.execute(
+        """
+        SELECT u.telegram_chat_id, COALESCE(s.name, 'Unknown Station') AS station_name
+        FROM submissions sub
+        JOIN users u ON sub.employee_id = u.id
+        LEFT JOIN stations s ON sub.station_id = s.id
+        WHERE sub.id = %s
+        """,
+        (submission_id,),
+    ).fetchone()
+    if not row or not row[0]:
+        logger.debug(
+            "No Telegram chat linked for submission %s. Completion notification skipped.",
+            submission_id,
+        )
+        return False
+
+    chat_id, station_name = row
+
+    if report_data is not None:
+        try:
+            from ai_engine.risk_engine import compute_station_risk_from_metrics
+
+            risk_score = compute_station_risk_from_metrics(report_data)
+        except Exception:
+            safety = float(report_data.get("safety_score", 7) or 7)
+            risk_score = max(0.0, min(100.0, round(((10.0 - safety) / 10.0) * 100.0, 2)))
+
+        summary = _truncate_text(report_data.get("summary", ""), 100)
+        feedback = _short_risk_feedback(risk_score, report_data)
+        message = (
+            f"✅ Video za stanicu {station_name} je obrađen.\n"
+            f"AI povratna informacija: Rizik {round(risk_score, 1)}/100 ({_risk_band(risk_score)}). {feedback}"
+        )
+        if summary and summary not in {"No summary provided.", "Sažetak nije dostupan."}:
+            message += f"\nSažetak: {summary}"
+    else:
+        reason = _truncate_text(error_message or "Nepoznata greška pri obradi.", 120)
+        message = (
+            f"⚠️ Obrada videa za stanicu {station_name} nije uspela.\n"
+            f"Razlog: {reason}\n"
+            "Fajl je zadržan kako bi mogao ponovo da se obradi."
+        )
+
+    try:
+        response = requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={"chat_id": str(chat_id), "text": message},
+            timeout=10,
+        )
+        if response.status_code == 200:
+            logger.info(
+                "Telegram completion notification sent for submission %s to chat %s.",
+                submission_id,
+                chat_id,
+            )
+            return True
+        logger.warning(
+            "Telegram completion notification failed for submission %s: %s %s",
+            submission_id,
+            response.status_code,
+            response.text,
+        )
+    except Exception as e:
+        logger.warning(
+            "Telegram completion notification errored for submission %s: %s",
+            submission_id,
+            e,
+        )
+    return False
 
 
 def send_activation_email(conn, user_id: int, reset_password: bool = False):
@@ -290,24 +412,93 @@ def send_ai_report_email(conn, station_id: int, report_data: dict):
     msg = MIMEMultipart()
     msg["From"] = f"GentStation AI Auditor <{SENDER_EMAIL}>"
     msg["To"] = manager_email
-    msg["Subject"] = f"🚨 New AI Audit Report for {station_name}"
+    msg["Subject"] = f"AI izveštaj za stanicu {station_name}"
 
-    body = f"""
-    A new video submission for {station_name} has been analyzed by the AI Auditor.
+    hazards = report_data.get("hazards", ["Nema"])
+    if not isinstance(hazards, list):
+        hazards = [hazards]
+    hazard_text = ", ".join(str(item) for item in hazards if str(item).strip()) or "Nema"
+    stock_issues = report_data.get("stock_issues", ["Nema"])
+    if not isinstance(stock_issues, list):
+        stock_issues = [stock_issues]
+    stock_text = ", ".join(str(item) for item in stock_issues if str(item).strip()) or "Nema"
+    actions = report_data.get("improvement_actions") or []
+    if not isinstance(actions, list):
+        actions = [actions]
+    action_markup = "".join(
+        f"<li>{str(item).strip()}</li>" for item in actions if str(item).strip()
+    ) or "<li>Nema dodatnih preporuka.</li>"
+    risk_score = report_data.get("overall_risk_score", "N/A")
+    summary_text = report_data.get("summary", "Sažetak nije dostupan.")
 
-    --- EXECUTIVE SUMMARY ---
-    {report_data.get('summary', 'N/A')}
+    plain_body = f"""
+    Novi video izveštaj za stanicu {station_name} je obrađen.
 
-    --- KEY METRICS ---
-    - Cleanliness Score: {report_data.get('cleanliness_score', 'N/A')} / 10
-    - Safety Score:      {report_data.get('safety_score', 'N/A')} / 10
-    - Staff Score:       {report_data.get('staff_score', 'N/A')} / 10
+    SAŽETAK
+    {summary_text}
 
-    Detected Hazards: {', '.join(report_data.get('hazards', ['None']))}
+    KLJUČNI REZULTATI
+    - Ukupan rizik: {risk_score}/100
+    - Čistoća: {report_data.get('cleanliness_score', 'N/A')} / 10
+    - Bezbednost: {report_data.get('safety_score', 'N/A')} / 10
+    - Zaposleni: {report_data.get('staff_score', 'N/A')} / 10
+    - Merchandising: {report_data.get('merchandising_score', 'N/A')} / 10
 
-    You can view the full details in the GentStation Opus ERP dashboard.
+    UOČENI RIZICI
+    {hazard_text}
+
+    STOCK / IZVRŠENJE
+    {stock_text}
+
+    PREPORUČENE AKCIJE
+    - """ + "\n    - ".join(
+        [str(item).strip() for item in actions if str(item).strip()] or ["Nema dodatnih preporuka."]
+    ) + """
+
+    Kompletan izveštaj je dostupan u GentStationAI aplikaciji.
     """
-    msg.attach(MIMEText(body, "plain"))
+
+    html_body = f"""
+    <html>
+      <body style="font-family: Arial, sans-serif; color:#1f2937; background:#f7f9fc; padding:16px;">
+        <div style="max-width:720px; margin:0 auto; background:#ffffff; border:1px solid #e5e7eb; border-radius:16px; padding:24px;">
+          <div style="font-size:12px; letter-spacing:0.08em; text-transform:uppercase; color:#0b5ed7; font-weight:700;">GentStationAI</div>
+          <h2 style="margin:10px 0 6px 0; color:#111827;">AI izveštaj za stanicu {station_name}</h2>
+          <p style="margin:0 0 18px 0; color:#4b5563;">Video je uspešno analiziran i pripremljen za menadžerski pregled.</p>
+
+          <div style="background:#f3f7ff; border:1px solid #dbe7ff; border-radius:12px; padding:14px 16px; margin-bottom:18px;">
+            <div style="font-size:12px; text-transform:uppercase; color:#0b5ed7; font-weight:700; margin-bottom:6px;">Sažetak</div>
+            <div style="font-size:15px; line-height:1.6; color:#111827;">{summary_text}</div>
+          </div>
+
+          <table style="width:100%; border-collapse:collapse; margin-bottom:18px;">
+            <tr>
+              <td style="padding:10px; border:1px solid #e5e7eb; border-radius:10px;"><strong>Ukupan rizik</strong><br>{risk_score}/100</td>
+              <td style="padding:10px; border:1px solid #e5e7eb;"><strong>Čistoća</strong><br>{report_data.get('cleanliness_score', 'N/A')} / 10</td>
+              <td style="padding:10px; border:1px solid #e5e7eb;"><strong>Bezbednost</strong><br>{report_data.get('safety_score', 'N/A')} / 10</td>
+              <td style="padding:10px; border:1px solid #e5e7eb;"><strong>Zaposleni</strong><br>{report_data.get('staff_score', 'N/A')} / 10</td>
+              <td style="padding:10px; border:1px solid #e5e7eb;"><strong>Merch.</strong><br>{report_data.get('merchandising_score', 'N/A')} / 10</td>
+            </tr>
+          </table>
+
+          <h3 style="margin:0 0 8px 0; color:#111827;">Uočeni rizici</h3>
+          <p style="margin:0 0 16px 0; color:#374151;">{hazard_text}</p>
+
+          <h3 style="margin:0 0 8px 0; color:#111827;">Stock / izvršenje</h3>
+          <p style="margin:0 0 16px 0; color:#374151;">{stock_text}</p>
+
+          <h3 style="margin:0 0 8px 0; color:#111827;">Preporučene akcije</h3>
+          <ul style="margin:0 0 16px 18px; color:#374151; line-height:1.6;">
+            {action_markup}
+          </ul>
+
+          <p style="margin:0; color:#6b7280;">Kompletan izveštaj možete pregledati u GentStationAI aplikaciji.</p>
+        </div>
+      </body>
+    </html>
+    """
+    msg.attach(MIMEText(plain_body, "plain"))
+    msg.attach(MIMEText(html_body, "html"))
 
     # 4. Actual Transmission
     try:
