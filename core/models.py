@@ -1,4 +1,17 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, Numeric, JSON, func, Identity
+from sqlalchemy import (
+    Column,
+    Integer,
+    String,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Text,
+    Numeric,
+    JSON,
+    func,
+    Identity,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import declarative_base, relationship
 
 Base = declarative_base()
@@ -45,6 +58,7 @@ class User(Base):
     surname = Column(String(255))
     station_id = Column(Integer, ForeignKey("stations.id", ondelete="CASCADE"))
     region_id = Column(Integer, ForeignKey("regions.id", ondelete="CASCADE"))
+    manager_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
     telegram_chat_id = Column(String(255))
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
@@ -123,6 +137,38 @@ class AIAlert(Base):
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
 
+class ScheduledReport(Base):
+    __tablename__ = "scheduled_reports"
+    __table_args__ = (
+        UniqueConstraint(
+            "report_type",
+            "scope_type",
+            "scope_id",
+            "recipient_user_id",
+            "period_start",
+            "period_end",
+            name="uq_scheduled_report_window",
+        ),
+    )
+
+    id = Column(Integer, Identity(always=False), primary_key=True)
+    report_type = Column(String(32), nullable=False)
+    scope_type = Column(String(32), nullable=False)
+    scope_id = Column(Integer)
+    recipient_user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"))
+    period_start = Column(DateTime, nullable=False)
+    period_end = Column(DateTime, nullable=False)
+    scheduled_for = Column(DateTime, nullable=False)
+    status = Column(String(32), nullable=False, default="pending")
+    delivery_channel = Column(String(32))
+    payload_json = Column(JSON)
+    error_message = Column(Text)
+    sent_at = Column(DateTime)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    recipient = relationship("User", back_populates="scheduled_reports")
+
+
 # Define relationships after all dependent classes exist so mapper
 # configuration is resilient during Streamlit reloads.
 Region.stations = relationship("Station", back_populates="region", cascade="all, delete-orphan")
@@ -133,9 +179,12 @@ Region.users = relationship("User", back_populates="region", cascade="all, delet
 User.region = relationship("Region", back_populates="users")
 User.station = relationship("Station", back_populates="users")
 User.submissions = relationship("Submission", back_populates="user", cascade="all, delete-orphan")
+User.manager = relationship("User", remote_side=[User.id], back_populates="direct_reports")
+User.direct_reports = relationship("User", back_populates="manager")
 Submission.station = relationship("Station", back_populates="submissions")
 Submission.user = relationship("User", back_populates="submissions")
 StationCategory.stations = relationship("Station", back_populates="category", cascade="all, delete-orphan")
 Station.category = relationship("StationCategory", back_populates="stations")
 Station.alerts = relationship("AIAlert", back_populates="station", cascade="all, delete-orphan")
 AIAlert.station = relationship("Station", back_populates="alerts")
+User.scheduled_reports = relationship("ScheduledReport", back_populates="recipient", cascade="all, delete-orphan")

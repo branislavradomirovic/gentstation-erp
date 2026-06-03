@@ -40,6 +40,7 @@ def create_user(
     surname: Optional[str] = None,
     station_id: Optional[int] = None,
     region_id: Optional[int] = None,
+    manager_user_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Create new user in users table. Returns user row dict."""
     station_scoped_roles = {
@@ -64,6 +65,18 @@ def create_user(
     else:
         station_id = None if station_id is None else station_id
 
+    if role == "General Manager":
+        manager_user_id = None
+    elif role == "Region Manager":
+        if not manager_user_id:
+            raise ValueError("Region Manager requires assignment to a General Manager.")
+    elif role == "Gas Station Manager":
+        if not manager_user_id:
+            raise ValueError("Gas Station Manager requires assignment to a Region Manager.")
+    elif role == "Employee":
+        if not manager_user_id:
+            raise ValueError("Employee requires assignment to a Gas Station Manager.")
+
     with get_connection() as conn:
         cur = conn.cursor()
         pw_hash = hash_password(password)
@@ -71,9 +84,9 @@ def create_user(
             """
             INSERT INTO users (
                 username, email, password_hash, role, is_active, created_at,
-                force_password_change, name, surname, station_id, region_id
+                force_password_change, name, surname, station_id, region_id, manager_user_id
             )
-            VALUES (%s, %s, %s, %s, TRUE, %s, TRUE, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, TRUE, %s, TRUE, %s, %s, %s, %s, %s)
             RETURNING id
         """,
             (
@@ -86,6 +99,7 @@ def create_user(
                 (surname or "").strip() or None,
                 station_id,
                 region_id,
+                manager_user_id,
             ),
         )
         uid = cur.fetchone()[0]
@@ -99,6 +113,7 @@ def create_user(
             "surname": (surname or "").strip() or None,
             "station_id": station_id,
             "region_id": region_id,
+            "manager_user_id": manager_user_id,
         }
 
 

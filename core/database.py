@@ -636,6 +636,7 @@ def ensure_schema(conn):
             surname VARCHAR(255),
             station_id INTEGER REFERENCES stations(id) ON DELETE SET NULL,
             region_id INTEGER REFERENCES regions(id) ON DELETE SET NULL,
+            manager_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
             telegram_chat_id VARCHAR(255),
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -659,6 +660,9 @@ def ensure_schema(conn):
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS region_id INTEGER REFERENCES regions(id) ON DELETE SET NULL;"
         )
         cursor.execute(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS manager_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL;"
+        )
+        cursor.execute(
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS telegram_chat_id VARCHAR(255);"
         )
         cursor.execute(
@@ -671,6 +675,7 @@ def ensure_schema(conn):
             AS $$
             DECLARE
                 station_region_id INTEGER;
+                manager_role VARCHAR(100);
             BEGIN
                 IF NEW.role IN ('Employee', 'Gas Station Supervisor', 'Gas Station Manager') THEN
                     IF NEW.station_id IS NULL THEN
@@ -691,6 +696,38 @@ def ensure_schema(conn):
                         RAISE EXCEPTION 'Region Manager requires region_id';
                     END IF;
                     NEW.station_id := NULL;
+                ELSIF NEW.role = 'General Manager' THEN
+                    NEW.station_id := NULL;
+                    NEW.region_id := NULL;
+                    NEW.manager_user_id := NULL;
+                END IF;
+
+                IF NEW.manager_user_id IS NOT NULL THEN
+                    SELECT role INTO manager_role
+                    FROM users
+                    WHERE id = NEW.manager_user_id;
+
+                    IF manager_role IS NULL THEN
+                        RAISE EXCEPTION 'Assigned manager % does not exist', NEW.manager_user_id;
+                    END IF;
+
+                    IF NEW.role = 'Employee' AND manager_role <> 'Gas Station Manager' THEN
+                        RAISE EXCEPTION 'Employee must report to Gas Station Manager';
+                    ELSIF NEW.role = 'Gas Station Manager' AND manager_role <> 'Region Manager' THEN
+                        RAISE EXCEPTION 'Gas Station Manager must report to Region Manager';
+                    ELSIF NEW.role = 'Region Manager' AND manager_role <> 'General Manager' THEN
+                        RAISE EXCEPTION 'Region Manager must report to General Manager';
+                    ELSIF NEW.role = 'General Manager' THEN
+                        RAISE EXCEPTION 'General Manager cannot have manager_user_id';
+                    END IF;
+                ELSE
+                    IF NEW.role = 'Employee' THEN
+                        RAISE EXCEPTION 'Employee requires manager_user_id';
+                    ELSIF NEW.role = 'Gas Station Manager' THEN
+                        RAISE EXCEPTION 'Gas Station Manager requires manager_user_id';
+                    ELSIF NEW.role = 'Region Manager' THEN
+                        RAISE EXCEPTION 'Region Manager requires manager_user_id';
+                    END IF;
                 END IF;
 
                 RETURN NEW;
@@ -705,6 +742,44 @@ def ensure_schema(conn):
             BEFORE INSERT OR UPDATE ON users
             FOR EACH ROW
             EXECUTE FUNCTION enforce_user_assignment_integrity();
+            """
+        )
+
+        cursor.execute(
+            """
+            DO $$
+            DECLARE
+                gm_id INTEGER;
+            BEGIN
+                SELECT id INTO gm_id
+                FROM users
+                WHERE role = 'General Manager'
+                ORDER BY id
+                LIMIT 1;
+
+                IF gm_id IS NOT NULL THEN
+                    UPDATE users rm
+                    SET manager_user_id = gm_id
+                    WHERE rm.role = 'Region Manager'
+                      AND rm.manager_user_id IS NULL;
+
+                    UPDATE users gsm
+                    SET manager_user_id = rm.id
+                    FROM users rm
+                    WHERE gsm.role = 'Gas Station Manager'
+                      AND rm.role = 'Region Manager'
+                      AND gsm.region_id = rm.region_id
+                      AND gsm.manager_user_id IS NULL;
+
+                    UPDATE users emp
+                    SET manager_user_id = gsm.id
+                    FROM users gsm
+                    WHERE emp.role = 'Employee'
+                      AND gsm.role = 'Gas Station Manager'
+                      AND emp.station_id = gsm.station_id
+                      AND emp.manager_user_id IS NULL;
+                END IF;
+            END $$;
             """
         )
 
@@ -850,6 +925,28 @@ def ensure_schema(conn):
         """
         )
 
+        cursor.execute(
+            """
+        CREATE TABLE IF NOT EXISTS scheduled_reports (
+            id INTEGER PRIMARY KEY GENERATED BY DEFAULT AS IDENTITY,
+            report_type VARCHAR(32) NOT NULL,
+            scope_type VARCHAR(32) NOT NULL,
+            scope_id INTEGER,
+            recipient_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+            period_start TIMESTAMP NOT NULL,
+            period_end TIMESTAMP NOT NULL,
+            scheduled_for TIMESTAMP NOT NULL,
+            status VARCHAR(32) NOT NULL DEFAULT 'pending',
+            delivery_channel VARCHAR(32),
+            payload_json JSONB,
+            error_message TEXT,
+            sent_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+        )
+
         # Slow Query Logs table
         cursor.execute(
             """
@@ -914,6 +1011,27 @@ def ensure_schema(conn):
             """
         CREATE INDEX IF NOT EXISTS idx_submissions_processed
         ON submissions(processed);
+        """
+        )
+
+        cursor.execute(
+            """
+        CREATE INDEX IF NOT EXISTS idx_users_manager_user_id
+        ON users(manager_user_id);
+        """
+        )
+
+        cursor.execute(
+            """
+        CREATE INDEX IF NOT EXISTS idx_scheduled_reports_due
+        ON scheduled_reports(status, scheduled_for);
+        """
+        )
+
+        cursor.execute(
+            """
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_scheduled_report_window
+        ON scheduled_reports(report_type, scope_type, COALESCE(scope_id, -1), recipient_user_id, period_start, period_end);
         """
         )
 

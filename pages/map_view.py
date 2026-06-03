@@ -79,8 +79,17 @@ def render(conn):
                 "Use the map tab to inspect queue pressure, recent activity, and high-risk alerts by station."
             )
 
-        # Create map without a specific center; we will fit it to the markers' bounds later.
-        m = folium.Map(tiles="CartoDB positron")
+        # Create map with a reliable default base layer and add optional alternates.
+        center_lat = float(stations_df["lat"].mean())
+        center_lon = float(stations_df["lon"].mean())
+        m = folium.Map(
+            location=[center_lat, center_lon],
+            zoom_start=7,
+            tiles=None,
+            control_scale=True,
+        )
+        folium.TileLayer("OpenStreetMap", name="Standard Map", control=True).add_to(m)
+        folium.TileLayer("CartoDB positron", name="Light Map", control=True).add_to(m)
 
         # --- Inject CSS for Pulsing Effect ---
         # This defines a keyframe animation and a custom class for the marker
@@ -205,11 +214,19 @@ def render(conn):
 
         # --- Fit map to bounds of all stations ---
         # This ensures the map is perfectly centered and zoomed on the stations.
-        bounds = [
-            [stations_df["lat"].min(), stations_df["lon"].min()],
-            [stations_df["lat"].max(), stations_df["lon"].max()],
-        ]
-        m.fit_bounds(bounds, padding=(30, 30))
+        min_lat = float(stations_df["lat"].min())
+        max_lat = float(stations_df["lat"].max())
+        min_lon = float(stations_df["lon"].min())
+        max_lon = float(stations_df["lon"].max())
+        if min_lat == max_lat and min_lon == max_lon:
+            m.location = [min_lat, min_lon]
+            m.zoom_start = 14
+        else:
+            bounds = [
+                [min_lat, min_lon],
+                [max_lat, max_lon],
+            ]
+            m.fit_bounds(bounds, padding=(30, 30))
 
         # --- Layer 2: High Risk Alerts (AI) ---
         fg_alerts = folium.FeatureGroup(name="⚠️ High Risk Alerts", show=False)

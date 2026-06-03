@@ -69,7 +69,7 @@ def _help_topics():
             "title": "Employees",
             "summary": "Employees manages who can submit videos, who receives alerts, and which station each person represents.",
             "details": [
-                "Assign every employee to the correct role and station before activating reporting.",
+                "Assign every employee to the correct role, station, and reporting manager before activating reporting.",
                 "Keep Telegram linkage accurate so uploads and AI completion replies reach the right person.",
                 "This page is also where password resets and account activation are controlled.",
             ],
@@ -127,6 +127,7 @@ def _help_topics():
             "summary": "AI Monitoring is the operational screen for worker health, throughput, and service diagnostics.",
             "details": [
                 "Use this page to confirm the AI worker, Telegram bot, Redis, and AI service are alive.",
+                "The Report Scheduler status confirms whether daily, weekly, and monthly management rollups are being generated.",
                 "It is the right place for deep operational troubleshooting when queue behavior looks wrong.",
                 "Managers should rely on this page during rollout, recovery, or production testing.",
             ],

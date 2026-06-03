@@ -10,6 +10,7 @@ from core.database import get_session
 from core.models import Station
 from core.activity_logger import log_activity  # Keep this import
 from ai_engine.risk_engine import compute_station_risk_from_metrics
+from core.report_scope import get_scope_filter_clause
 
 QUEUE_STALLED_AFTER_MINUTES = 10
 
@@ -131,30 +132,10 @@ def render(conn):
     where_clause = ""
     params = []
 
-    if user_role == "Region Manager":
-        if current_user_id:
-            # Region Manager's region_id is now directly on the users table
-            region_id_row = conn.execute(
-                "SELECT region_id FROM users WHERE id = %s", (current_user_id,)
-            ).fetchone()
-            if region_id_row:
-                where_clause = "AND st.region_id = %s"
-                params = [region_id_row[0]]
-            else:
-                where_clause = "AND 1=0"  # No region assigned to this manager
-    elif user_role == "Gas Station Manager":
-        if current_user_id:
-            # Gas Station Manager's station_id is now directly on the users table
-            station_id_row = conn.execute(
-                "SELECT station_id FROM users WHERE id = %s", (current_user_id,)
-            ).fetchone()
-            if station_id_row:
-                where_clause = "AND s.station_id = %s"
-                params = [station_id_row[0]]
-            else:
-                where_clause = "AND 1=0"  # No station assigned to this manager
+    if current_user_id and user_role in {"Region Manager", "Gas Station Manager", "General Manager"}:
+        where_clause, params = get_scope_filter_clause(user_role, current_user_id, conn)
     elif user_role != "General Manager":
-        where_clause = "AND 1=0"  # Other roles see nothing
+        where_clause = "AND 1=0"
 
     aggregate_where_clause = where_clause.replace("s.", "sub.")
 

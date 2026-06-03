@@ -8,6 +8,11 @@ from core.auth import (
     create_user,
     hash_password as hash_password_bcrypt,
 )  # Use bcrypt for all passwords
+from core.report_scope import (
+    get_station_manager_options,
+    get_region_manager_options,
+    get_general_manager_options,
+)
 from ui.header import render_page_header
 
 # Import the communication service logic
@@ -38,13 +43,10 @@ def render(conn):
     regions_df = pd.read_sql_query("SELECT id, name FROM regions ORDER BY name", conn)
     region_options = [(row["name"], row["id"]) for _, row in regions_df.iterrows()]
 
-    role_options = [
-        "Employee",
-        "Gas Station Supervisor",
-        "Gas Station Manager",
-        "Region Manager",
-        "General Manager",
-    ]
+    role_options = ["Employee", "Gas Station Manager", "Region Manager", "General Manager"]
+    station_manager_options = get_station_manager_options(conn)
+    region_manager_options = get_region_manager_options(conn)
+    general_manager_options = get_general_manager_options(conn)
     directory_query = """
         SELECT
                u.id,
@@ -89,6 +91,7 @@ def render(conn):
             # --- Conditional Assignment Widgets ---
             assign_station_id = None
             assign_region_id = None
+            assign_manager_user_id = None
             if role in ["Employee", "Gas Station Supervisor", "Gas Station Manager"]:
                 assign_station = st.selectbox(
                     "Assign Station (Required)",
@@ -97,6 +100,26 @@ def render(conn):
                 )
                 if assign_station:
                     assign_station_id = assign_station[1]
+                if role == "Employee":
+                    mgr_choice = st.selectbox(
+                        "Reports To (Gas Station Manager)",
+                        options=[None] + [opt["id"] for opt in station_manager_options],
+                        format_func=lambda x: "Select a manager..." if x is None else next(
+                            (opt["label"] for opt in station_manager_options if opt["id"] == x),
+                            f"Manager {x}",
+                        ),
+                    )
+                    assign_manager_user_id = mgr_choice
+                elif role == "Gas Station Manager":
+                    mgr_choice = st.selectbox(
+                        "Reports To (Region Manager)",
+                        options=[None] + [opt["id"] for opt in region_manager_options],
+                        format_func=lambda x: "Select a manager..." if x is None else next(
+                            (opt["label"] for opt in region_manager_options if opt["id"] == x),
+                            f"Manager {x}",
+                        ),
+                    )
+                    assign_manager_user_id = mgr_choice
 
             elif role == "Region Manager":
                 assign_region = st.selectbox(
@@ -106,6 +129,15 @@ def render(conn):
                 )
                 if assign_region:
                     assign_region_id = assign_region[1]
+                mgr_choice = st.selectbox(
+                    "Reports To (General Manager)",
+                    options=[None] + [opt["id"] for opt in general_manager_options],
+                    format_func=lambda x: "Select a manager..." if x is None else next(
+                        (opt["label"] for opt in general_manager_options if opt["id"] == x),
+                        f"Manager {x}",
+                    ),
+                )
+                assign_manager_user_id = mgr_choice
 
             if st.form_submit_button("Create Employee & Send Invites"):
                 email_regex = r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$'
@@ -119,12 +151,14 @@ def render(conn):
                     st.error("A valid email address is required.")
                 elif (
                     role
-                    in ["Employee", "Gas Station Supervisor", "Gas Station Manager"]
+                    in ["Employee", "Gas Station Manager"]
                     and not assign_station_id
                 ):
                     st.error("A station MUST be selected for this role.")
                 elif role == "Region Manager" and not assign_region_id:
                     st.error("A region MUST be selected for this role.")
+                elif role != "General Manager" and not assign_manager_user_id:
+                    st.error("A reporting manager MUST be selected for this role.")
                 else:
                     # Generate Credentials
                     temp_pw = generate_temp_password()  # Plain text for email
@@ -140,6 +174,7 @@ def render(conn):
                             surname=(last or "").strip(),
                             station_id=assign_station_id,
                             region_id=assign_region_id,
+                            manager_user_id=assign_manager_user_id,
                         )
                         new_id = user_data["id"]
 
@@ -301,8 +336,9 @@ def render(conn):
                 # --- Conditional Assignment Widgets for Edit Form ---
                 e_station_id = None
                 e_region_id = None
+                e_manager_user_id = rec["manager_user_id"] if "manager_user_id" in rec else None
 
-                if e_role in ["Employee", "Gas Station Supervisor", "Gas Station Manager"]:
+                if e_role in ["Employee", "Gas Station Manager"]:
                     curr_stat_idx = next(
                         (
                             i + 1
@@ -320,6 +356,28 @@ def render(conn):
                     )
                     if e_stat:
                         e_station_id = e_stat[1]
+                    if e_role == "Employee":
+                        e_manager_user_id = st.selectbox(
+                            "Reports To (Gas Station Manager)",
+                            options=[None] + [opt["id"] for opt in station_manager_options],
+                            index=([None] + [opt["id"] for opt in station_manager_options]).index(rec["manager_user_id"]) if rec["manager_user_id"] in [opt["id"] for opt in station_manager_options] else 0,
+                            format_func=lambda x: "Select a manager..." if x is None else next(
+                                (opt["label"] for opt in station_manager_options if opt["id"] == x),
+                                f"Manager {x}",
+                            ),
+                            key=f"edit_assign_mgr_station_{sel}",
+                        )
+                    elif e_role == "Gas Station Manager":
+                        e_manager_user_id = st.selectbox(
+                            "Reports To (Region Manager)",
+                            options=[None] + [opt["id"] for opt in region_manager_options],
+                            index=([None] + [opt["id"] for opt in region_manager_options]).index(rec["manager_user_id"]) if rec["manager_user_id"] in [opt["id"] for opt in region_manager_options] else 0,
+                            format_func=lambda x: "Select a manager..." if x is None else next(
+                                (opt["label"] for opt in region_manager_options if opt["id"] == x),
+                                f"Manager {x}",
+                            ),
+                            key=f"edit_assign_mgr_region_{sel}",
+                        )
 
                 elif e_role == "Region Manager":
                     curr_reg_idx = next(
@@ -339,6 +397,18 @@ def render(conn):
                     )
                     if e_reg:
                         e_region_id = e_reg[1]
+                    e_manager_user_id = st.selectbox(
+                        "Reports To (General Manager)",
+                        options=[None] + [opt["id"] for opt in general_manager_options],
+                        index=([None] + [opt["id"] for opt in general_manager_options]).index(rec["manager_user_id"]) if rec["manager_user_id"] in [opt["id"] for opt in general_manager_options] else 0,
+                        format_func=lambda x: "Select a manager..." if x is None else next(
+                            (opt["label"] for opt in general_manager_options if opt["id"] == x),
+                            f"Manager {x}",
+                        ),
+                        key=f"edit_assign_mgr_gm_{sel}",
+                    )
+                else:
+                    e_manager_user_id = None
 
                 if st.form_submit_button("💾 Save Profile Changes", use_container_width=True):
                     # Input Validation
@@ -353,15 +423,17 @@ def render(conn):
                         st.error("A valid email address is required.")
                     elif (
                         e_role
-                        in ["Employee", "Gas Station Supervisor", "Gas Station Manager"]
+                        in ["Employee", "Gas Station Manager"]
                         and not e_station_id
                     ):
                         st.error("A station MUST be selected for this role.")
                     elif e_role == "Region Manager" and not e_region_id:
                         st.error("A region MUST be selected for this role.")
+                    elif e_role != "General Manager" and not e_manager_user_id:
+                        st.error("A reporting manager MUST be selected for this role.")
                     else:
                         try:
-                            if e_role in ["Employee", "Gas Station Supervisor", "Gas Station Manager"]:
+                            if e_role in ["Employee", "Gas Station Manager"]:
                                 region_row = conn.execute(
                                     "SELECT region_id FROM stations WHERE id = %s",
                                     (e_station_id,),
@@ -379,8 +451,8 @@ def render(conn):
                                 final_region_id = None
 
                             conn.execute(
-                                "UPDATE users SET name=%s, surname=%s, email=%s, role=%s, station_id=%s, region_id=%s, username=%s WHERE id=%s",
-                                (clean_e_name or None, (e_surname or "").strip() or None, clean_e_email, e_role, final_station_id, final_region_id, clean_e_email, sel),
+                                "UPDATE users SET name=%s, surname=%s, email=%s, role=%s, station_id=%s, region_id=%s, manager_user_id=%s, username=%s WHERE id=%s",
+                                (clean_e_name or None, (e_surname or "").strip() or None, clean_e_email, e_role, final_station_id, final_region_id, e_manager_user_id, clean_e_email, sel),
                             )
                             conn.commit()
                             st.success("Changes saved successfully.")

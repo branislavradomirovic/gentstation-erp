@@ -2,6 +2,7 @@ import os
 import json
 import logging
 import warnings
+import time
 import streamlit as st
 from pathlib import Path
 
@@ -59,6 +60,14 @@ def start_background_workers():
             "enabled_env": "AUTO_START_AI_WORKER",
             "requires_env": [],
         },
+        {
+            "name": "Report Scheduler",
+            "script": project_root / "core" / "report_scheduler.py",
+            "lock": Path("/tmp/gentstationai_report_scheduler.lock"),
+            "log": Path("/tmp/gentstation_report_scheduler.log"),
+            "enabled_env": "AUTO_START_REPORT_SCHEDULER",
+            "requires_env": [],
+        },
     ]
 
     def _pid_alive(pid: int) -> bool:
@@ -114,19 +123,84 @@ def start_background_workers():
             logger.warning("Could not start worker %s: %s", script_path, e)
             return False
 
+    def _set_worker_starting_status(status_key: str, details: str):
+        try:
+            from core.database import get_connection
+
+            conn = get_connection()
+            conn.execute(
+                """
+                INSERT INTO system_settings (key, value)
+                VALUES (%s, %s)
+                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+                """,
+                (
+                    status_key,
+                    json.dumps(
+                        {
+                            "status": "starting",
+                            "details": details,
+                            "last_update_ts": time.time(),
+                        }
+                    ),
+                ),
+            )
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.debug("Could not publish starting status for %s: %s", status_key, e)
+
+    def _read_status_payload(status_key: str):
+        try:
+            from core.database import get_connection
+
+            conn = get_connection()
+            row = conn.execute(
+                "SELECT value FROM system_settings WHERE key = %s",
+                (status_key,),
+            ).fetchone()
+            conn.close()
+            if not row or not row[0]:
+                return None
+            return json.loads(row[0])
+        except Exception as e:
+            logger.debug("Could not read status payload for %s: %s", status_key, e)
+            return None
+
+    def _is_stale_status(status_key: str, stale_after_seconds: int = 180) -> bool:
+        payload = _read_status_payload(status_key)
+        if not payload:
+            return True
+        ts = payload.get("last_update_ts")
+        if not ts:
+            return True
+        try:
+            return (time.time() - float(ts)) > stale_after_seconds
+        except Exception:
+            return True
+
     def _env_bool(name: str, default: str = "1") -> bool:
         return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
     default_worker_start = os.getenv("AUTO_START_BACKGROUND_WORKERS_DEFAULT", "0")
-    if not _env_bool("AUTO_START_BACKGROUND_WORKERS", default_worker_start):
-        logger.info(
-            "AUTO_START_BACKGROUND_WORKERS is disabled. Skipping worker startup."
-        )
+    global_worker_start = _env_bool(
+        "AUTO_START_BACKGROUND_WORKERS", default_worker_start
+    )
+    worker_enabled_flags = {
+        cfg["name"]: _env_bool(cfg["enabled_env"], default_worker_start) for cfg in WORKERS
+    }
+
+    if not global_worker_start and not any(worker_enabled_flags.values()):
+        logger.info("No background workers are enabled for auto-start.")
         return
 
     for cfg in WORKERS:
         # 1. Check if enabled via env
-        if not _env_bool(cfg["enabled_env"], default_worker_start):
+        worker_enabled = worker_enabled_flags[cfg["name"]]
+        if not worker_enabled and not global_worker_start:
+            logger.info("%s startup is disabled via env.", cfg["name"])
+            continue
+        if not worker_enabled and global_worker_start:
             logger.info("%s startup is disabled via env.", cfg["name"])
             continue
 
@@ -140,12 +214,29 @@ def start_background_workers():
 
         # 3. Health Check: Is it already running?
         if _is_running_from_lock(cfg["lock"]):
-            logger.debug("%s is already running.", cfg["name"])
-            continue
+            if cfg["name"] == "Report Scheduler" and _is_stale_status(
+                "report_scheduler_status"
+            ):
+                logger.warning(
+                    "Report Scheduler lock exists but heartbeat is stale or missing. Recycling worker."
+                )
+                try:
+                    cfg["lock"].unlink(missing_ok=True)
+                except Exception as e:
+                    logger.warning("Could not clear stale Report Scheduler lock: %s", e)
+                    continue
+            else:
+                logger.debug("%s is already running.", cfg["name"])
+                continue
 
         # 4. Spawn if script exists
         if cfg["script"].exists():
             if _spawn_worker(cfg["script"], cfg["log"]):
+                if cfg["name"] == "Report Scheduler":
+                    _set_worker_starting_status(
+                        "report_scheduler_status",
+                        "Report scheduler is starting from app boot sequence.",
+                    )
                 logger.info("Successfully launched %s.", cfg["name"])
 
 
@@ -330,9 +421,15 @@ st.markdown(
         }
 
         .login-brand-panel [data-testid="stImage"] img {
-            max-height: 88px;
+            max-height: 56px;
             width: auto !important;
             object-fit: contain;
+        }
+
+        .login-brand-panel [data-testid="stImageContainer"] {
+            max-width: 250px !important;
+            width: 250px !important;
+            margin: 0 auto;
         }
 
         .login-brand-panel {
@@ -345,6 +442,90 @@ st.markdown(
         .login-brand-copy {
             display: grid;
             gap: 0.9rem;
+        }
+
+        .login-readiness {
+            margin-top: 0.2rem;
+            padding: 1rem 1.05rem;
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            border-radius: 16px;
+            background: linear-gradient(180deg, rgba(248,250,252,0.98), rgba(241,245,249,0.94));
+        }
+
+        .login-readiness-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            gap: 0.75rem;
+            margin-bottom: 0.8rem;
+        }
+
+        .login-readiness-title {
+            font-size: 0.96rem;
+            font-weight: 800;
+            color: #0f172a;
+        }
+
+        .login-readiness-subtitle {
+            font-size: 0.76rem;
+            color: #64748b;
+        }
+
+        .login-readiness-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 0.65rem;
+        }
+
+        .login-readiness-card {
+            padding: 0.8rem 0.85rem;
+            border-radius: 14px;
+            border: 1px solid rgba(148, 163, 184, 0.18);
+            background: rgba(255,255,255,0.92);
+        }
+
+        .login-readiness-card.is-ready {
+            background: rgba(240, 253, 244, 0.92);
+            border-color: rgba(34, 197, 94, 0.25);
+        }
+
+        .login-readiness-card.is-warning,
+        .login-readiness-card.is-starting {
+            background: rgba(255, 251, 235, 0.94);
+            border-color: rgba(245, 158, 11, 0.25);
+        }
+
+        .login-readiness-card.is-offline {
+            background: rgba(254, 242, 242, 0.94);
+            border-color: rgba(239, 68, 68, 0.2);
+        }
+
+        .login-readiness-topline {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.5rem;
+            margin-bottom: 0.3rem;
+        }
+
+        .login-readiness-label {
+            font-size: 0.8rem;
+            font-weight: 700;
+            color: #0f172a;
+        }
+
+        .login-readiness-state {
+            font-size: 0.66rem;
+            font-weight: 800;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            color: #334155;
+        }
+
+        .login-readiness-detail {
+            font-size: 0.76rem;
+            line-height: 1.45;
+            color: #5b6474;
         }
 
         .login-kicker {
@@ -435,6 +616,10 @@ st.markdown(
 
             .login-title {
                 font-size: 1.65rem;
+            }
+
+            .login-readiness-grid {
+                grid-template-columns: 1fr;
             }
         }
     </style>
@@ -536,6 +721,8 @@ def run_boot_sequence():
     from core.video_processor import test_ollama_connection, OLLAMA_BASE_URL
     from core.comm_service import test_smtp_connection
 
+    boot_summary = []
+
     st.subheader("🚀 System Boot Sequence")
 
     db_status = st.empty()
@@ -545,6 +732,7 @@ def run_boot_sequence():
     ai_status = st.empty()
     worker_status = st.empty()
     bot_worker_status_display = st.empty()
+    report_scheduler_status_display = st.empty()
 
     # 1. Database Connectivity
     db_status.info(f"⏳ Connecting to PostgreSQL at `{DB_HOST}`...")
@@ -560,8 +748,14 @@ def run_boot_sequence():
     try:
         _conn = get_connection(on_retry=db_retry_callback)
         db_status.success(f"✅ Database: **Connected** (`{DB_HOST}:{DB_PORT}`)")
+        boot_summary.append(
+            {"label": "Database", "state": "ready", "detail": f"{DB_HOST}:{DB_PORT}"}
+        )
     except Exception as e:
         db_status.error(f"❌ Database: **Offline**")
+        boot_summary.append(
+            {"label": "Database", "state": "offline", "detail": str(e)}
+        )
         st.error(f"Error details: `{e}`")
         st.divider()
         st.warning("### 💡 Startup Reminder")
@@ -585,6 +779,9 @@ def run_boot_sequence():
 
     if not auto_start_bool or not redis_url:
         redis_status.info("ℹ️ Redis checks disabled (background workers disabled or REDIS_URL unset).")
+        boot_summary.append(
+            {"label": "Redis", "state": "warning", "detail": "Checks disabled"}
+        )
     else:
         redis_status.info(f"⏳ Connecting to Redis...")
 
@@ -598,9 +795,15 @@ def run_boot_sequence():
 
         if test_redis_connection(on_retry=redis_retry_callback):
             redis_status.success(f"✅ Redis: **Online** (`{redis_url}`)")
+            boot_summary.append(
+                {"label": "Redis", "state": "ready", "detail": redis_url}
+            )
         else:
             redis_status.warning(f"⚠️ Redis: **Offline**. Background tasks may be delayed.")
             st.caption(f"Check your `REDIS_URL` in `.env`.")
+            boot_summary.append(
+                {"label": "Redis", "state": "warning", "detail": "Unavailable"}
+            )
 
     # 3. Telegram Bot Configuration
     tg_config_status.info("⏳ Checking Telegram Bot configuration...")
@@ -609,16 +812,25 @@ def run_boot_sequence():
 
     if not tg_token:
         tg_config_status.error("❌ Telegram Bot: **Token Missing**")
+        boot_summary.append(
+            {"label": "Telegram Bot", "state": "offline", "detail": "Token missing"}
+        )
         st.warning(
             "`TELEGRAM_BOT_TOKEN` is not configured in `.env`. Automated reports via Telegram will not function."
         )
     elif not tg_url:
         tg_config_status.warning("⚠️ Telegram Bot: **URL Missing**")
+        boot_summary.append(
+            {"label": "Telegram Bot", "state": "warning", "detail": "URL missing"}
+        )
         st.caption(
             "`TELEGRAM_BOT_URL` is not set. Deep links for registration may be unavailable."
         )
     else:
         tg_config_status.success("✅ Telegram Bot: **Configured**")
+        boot_summary.append(
+            {"label": "Telegram Bot", "state": "ready", "detail": "Configured"}
+        )
 
     # 4. AI Service Connectivity
     ai_status.info(f"⏳ Verifying Ollama AI at `{OLLAMA_BASE_URL}`...")
@@ -633,12 +845,18 @@ def run_boot_sequence():
 
     if test_ollama_connection(on_retry=ai_retry_callback):
         ai_status.success(f"✅ AI Service: **Ready** (`{OLLAMA_BASE_URL}`)")
+        boot_summary.append(
+            {"label": "AI Service", "state": "ready", "detail": OLLAMA_BASE_URL}
+        )
     else:
         ai_status.warning(
             f"⚠️ AI Service: **Unreachable**. Automated analysis will be disabled."
         )
         st.caption(
             f"Reminder: Ensure `ollama serve` is running at `{OLLAMA_BASE_URL}`."
+        )
+        boot_summary.append(
+            {"label": "AI Service", "state": "warning", "detail": "Unavailable"}
         )
 
     # 5. Email Service Connectivity
@@ -654,13 +872,43 @@ def run_boot_sequence():
 
     if test_smtp_connection(on_retry=email_retry_callback):
         email_status.success("✅ Email Service: **Online**")
+        boot_summary.append(
+            {"label": "Email", "state": "ready", "detail": "SMTP online"}
+        )
     else:
         email_status.warning(
             "⚠️ Email Service: **Offline**. Password resets and notifications will be disabled."
         )
+        boot_summary.append(
+            {"label": "Email", "state": "warning", "detail": "SMTP offline"}
+        )
 
     # 6. Spawn Internal Workers
-    worker_status.info("⏳ Launching Telegram Bot and AI Worker processes...")
+    report_scheduler_enabled = (
+        os.getenv("AUTO_START_REPORT_SCHEDULER", "0").strip().lower()
+        in {"1", "true", "yes", "on"}
+    )
+    if report_scheduler_enabled:
+        _conn.execute(
+            """
+            INSERT INTO system_settings (key, value)
+            VALUES (%s, %s)
+            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+            """,
+            (
+                "report_scheduler_status",
+                json.dumps(
+                    {
+                        "status": "starting",
+                        "details": "Report Scheduler is launching during boot sequence.",
+                        "last_update_ts": time.time(),
+                    }
+                ),
+            ),
+        )
+        _conn.commit()
+
+    worker_status.info("⏳ Launching Telegram Bot, AI Worker, and Report Scheduler processes...")
     start_background_workers()
     worker_status.success("✅ System Workers: **Operational**")
 
@@ -673,23 +921,91 @@ def run_boot_sequence():
             status_info = json.loads(bot_status_row[0])
             if status_info.get("status") == "online":
                 bot_worker_status_display.success("✅ Telegram Bot Worker: **Online**")
+                boot_summary.append(
+                    {"label": "Bot Worker", "state": "ready", "detail": "Online"}
+                )
             else:
                 bot_worker_status_display.warning(
                     f"⚠️ Telegram Bot Worker: **{status_info.get('status', 'Offline')}**"
+                )
+                boot_summary.append(
+                    {
+                        "label": "Bot Worker",
+                        "state": "warning",
+                        "detail": str(status_info.get("status", "offline")).title(),
+                    }
                 )
         except json.JSONDecodeError:
             bot_worker_status_display.warning(
                 "⚠️ Telegram Bot Worker: **Status Unknown**"
             )
+            boot_summary.append(
+                {"label": "Bot Worker", "state": "warning", "detail": "Status unknown"}
+            )
     else:
         bot_worker_status_display.warning(
             "⚠️ Telegram Bot Worker: **Offline** (No status record)"
         )
+        boot_summary.append(
+            {"label": "Bot Worker", "state": "warning", "detail": "No status record"}
+        )
+
+    scheduler_status_row = _conn.execute(
+        "SELECT value FROM system_settings WHERE key='report_scheduler_status'"
+    ).fetchone()
+    if scheduler_status_row and scheduler_status_row[0]:
+        try:
+            status_info = json.loads(scheduler_status_row[0])
+            scheduler_state = status_info.get("status", "Offline")
+            if scheduler_state in {"starting", "running", "idle"}:
+                report_scheduler_status_display.success(
+                    f"✅ Report Scheduler: **{scheduler_state.title()}**"
+                )
+                boot_summary.append(
+                    {
+                        "label": "Report Scheduler",
+                        "state": "ready" if scheduler_state in {"running", "idle"} else "starting",
+                        "detail": scheduler_state.title(),
+                    }
+                )
+            else:
+                report_scheduler_status_display.warning(
+                    f"⚠️ Report Scheduler: **{scheduler_state}**"
+                )
+                boot_summary.append(
+                    {
+                        "label": "Report Scheduler",
+                        "state": "warning",
+                        "detail": str(scheduler_state).title(),
+                    }
+                )
+        except json.JSONDecodeError:
+            report_scheduler_status_display.warning(
+                "⚠️ Report Scheduler: **Status Unknown**"
+            )
+            boot_summary.append(
+                {"label": "Report Scheduler", "state": "warning", "detail": "Status unknown"}
+            )
+    else:
+        if report_scheduler_enabled:
+            report_scheduler_status_display.info(
+                "⏳ Report Scheduler: **Starting**"
+            )
+            boot_summary.append(
+                {"label": "Report Scheduler", "state": "starting", "detail": "Launching"}
+            )
+        else:
+            report_scheduler_status_display.warning(
+                "⚠️ Report Scheduler: **Offline** (No status record)"
+            )
+            boot_summary.append(
+                {"label": "Report Scheduler", "state": "offline", "detail": "Disabled"}
+            )
+
+    st.session_state["boot_summary_cards"] = boot_summary
 
     # Brief visual confirmation before proceeding
     if "boot_complete" not in st.session_state:
-        import time
-
         time.sleep(1)
         st.session_state["boot_complete"] = True
         st.rerun()
@@ -701,6 +1017,50 @@ def ensure_runtime_dirs():
     """Create local runtime directories when they are missing."""
     for name in ("uploads", "downloads"):
         Path(name).mkdir(parents=True, exist_ok=True)
+
+
+def render_login_readiness_panel():
+    cards = st.session_state.get("boot_summary_cards") or []
+    if not cards:
+        return
+
+    def _state_label(state: str) -> str:
+        state = (state or "warning").lower()
+        mapping = {
+            "ready": "Ready",
+            "starting": "Starting",
+            "warning": "Attention",
+            "offline": "Offline",
+        }
+        return mapping.get(state, state.title())
+
+    markup = [
+        '<div class="login-readiness">',
+        '<div class="login-readiness-header">',
+        '<div class="login-readiness-title">System Readiness</div>',
+        '<div class="login-readiness-subtitle">Latest startup verification</div>',
+        "</div>",
+        '<div class="login-readiness-grid">',
+    ]
+
+    for card in cards:
+        state = (card.get("state") or "warning").lower()
+        label = str(card.get("label") or "Service")
+        detail = str(card.get("detail") or "").strip() or "No detail available."
+        markup.extend(
+            [
+                f'<div class="login-readiness-card is-{state}">',
+                '<div class="login-readiness-topline">',
+                f'<div class="login-readiness-label">{label}</div>',
+                f'<div class="login-readiness-state">{_state_label(state)}</div>',
+                "</div>",
+                f'<div class="login-readiness-detail">{detail}</div>',
+                "</div>",
+            ]
+        )
+
+    markup.extend(["</div>", "</div>"])
+    st.markdown("".join(markup), unsafe_allow_html=True)
 
 
 conn = None
@@ -769,7 +1129,7 @@ try:
             if not logo_path.exists():
                 logo_path = Path("assets/OpusLogo.png")
             if logo_path.exists():
-                st.image(str(logo_path), use_container_width=True)
+                st.image(str(logo_path), width=250)
             st.markdown(
                 """
                 <div class="login-brand-copy">
@@ -782,6 +1142,7 @@ try:
                 """,
                 unsafe_allow_html=True,
             )
+            render_login_readiness_panel()
             st.markdown('<div class="login-brand-actions">', unsafe_allow_html=True)
             if st.button("Forgot Password?", type="secondary", use_container_width=True):
                 st.session_state["show_forgot_pw"] = True

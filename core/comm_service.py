@@ -3,6 +3,7 @@ import smtplib
 import time
 import string
 import requests
+import json
 from typing import Optional, Dict
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -23,7 +24,7 @@ load_dotenv()
 
 
 def _login_url() -> str:
-    return os.getenv("APP_LOGIN_URL", "http://localhost:8501")
+    return os.getenv("APP_LOGIN_URL", "https://genstationai.onrender.com/")
 
 
 def _bot_handle() -> str:
@@ -69,6 +70,120 @@ def _short_risk_feedback(risk_score: float, report_data: dict) -> str:
     if risk_score >= 40:
         return f"Uočen je operativni rizik{': ' + top_hazard if top_hazard else '.'}"
     return "Na snimku je uočen nizak nivo vidljivog rizika."
+
+
+def _safe_list(value):
+    if not value:
+        return []
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return [str(value).strip()]
+
+
+def send_scheduled_report_email(recipient_email: str, payload: Dict) -> bool:
+    smtp_server, smtp_port, sender_email, sender_password = _smtp_settings()
+    if not recipient_email or not sender_email or not sender_password:
+        return False
+
+    hazards = ", ".join(_safe_list(payload.get("hazards"))) or "Nema izdvojenih rizika."
+    stock_issues = ", ".join(_safe_list(payload.get("stock_issues"))) or "Nema izdvojenih operativnih problema."
+    actions = _safe_list(payload.get("improvement_actions")) or [
+        "Nastaviti redovnu kontrolu i pratiti naredni period."
+    ]
+
+    msg = MIMEMultipart("alternative")
+    msg["From"] = f"GentStationAI <{sender_email}>"
+    msg["To"] = recipient_email
+    msg["Subject"] = payload.get("title", "GentStationAI izveštaj")
+
+    plain = f"""
+{payload.get('title', 'GentStationAI izveštaj')}
+
+Period: {payload.get('period_label', '-')}
+
+{payload.get('summary', '')}
+
+Ukupan rizik: {payload.get('overall_risk_score', 'N/A')}/100
+Bezbednost: {payload.get('safety_score', 'N/A')}/10
+Čistoća: {payload.get('cleanliness_score', 'N/A')}/10
+Zaposleni: {payload.get('staff_score', 'N/A')}/10
+Merchandising: {payload.get('merchandising_score', 'N/A')}/10
+
+Ključni rizici: {hazards}
+Operativni problemi: {stock_issues}
+
+Preporučene akcije:
+- """ + "\n- ".join(actions)
+
+    html = f"""
+    <html>
+      <body style="font-family: Arial, sans-serif; background:#f5f7fb; color:#1f2937; padding:24px;">
+        <div style="max-width:760px; margin:0 auto; background:#fff; border:1px solid #e5e7eb; border-radius:16px; padding:24px;">
+          <div style="font-size:12px; letter-spacing:0.08em; text-transform:uppercase; color:#0b5ed7; font-weight:700;">GentStationAI</div>
+          <h2 style="margin:8px 0 6px 0;">{payload.get('title', 'GentStationAI izveštaj')}</h2>
+          <p style="color:#6b7280; margin:0 0 16px 0;">Period: {payload.get('period_label', '-')}</p>
+          <div style="background:#f3f7ff; border:1px solid #dbe7ff; border-radius:12px; padding:16px; margin-bottom:18px;">
+            {payload.get('summary', '')}
+          </div>
+          <table style="width:100%; border-collapse:collapse; margin-bottom:18px;">
+            <tr>
+              <td style="padding:10px; border:1px solid #e5e7eb;"><strong>Ukupan rizik</strong><br>{payload.get('overall_risk_score', 'N/A')}/100</td>
+              <td style="padding:10px; border:1px solid #e5e7eb;"><strong>Bezbednost</strong><br>{payload.get('safety_score', 'N/A')}/10</td>
+              <td style="padding:10px; border:1px solid #e5e7eb;"><strong>Čistoća</strong><br>{payload.get('cleanliness_score', 'N/A')}/10</td>
+              <td style="padding:10px; border:1px solid #e5e7eb;"><strong>Zaposleni</strong><br>{payload.get('staff_score', 'N/A')}/10</td>
+              <td style="padding:10px; border:1px solid #e5e7eb;"><strong>Merch.</strong><br>{payload.get('merchandising_score', 'N/A')}/10</td>
+            </tr>
+          </table>
+          <h3>Ključni rizici</h3>
+          <p>{hazards}</p>
+          <h3>Operativni problemi</h3>
+          <p>{stock_issues}</p>
+          <h3>Preporučene akcije</h3>
+          <ul>
+            {''.join(f'<li>{item}</li>' for item in actions)}
+          </ul>
+        </div>
+      </body>
+    </html>
+    """
+
+    msg.attach(MIMEText(plain, "plain"))
+    msg.attach(MIMEText(html, "html"))
+    try:
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.starttls()
+            server.login(sender_email, sender_password)
+            server.send_message(msg)
+        return True
+    except Exception as e:
+        logger.error("Scheduled report email failed for %s: %s", recipient_email, e)
+        return False
+
+
+def send_scheduled_report_telegram(chat_id: str, payload: Dict) -> bool:
+    token = _telegram_bot_token()
+    if not token or not chat_id:
+        return False
+
+    actions = _safe_list(payload.get("improvement_actions"))[:3]
+    action_text = "\n".join(f"- {item}" for item in actions) or "- Nema dodatnih akcija."
+    message = (
+        f"📊 {payload.get('title', 'GentStationAI izveštaj')}\n"
+        f"Period: {payload.get('period_label', '-')}\n"
+        f"{payload.get('summary', '')}\n"
+        f"Ukupan rizik: {payload.get('overall_risk_score', 'N/A')}/100 ({payload.get('risk_band', '-')})\n"
+        f"Preporučene akcije:\n{action_text}"
+    )
+    try:
+        response = requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={"chat_id": str(chat_id), "text": message},
+            timeout=10,
+        )
+        return response.status_code == 200
+    except Exception as e:
+        logger.error("Scheduled Telegram report failed for chat %s: %s", chat_id, e)
+        return False
 
 
 def send_submission_result_telegram(

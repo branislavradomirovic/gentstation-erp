@@ -27,6 +27,8 @@ services:
         value: "0"
       - key: AUTO_START_AI_WORKER
         value: "0"
+      - key: AUTO_START_REPORT_SCHEDULER
+        value: "0"
 
   - type: worker
     name: gentstationai-ai-worker
@@ -55,6 +57,28 @@ services:
     runtime: docker
     dockerfilePath: ./Dockerfile
     dockerCommand: python -m core.bot_worker
+    plan: starter
+    region: frankfurt
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: gentstationai-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: gentstationai-redis
+          property: connectionString
+      - key: SKIP_SCHEMA_INIT
+        value: "1"
+
+  - type: worker
+    name: gentstationai-report-scheduler
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerCommand: python -m core.report_scheduler
     plan: starter
     region: frankfurt
     envVars:

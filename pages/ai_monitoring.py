@@ -35,7 +35,7 @@ def render(conn):
     # --- System Uptime ---
     # --- 1. COMPREHENSIVE SERVICE HEALTH ---
     st.subheader("🏥 Global Service Health")
-    h_col1, h_col2, h_col3, h_col4 = st.columns(4)
+    h_col1, h_col2, h_col3, h_col4, h_col5 = st.columns(5)
 
     def status_badge(is_online, label_on="ONLINE", label_off="OFFLINE"):
         color = "#28a745" if is_online else "#dc3545"
@@ -62,6 +62,44 @@ def render(conn):
     with h_col4:
         st.markdown("**Bot Worker**\n\n`Telegram`")
         st.markdown(status_badge(test_bot_worker_status(conn)), unsafe_allow_html=True)
+
+    with h_col5:
+        scheduler_row = conn.execute(
+            "SELECT value FROM system_settings WHERE key='report_scheduler_status'"
+        ).fetchone()
+        scheduler_auto_start = os.getenv(
+            "AUTO_START_REPORT_SCHEDULER", "0"
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        scheduler_online = False
+        scheduler_label = "OFFLINE"
+        scheduler_caption = None
+        if scheduler_row and scheduler_row[0]:
+            try:
+                scheduler_payload = json.loads(scheduler_row[0])
+                scheduler_state = str(
+                    scheduler_payload.get("status") or "offline"
+                ).lower()
+                scheduler_online = scheduler_state in {"starting", "running", "idle"}
+                if scheduler_state == "starting":
+                    scheduler_label = "STARTING"
+                    scheduler_caption = "Booting from application startup."
+                elif scheduler_state in {"running", "idle"}:
+                    scheduler_label = "READY"
+                elif scheduler_state == "error":
+                    scheduler_label = "ERROR"
+            except Exception:
+                scheduler_online = False
+        elif scheduler_auto_start:
+            scheduler_online = True
+            scheduler_label = "STARTING"
+            scheduler_caption = "Auto-start is enabled. Waiting for first heartbeat."
+        st.markdown("**Report Scheduler**\n\n`20:00 Rollups`")
+        st.markdown(
+            status_badge(scheduler_online, scheduler_label, "OFFLINE"),
+            unsafe_allow_html=True,
+        )
+        if scheduler_caption:
+            st.caption(scheduler_caption)
 
     st.markdown("---")
 
