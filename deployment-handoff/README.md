@@ -24,6 +24,8 @@ Read the documents in this order:
 11. `11-owner-delivery-checklist.md`
 12. `vm/docker-compose.vm.yml`
 13. `vm/.env.vm.example`
+14. `vm/.env.production.template`
+15. `12-sensitive-package-notes.md`
 
 Repository artifacts referenced by this handoff:
 
@@ -54,3 +56,5 @@ Recommended AWS service mapping:
 This package is intended to be sufficient for an initial AWS deployment handoff without requiring the deployment team to reverse-engineer the application.
 
 For the easiest cloud recreation, start with the single-VM path in `09-vm-deployment.md`.
+
+If the handoff is delivered as a repository URL or git checkout, remember that hidden `.env*` files under `deployment-handoff/vm/` are ignored by git and must be shared separately or bundled in an archive.

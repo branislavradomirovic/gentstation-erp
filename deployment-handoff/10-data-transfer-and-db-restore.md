@@ -81,7 +81,8 @@ cat gentstation_backup.sql | docker exec -i gentstation-postgres psql -U <db_use
 3. restore the PostgreSQL dump
 4. start the `app`
 5. verify login and core pages
-6. start `ai-worker` and `telegram-worker` if required
+6. start `ai-worker` and `report-scheduler`
+7. start `telegram-worker` with the `telegram` profile if required
 
 ## Uploaded/generated file assets
 

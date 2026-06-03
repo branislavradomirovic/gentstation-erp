@@ -1,18 +1,24 @@
 # 12. Sensitive Package Notes
 
-This handoff folder now includes a real environment file for deployment handoff:
+This handoff package can include a real environment file for deployment handoff:
 
 - `vm/.env.production.actual`
 
-That file contains live secrets and should be shared only over an approved secure channel.
+That file contains live secrets and should be shared only through an approved internal channel.
 
-Current status of the one-folder handoff:
+Current status of the one-folder handoff archive:
 
 - VM deployment instructions: included
 - VM Docker Compose stack: included
 - Sanitized production env template: included
 - Real environment file with secrets: included
 - PostgreSQL dump: included as `gentstation_backup.dump`
+
+Important packaging note:
+
+- the hidden `vm/.env*` files are ignored by git
+- if the team receives only a repository URL or git checkout, those hidden files will not be present unless they are shared separately
+- if the team receives a zipped handoff folder, confirm those hidden files are actually included in the archive
 
 Database dump details:
 
@@ -30,4 +36,4 @@ This handoff folder now contains the core items needed for a one-folder VM deplo
 
 Recommended next step:
 
-- share this folder only through an approved secure channel because it contains live credentials and production data.
+- share the complete folder or archive through the approved internal company channel you are using for live credentials and production data.

@@ -55,16 +55,26 @@ _START_TIME = time.time()
 SLOW_QUERY_THRESHOLD = float(os.getenv("DB_SLOW_QUERY_THRESHOLD", "1.0"))
 
 
+def _has_complete_component_db_config() -> bool:
+    required_values = [DB_HOST, DB_NAME, DB_USER, DB_PASSWORD]
+    if any(not str(value).strip() for value in required_values):
+        return False
+
+    host = str(DB_HOST).strip().lower()
+    return host not in {"localhost", "127.0.0.1"}
+
+
 def _assert_safe_database_config():
     production_like = _is_production_like_env()
     if not production_like:
         return
 
-    if not DATABASE_URL:
+    if not DATABASE_URL and not _has_complete_component_db_config():
         raise RuntimeError(
             "Production database configuration is incomplete. DATABASE_URL is missing. "
-            "This deployment will not fall back to localhost. In Render, attach the Postgres "
-            "database connection string to the DATABASE_URL environment variable."
+            "Provide DATABASE_URL, or set DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASSWORD "
+            "to a non-local production database target. This deployment will not fall back "
+            "to localhost. In Render, attach the Postgres connection string to DATABASE_URL."
         )
 
 

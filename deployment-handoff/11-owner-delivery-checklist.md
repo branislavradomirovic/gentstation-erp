@@ -13,6 +13,12 @@ Use this checklist before sending the package to the external deployment team.
 - the real production `.env` values or equivalent secure secrets handoff
 - PostgreSQL dump if the team must recreate current data
 
+If delivering by repository URL only, also provide separately:
+
+- `deployment-handoff/vm/.env.vm.example` if the team should use the packaged VM template
+- `deployment-handoff/vm/.env.production.template`
+- `deployment-handoff/vm/.env.production.actual` if you want the one-folder VM handoff reproduced exactly
+
 ## Secrets and credentials to provide securely
 
 - `DATABASE_URL` or DB host/name/user/password values
@@ -67,3 +73,4 @@ Before sending, verify:
 - database dump is recent enough
 - release tag or commit SHA is fixed
 - the team knows who to contact for application questions
+- hidden `.env*` files are included if the handoff is being sent as an archive rather than a repo-only transfer

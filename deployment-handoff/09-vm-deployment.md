@@ -40,8 +40,9 @@ Use these files from this handoff package:
 
 - `vm/docker-compose.vm.yml`
 - `vm/.env.vm.example`
+- `vm/.env.production.template`
 
-These files are intended to be copied into the repository root on the VM or adapted by the external team.
+These files are intended to be used in place from the `deployment-handoff/vm/` folder, or adapted carefully by the external team.
 
 ## Required prerequisites on the VM
 
@@ -62,12 +63,17 @@ Optional but useful:
 
 The team should clone the exact release tag or commit provided by the application owner.
 
-### Step 2. Copy VM deployment files
+### Step 2. Prepare VM deployment files
 
-Copy:
+Recommended:
 
-- `deployment-handoff/vm/docker-compose.vm.yml` to `docker-compose.yml` in the repo root, or run it directly with `-f`
-- `deployment-handoff/vm/.env.vm.example` to `.env`
+- copy `deployment-handoff/vm/.env.vm.example` to `.env` in the repo root
+- leave `deployment-handoff/vm/docker-compose.vm.yml` in place and run it with `-f`
+
+Important:
+
+- the provided compose file uses paths relative to `deployment-handoff/vm/`
+- if the team copies the compose file to another location, they must also update the relative `build` and volume paths inside it
 
 ### Step 3. Populate `.env`
 
@@ -98,10 +104,10 @@ The simplest startup command is:
 docker compose -f deployment-handoff/vm/docker-compose.vm.yml --env-file .env up -d --build
 ```
 
-If the file is copied to the repo root as `docker-compose.yml`, then:
+If Telegram is enabled, include the Telegram profile:
 
 ```bash
-docker compose up -d --build
+docker compose -f deployment-handoff/vm/docker-compose.vm.yml --env-file .env --profile telegram up -d --build
 ```
 
 ### Step 6. Validate startup
@@ -112,16 +118,20 @@ Confirm:
 - `redis` is healthy
 - `app` is running
 - `ai-worker` is running if AI is enabled
+- `report-scheduler` is running
 - `telegram-worker` is running if Telegram is enabled
 
 Use:
 
 ```bash
-docker compose ps
-docker compose logs app
-docker compose logs ai-worker
-docker compose logs telegram-worker
+docker compose -f deployment-handoff/vm/docker-compose.vm.yml --env-file .env ps
+docker compose -f deployment-handoff/vm/docker-compose.vm.yml --env-file .env logs app
+docker compose -f deployment-handoff/vm/docker-compose.vm.yml --env-file .env logs ai-worker
+docker compose -f deployment-handoff/vm/docker-compose.vm.yml --env-file .env logs report-scheduler
+docker compose -f deployment-handoff/vm/docker-compose.vm.yml --env-file .env --profile telegram logs telegram-worker
 ```
+
+The `telegram-worker` service is profile-gated and will only start when the `telegram` profile is enabled.
 
 ### Step 7. Open the application
 

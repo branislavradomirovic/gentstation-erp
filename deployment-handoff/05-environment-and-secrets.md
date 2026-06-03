@@ -25,6 +25,7 @@ Notes:
 
 - In production-like environments the application expects `DATABASE_URL`.
 - The app does not safely fall back to localhost in production.
+- For the single-VM Docker Compose path, the app can also use a complete `DB_HOST`/`DB_PORT`/`DB_NAME`/`DB_USER`/`DB_PASSWORD` configuration when the host is the internal Postgres service rather than localhost.
 
 ### Redis
 
