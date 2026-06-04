@@ -1,3 +1,5 @@
+name: vm_genstationai
+
 services:
   postgres:
     image: postgres:15-alpine
@@ -19,6 +21,30 @@ services:
       retries: 10
     restart: unless-stopped
 
+  schema-init:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: gentstation-schema-init
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-gentstation}
+      DB_USER: ${DB_USER:-gentstation_user}
+      DB_PASSWORD: ${DB_PASSWORD:-change_me_vm_password}
+      APP_ENV: production
+      RUN_SCHEMA_MIGRATIONS_ON_STARTUP: "1"
+      STRICT_SCHEMA_INIT: "1"
+      SKIP_SCHEMA_INIT: "0"
+      INITIAL_ADMIN_USERNAME: ${INITIAL_ADMIN_USERNAME:-admin}
+      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-}
+      INITIAL_ADMIN_EMAIL: ${INITIAL_ADMIN_EMAIL:-admin@example.com}
+    command: ["python", "scripts/init_schema.py"]
+    restart: "no"
+
   redis:
     image: redis:7-alpine
     container_name: gentstation-redis
@@ -34,6 +60,43 @@ services:
       retries: 10
     restart: unless-stopped
 
+  ollama:
+    image: ollama/ollama:latest
+    container_name: gentstation-ollama
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 20s
+    restart: unless-stopped
+
+  ollama-pull:
+    image: ollama/ollama:latest
+    container_name: gentstation-ollama-pull
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-bakllava:latest}
+      OLLAMA_VISION_MODEL: ${OLLAMA_VISION_MODEL:-bakllava:latest}
+    command:
+      - /bin/sh
+      - -c
+      - |
+        ollama pull "$OLLAMA_MODEL"
+        if [ "$OLLAMA_VISION_MODEL" != "$OLLAMA_MODEL" ]; then
+          ollama pull "$OLLAMA_VISION_MODEL"
+        fi
+    restart: "no"
+
   app:
     build:
       context: ../..
@@ -42,8 +105,12 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      schema-init:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
+      ollama-pull:
+        condition: service_completed_successfully
     environment:
       DB_HOST: postgres
       DB_PORT: 5432
@@ -54,20 +121,23 @@ services:
       RUN_SCHEMA_MIGRATIONS_ON_STARTUP: "1"
       STRICT_SCHEMA_INIT: "1"
       REDIS_URL: redis://redis:6379/0
-      AUTO_START_BACKGROUND_WORKERS: "0"
+      AUTO_START_BACKGROUND_WORKERS: "1"
       AUTO_START_TELEGRAM_BOT: "0"
       AUTO_START_AI_WORKER: "0"
       AUTO_START_REPORT_SCHEDULER: "0"
+      EXTERNAL_TELEGRAM_WORKER_ENABLED: ${EXTERNAL_TELEGRAM_WORKER_ENABLED:-0}
+      EXTERNAL_REPORT_SCHEDULER_ENABLED: ${EXTERNAL_REPORT_SCHEDULER_ENABLED:-1}
       INITIAL_ADMIN_USERNAME: ${INITIAL_ADMIN_USERNAME:-admin}
       INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-}
       INITIAL_ADMIN_EMAIL: ${INITIAL_ADMIN_EMAIL:-admin@example.com}
       APP_LOGIN_URL: ${APP_LOGIN_URL:-http://localhost:8501}
-      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-bakllava:latest}
       OLLAMA_VISION_MODEL: ${OLLAMA_VISION_MODEL:-bakllava:latest}
-      OLLAMA_LOCAL_ONLY: ${OLLAMA_LOCAL_ONLY:-1}
+      OLLAMA_LOCAL_ONLY: ${OLLAMA_LOCAL_ONLY:-0}
       VIDEO_FRAME_SAMPLES: ${VIDEO_FRAME_SAMPLES:-6}
       VIDEO_MAX_FRAME_DIMENSION: ${VIDEO_MAX_FRAME_DIMENSION:-768}
+      AI_WORKER_MEMORY_LIMIT_MB: ${AI_WORKER_MEMORY_LIMIT_MB:-2048}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_BOT_URL: ${TELEGRAM_BOT_URL:-}
       TELEGRAM_BOT_HANDLE: ${TELEGRAM_BOT_HANDLE:-}
@@ -96,8 +166,12 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      schema-init:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
+      ollama-pull:
+        condition: service_completed_successfully
     environment:
       DB_HOST: postgres
       DB_PORT: 5432
@@ -107,12 +181,19 @@ services:
       APP_ENV: production
       REDIS_URL: redis://redis:6379/0
       SKIP_SCHEMA_INIT: "1"
-      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-bakllava:latest}
       OLLAMA_VISION_MODEL: ${OLLAMA_VISION_MODEL:-bakllava:latest}
-      OLLAMA_LOCAL_ONLY: ${OLLAMA_LOCAL_ONLY:-1}
+      OLLAMA_LOCAL_ONLY: ${OLLAMA_LOCAL_ONLY:-0}
       VIDEO_FRAME_SAMPLES: ${VIDEO_FRAME_SAMPLES:-6}
       VIDEO_MAX_FRAME_DIMENSION: ${VIDEO_MAX_FRAME_DIMENSION:-768}
+      AI_WORKER_POLL_INTERVAL_SECONDS: ${AI_WORKER_POLL_INTERVAL_SECONDS:-15}
+      AI_WORKER_EMPTY_BACKOFF_MAX_SECONDS: ${AI_WORKER_EMPTY_BACKOFF_MAX_SECONDS:-90}
+      AI_WORKER_MAX_RETRIES: ${AI_WORKER_MAX_RETRIES:-3}
+      AI_WORKER_MEMORY_LIMIT_MB: ${AI_WORKER_MEMORY_LIMIT_MB:-2048}
+      AI_WORKER_STUCK_TIMEOUT_SECONDS: ${AI_WORKER_STUCK_TIMEOUT_SECONDS:-900}
+    healthcheck:
+      disable: true
     volumes:
       - ../../uploads:/home/user/app/uploads
       - ../../downloads:/home/user/app/downloads
@@ -128,6 +209,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      schema-init:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
     environment:
@@ -143,6 +226,8 @@ services:
       TELEGRAM_BOT_URL: ${TELEGRAM_BOT_URL:-}
       TELEGRAM_BOT_HANDLE: ${TELEGRAM_BOT_HANDLE:-}
       BOT_MODE: ${BOT_MODE:-bot}
+    healthcheck:
+      disable: true
     volumes:
       - ../../uploads:/home/user/app/uploads
       - ../../downloads:/home/user/app/downloads
@@ -157,6 +242,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      schema-init:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
     environment:
@@ -168,6 +255,8 @@ services:
       APP_ENV: production
       REDIS_URL: redis://redis:6379/0
       SKIP_SCHEMA_INIT: "1"
+    healthcheck:
+      disable: true
     volumes:
       - ../../uploads:/home/user/app/uploads
       - ../../downloads:/home/user/app/downloads
@@ -176,4 +265,9 @@ services:
 
 volumes:
   postgres_data:
+    name: vm_postgres_data
+    external: true
   redis_data:
+    name: vm_redis_data
+    external: true
+  ollama_data:

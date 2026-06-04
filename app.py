@@ -29,6 +29,10 @@ logging.basicConfig(
 logger = logging.getLogger("gentstation.app")
 
 
+def _env_bool(name: str, default: str = "0") -> bool:
+    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
 # --- 1. PAGE CONFIGURATION (MUST BE FIRST) ---
 st.set_page_config(
     page_title="Gas Station Manager", layout="wide", initial_sidebar_state="expanded"
@@ -178,9 +182,6 @@ def start_background_workers():
             return (time.time() - float(ts)) > stale_after_seconds
         except Exception:
             return True
-
-    def _env_bool(name: str, default: str = "1") -> bool:
-        return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
     default_worker_start = os.getenv("AUTO_START_BACKGROUND_WORKERS_DEFAULT", "0")
     global_worker_start = _env_bool(
@@ -780,8 +781,13 @@ def run_boot_sequence():
 
     # 2. Redis Connectivity
     redis_url = os.getenv("REDIS_URL", "").strip()
-    auto_start_workers = os.getenv("AUTO_START_BACKGROUND_WORKERS", "1")
-    auto_start_bool = auto_start_workers.strip().lower() in {"1", "true", "yes", "on"}
+    auto_start_bool = _env_bool("AUTO_START_BACKGROUND_WORKERS", "1")
+    external_scheduler_enabled = _env_bool(
+        "EXTERNAL_REPORT_SCHEDULER_ENABLED", "0"
+    )
+    external_telegram_worker_enabled = _env_bool(
+        "EXTERNAL_TELEGRAM_WORKER_ENABLED", "0"
+    )
 
     if not auto_start_bool or not redis_url:
         redis_status.info("ℹ️ Redis checks disabled (background workers disabled or REDIS_URL unset).")
@@ -891,8 +897,7 @@ def run_boot_sequence():
 
     # 6. Spawn Internal Workers
     report_scheduler_enabled = (
-        os.getenv("AUTO_START_REPORT_SCHEDULER", "0").strip().lower()
-        in {"1", "true", "yes", "on"}
+        _env_bool("AUTO_START_REPORT_SCHEDULER", "0") or external_scheduler_enabled
     )
     if report_scheduler_enabled:
         _conn.execute(
@@ -949,12 +954,20 @@ def run_boot_sequence():
                 {"label": "Bot Worker", "state": "warning", "detail": "Status unknown"}
             )
     else:
-        bot_worker_status_display.warning(
-            "⚠️ Telegram Bot Worker: **Offline** (No status record)"
-        )
-        boot_summary.append(
-            {"label": "Bot Worker", "state": "warning", "detail": "No status record"}
-        )
+        if external_telegram_worker_enabled:
+            bot_worker_status_display.info(
+                "⏳ Telegram Bot Worker: **Awaiting first heartbeat**"
+            )
+            boot_summary.append(
+                {"label": "Bot Worker", "state": "starting", "detail": "Awaiting heartbeat"}
+            )
+        else:
+            bot_worker_status_display.warning(
+                "⚠️ Telegram Bot Worker: **Offline** (No status record)"
+            )
+            boot_summary.append(
+                {"label": "Bot Worker", "state": "warning", "detail": "No status record"}
+            )
 
     scheduler_status_row = _conn.execute(
         "SELECT value FROM system_settings WHERE key='report_scheduler_status'"

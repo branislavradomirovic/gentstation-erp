@@ -16,10 +16,16 @@ from core.video_processor import (
     OLLAMA_BASE_URL,
     _select_model,
 )
-from core.ai_worker import AI_MEMORY_LIMIT_MB  # Import default AI worker memory limit
 from core.comm_service import test_smtp_connection
 from core.auth import verify_password, hash_password
 from ui.header import render_page_header
+
+
+AI_MEMORY_LIMIT_MB = int(os.getenv("AI_WORKER_MEMORY_LIMIT_MB", "2048"))
+
+
+def _env_bool(name: str, default: str = "0") -> bool:
+    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def test_bot_worker_status(conn):
@@ -161,12 +167,17 @@ def render(conn):
     smtp_host = os.getenv("SMTP_SERVER", "smtp.gmail.com")
     ai_host = OLLAMA_BASE_URL.replace("http://", "").replace("https://", "")
     missing_models = _get_missing_ai_models(OLLAMA_BASE_URL) if test_ollama_connection() else []
+    redis_online = test_redis_connection()
+    bot_online = test_bot_worker_status(conn)
+    external_telegram_worker_enabled = _env_bool(
+        "EXTERNAL_TELEGRAM_WORKER_ENABLED", "0"
+    )
 
     cards = [
         ("Database", DB_HOST, "ONLINE" if conn else "OFFLINE", "#28a745" if conn else "#dc3545", None),
-        ("Redis", redis_host, "ONLINE" if test_redis_connection() else "OFFLINE", "#28a745" if test_redis_connection() else "#dc3545", None),
+        ("Redis", redis_host, "ONLINE" if redis_online else "OFFLINE", "#28a745" if redis_online else "#dc3545", None),
         ("AI Service", ai_host, "DEGRADED" if missing_models else ("READY" if test_ollama_connection() else "UNREACHABLE"), "#ffc107" if missing_models or not test_ollama_connection() else "#28a745", ("Missing model(s): " + ", ".join(missing_models)) if missing_models else "BakLLaVA is available for processing."),
-        ("Telegram Bot", "Worker", "ONLINE" if test_bot_worker_status(conn) else "OFFLINE", "#28a745" if test_bot_worker_status(conn) else "#dc3545", "Uploader notifications and intake rely on this service."),
+        ("Telegram Bot", "Worker", "ONLINE" if bot_online else ("EXPECTED" if external_telegram_worker_enabled else "OFFLINE"), "#28a745" if bot_online else ("#ffc107" if external_telegram_worker_enabled else "#dc3545"), "Uploader notifications and intake rely on this service."),
         ("Email", smtp_host, "CONNECTED" if test_smtp_connection(on_retry=None) else "OFFLINE", "#28a745" if test_smtp_connection(on_retry=None) else "#dc3545", "Manager report emails use this SMTP connection."),
     ]
 

@@ -115,6 +115,7 @@ docker compose -f deployment-handoff/vm/docker-compose.vm.yml --env-file .env --
 Confirm:
 
 - `postgres` is healthy
+- `schema-init` completed successfully
 - `redis` is healthy
 - `app` is running
 - `ai-worker` is running if AI is enabled

@@ -29,6 +29,10 @@ from pages.settings import test_bot_worker_status  # Re-use the status check
 logger = logging.getLogger("gentstation.ai_monitoring")
 
 
+def _env_bool(name: str, default: str = "0") -> bool:
+    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def render(conn):
     render_page_header("🖥️ AI & Service Monitoring")
 
@@ -67,9 +71,10 @@ def render(conn):
         scheduler_row = conn.execute(
             "SELECT value FROM system_settings WHERE key='report_scheduler_status'"
         ).fetchone()
-        scheduler_auto_start = os.getenv(
-            "AUTO_START_REPORT_SCHEDULER", "0"
-        ).strip().lower() in {"1", "true", "yes", "on"}
+        scheduler_auto_start = _env_bool("AUTO_START_REPORT_SCHEDULER", "0")
+        external_scheduler_enabled = _env_bool(
+            "EXTERNAL_REPORT_SCHEDULER_ENABLED", "0"
+        )
         scheduler_online = False
         scheduler_label = "OFFLINE"
         scheduler_caption = None
@@ -89,10 +94,10 @@ def render(conn):
                     scheduler_label = "ERROR"
             except Exception:
                 scheduler_online = False
-        elif scheduler_auto_start:
+        elif scheduler_auto_start or external_scheduler_enabled:
             scheduler_online = True
             scheduler_label = "STARTING"
-            scheduler_caption = "Auto-start is enabled. Waiting for first heartbeat."
+            scheduler_caption = "Scheduler container is expected. Waiting for first heartbeat."
         st.markdown("**Report Scheduler**\n\n`20:00 Rollups`")
         st.markdown(
             status_badge(scheduler_online, scheduler_label, "OFFLINE"),
