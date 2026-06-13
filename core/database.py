@@ -16,6 +16,7 @@ from sqlalchemy.orm import sessionmaker, Session
 from contextlib import contextmanager
 from psycopg2 import pool
 from core.models import Base
+from core.schema_migrations import run_alembic_upgrade_to_head
 from psycopg2 import sql
 from psycopg2.extras import RealDictCursor
 
@@ -42,6 +43,7 @@ logger = logging.getLogger("gentstation.database")
 logger.info("DATABASE_URL present: %s", bool(DATABASE_URL))
 _RESOLVED_DB_HOST = None
 _SCHEMA_INITIALIZED = False
+_ALEMBIC_MIGRATIONS_APPLIED = False
 _ENGINE = None
 _SESSION_FACTORY = None
 _START_TIME = time.time()
@@ -402,7 +404,7 @@ def get_schema_readiness(conn) -> dict:
 
 def get_connection(on_retry=None):
     """Wrapper function for backward compatibility."""
-    global _SCHEMA_INITIALIZED
+    global _SCHEMA_INITIALIZED, _ALEMBIC_MIGRATIONS_APPLIED
 
     # Increase retries and delay to allow more time for DB startup (e.g., 20 * 5 = 100 seconds)
     max_retries = 20
@@ -427,9 +429,12 @@ def get_connection(on_retry=None):
                 # In a future update, move triggers to Alembic and use:
                 # Base.metadata.create_all(_ENGINE)
                 try:
+                    if not _ALEMBIC_MIGRATIONS_APPLIED:
+                        run_alembic_upgrade_to_head()
+                        _ALEMBIC_MIGRATIONS_APPLIED = True
                     ensure_schema(conn)
                 except Exception as e:
-                    logger.error("Legacy ensure_schema failed: %s", e)
+                    logger.error("Schema bootstrap failed: %s", e)
                     if strict_schema_init:
                         raise
                 _SCHEMA_INITIALIZED = True

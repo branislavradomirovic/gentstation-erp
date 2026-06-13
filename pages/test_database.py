@@ -2,13 +2,13 @@ import pytest
 import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from core.models import Base, Region, Station
+from core.models import Base, Region, Station, Tenant
 
 # Use a separate test database from environment or default
 TEST_DATABASE_URL = os.getenv(
     "TEST_DATABASE_URL",
-    "postgresql://gentstation_user:change_me_for_local_dev@localhost:5432/gentstation_test",
-)  # pragma: allowlist secret
+    "postgresql://gentstation_user:change_me_for_local_dev@localhost:5432/gentstation_test",  # pragma: allowlist secret
+)
 
 @pytest.fixture(scope="module")
 def engine():
@@ -35,13 +35,25 @@ def dbsession(engine, tables):
     connection.close()
 
 def test_create_region_and_station(dbsession):
+    tenant = Tenant(slug="default", name="Default Tenant")
+    dbsession.add(tenant)
+    dbsession.flush()
+
     # Test creating a region
-    new_region = Region(name="Balkans", email="balkans@gentstation.com")
+    new_region = Region(
+        tenant_id=tenant.id,
+        name="Balkans",
+        email="balkans@gentstation.com",
+    )
     dbsession.add(new_region)
     dbsession.flush()
 
     # Test creating a station linked via relationship
-    new_station = Station(name="Novi Sad 1", region=new_region)
+    new_station = Station(
+        tenant_id=tenant.id,
+        name="Novi Sad 1",
+        region=new_region,
+    )
     dbsession.add(new_station)
     dbsession.commit()
 
