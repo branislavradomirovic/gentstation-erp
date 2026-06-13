@@ -16,8 +16,7 @@ Use this checklist before sending the package to the external deployment team.
 If delivering by repository URL only, also provide separately:
 
 - `deployment-handoff/vm/.env.vm.example` if the team should use the packaged VM template
-- `deployment-handoff/vm/.env.production.template`
-- `deployment-handoff/vm/.env.production.actual` if you want the one-folder VM handoff reproduced exactly
+- `deployment-handoff/vm/.env.production.example`
 
 ## Secrets and credentials to provide securely
 

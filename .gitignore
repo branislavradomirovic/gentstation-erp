@@ -1,13 +1,17 @@
 __pycache__/
 *.py[cod]
 *.db
+*.dump
+*.sql.gz
 
 # Environment variables and secrets
 .env
 .env.*
 !.env.example
+!**/*.example
 
 .DS_Store
+**/.DS_Store
 uploads/
 downloads/
 .vscode/
@@ -15,3 +19,7 @@ downloads/
 .venv/
 venv/
 *.log
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage

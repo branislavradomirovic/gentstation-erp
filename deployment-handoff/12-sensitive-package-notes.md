@@ -1,39 +1,40 @@
 # 12. Sensitive Package Notes
 
-This handoff package can include a real environment file for deployment handoff:
+This repository must not include real production secrets or live customer data.
 
-- `vm/.env.production.actual`
+Allowed sanitized handoff artifacts:
 
-That file contains live secrets and should be shared only through an approved internal channel.
+- `vm/.env.vm.example`
+- `vm/.env.production.example`
+- `vm/docker-compose.vm.yml`
+- documentation files in this folder
 
 Current status of the one-folder handoff archive:
 
 - VM deployment instructions: included
 - VM Docker Compose stack: included
 - Sanitized production env template: included
-- Real environment file with secrets: included
-- PostgreSQL dump: included as `gentstation_backup.dump`
+- Real environment file with secrets: not included
+- PostgreSQL dump: not included
 
 Important packaging note:
 
-- the hidden `vm/.env*` files are ignored by git
-- if the team receives only a repository URL or git checkout, those hidden files will not be present unless they are shared separately
-- if the team receives a zipped handoff folder, confirm those hidden files are actually included in the archive
+- create a local untracked `.env` on the target server from one of the sanitized examples
+- fill real secrets only on the target server or in an approved secret manager
+- do not email or commit live `.env` files or database dumps
 
-Database dump details:
+Database transfer guidance:
 
-- File: `deployment-handoff/gentstation_backup.dump`
-- Format: PostgreSQL custom dump created with `pg_dump -Fc`
-- Source database: `gentstation`
+- generate fresh dumps outside the repository when a real migration is needed
+- share dumps only through an approved internal channel
+- keep backup retention and restore testing in the production operations plan, not in git
 
 This handoff folder now contains the core items needed for a one-folder VM deployment transfer:
 
 - VM deployment documentation
 - Docker Compose stack for VM deployment
-- sanitized production environment template
-- real environment file with live secrets
-- PostgreSQL dump with live application data
+- sanitized production environment examples
 
 Recommended next step:
 
-- share the complete folder or archive through the approved internal company channel you are using for live credentials and production data.
+- share the repository plus server-only secret values through approved operational channels, keeping secrets and dumps out of version control.

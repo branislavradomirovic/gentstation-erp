@@ -40,7 +40,7 @@ Use these files from this handoff package:
 
 - `vm/docker-compose.vm.yml`
 - `vm/.env.vm.example`
-- `vm/.env.production.template`
+- `vm/.env.production.example`
 
 These files are intended to be used in place from the `deployment-handoff/vm/` folder, or adapted carefully by the external team.
 

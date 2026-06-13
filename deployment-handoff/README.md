@@ -1,16 +1,19 @@
 # GentStationAI Deployment Handoff
 
-This folder is the handoff package for the external infrastructure team that will deploy GentStationAI on AWS.
+This folder contains deployment notes for GentStationAI, with the dedicated Ubuntu single-VM Docker Compose path as the production default.
 
-The application is a containerized Python/Streamlit platform with supporting worker processes and managed stateful services.
+The application is a containerized Python/Streamlit platform with supporting worker processes and stateful services.
 
-This package now includes two deployment paths:
+Primary target:
 
-- AWS managed services path using ECS/RDS/ElastiCache
-- single-VM path using Docker Compose, intended as the easiest way to recreate the environment in the cloud
+- Ubuntu 22.04 or 24.04
+- Docker Engine + Docker Compose plugin
+- separate `web`, `ai-worker`, `telegram-worker`, and `report-scheduler` services
+- PostgreSQL, Redis, reverse proxy, backups, and optional local Ollama
 
 Read the documents in this order:
 
+1. `vm/README.md`
 1. `01-overview.md`
 2. `02-architecture.md`
 3. `03-aws-target.md`
@@ -24,7 +27,7 @@ Read the documents in this order:
 11. `11-owner-delivery-checklist.md`
 12. `vm/docker-compose.vm.yml`
 13. `vm/.env.vm.example`
-14. `vm/.env.production.template`
+14. `vm/.env.production.example`
 15. `12-sensitive-package-notes.md`
 
 Repository artifacts referenced by this handoff:
@@ -32,29 +35,13 @@ Repository artifacts referenced by this handoff:
 - `Dockerfile`
 - `.env.example`
 - `README.md`
-- `render.yaml`
 - `init_db.sql`
 
 High-level deployment summary:
 
 - Deploy the web app as a containerized service.
 - Deploy background workers as separate containerized services.
-- Use managed PostgreSQL and managed Redis.
-- Store secrets in AWS Secrets Manager or SSM Parameter Store.
-- Front the web service with an Application Load Balancer.
+- Use PostgreSQL and Redis alongside the app services.
+- Keep secrets outside git and fill them only on the target host.
 
-Recommended AWS service mapping:
-
-- Amazon ECS Fargate
-- Amazon ECR
-- Amazon RDS for PostgreSQL
-- Amazon ElastiCache for Redis
-- AWS Secrets Manager
-- Amazon CloudWatch Logs
-- AWS Application Load Balancer
-
-This package is intended to be sufficient for an initial AWS deployment handoff without requiring the deployment team to reverse-engineer the application.
-
-For the easiest cloud recreation, start with the single-VM path in `09-vm-deployment.md`.
-
-If the handoff is delivered as a repository URL or git checkout, remember that hidden `.env*` files under `deployment-handoff/vm/` are ignored by git and must be shared separately or bundled in an archive.
+Use `vm/README.md` and `09-vm-deployment.md` first. AWS-oriented notes remain for historical context, but they are no longer the default production path for this repository.

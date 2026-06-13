@@ -27,7 +27,6 @@ AUTO_START_BACKGROUND_WORKERS=0
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-pip install -r requirements-dev.txt
 ```
 
 4. Run the web app from the notebook:
@@ -49,33 +48,26 @@ If you want the whole stack in Docker, use profiles:
 docker compose --profile app --profile workers up --build
 ```
 
-## Render Deployment
+## Production Target
 
-The repo includes a `render.yaml` blueprint for the eventual Docker deployment to Render.
+The supported production target is a dedicated Ubuntu server running Docker Compose with separate services for:
 
-Expected production shape:
+- `web` running the Streamlit app from `Dockerfile`
+- `ai-worker` running `python -m core.ai_worker`
+- `telegram-worker` running `python -m core.bot_worker`
+- `report-scheduler` running `python -m core.report_scheduler`
+- PostgreSQL
+- Redis
+- reverse proxy and backups outside the app container set
 
-- `web` service running the Streamlit app from `Dockerfile`
-- `ai-worker` service running `python -m core.ai_worker`
-- `telegram-worker` service running `python -m core.bot_worker`
-- managed PostgreSQL
-- managed Redis / Key Value
+Start with the VM deployment guide in [deployment-handoff/vm/README.md](/Users/branislavradomirovic/Applications/Python/GentStationAI/deployment-handoff/vm/README.md:1) and the sanitized examples in `deployment-handoff/vm/`.
 
-Important production env vars:
+Important production notes:
 
-```text
-APP_ENV=production
-DATABASE_URL=<render postgres connection string>
-REDIS_URL=<render key value connection string>
-RUN_SCHEMA_MIGRATIONS_ON_STARTUP=1
-STRICT_SCHEMA_INIT=1
-AUTO_START_BACKGROUND_WORKERS=0
-AUTO_START_AI_WORKER=0
-AUTO_START_TELEGRAM_BOT=0
-APP_LOGIN_URL=https://<your-render-domain>
-```
-
-The app and workers are designed to run as separate services. The web app does not need to spawn worker subprocesses in production.
+- Do not commit `.env` or production env files.
+- Keep the web app and workers as separate containers in production.
+- Preserve current Tier 1 behavior until later multi-tenant phases explicitly change it.
+- `render.yaml` remains in the repo only as a legacy reference and is not the production deployment target.
 
 ## Notes
 
