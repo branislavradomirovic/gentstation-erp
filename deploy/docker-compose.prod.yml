@@ -1,0 +1,237 @@
+name: gentstationai_prod
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../init_db.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  schema-init:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    env_file:
+      - ./env/.env.production
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      RUN_SCHEMA_MIGRATIONS_ON_STARTUP: "1"
+      STRICT_SCHEMA_INIT: "1"
+      SKIP_SCHEMA_INIT: "0"
+    command: ["python", "scripts/init_schema.py"]
+    restart: "no"
+
+  ollama:
+    profiles: ["ollama"]
+    image: ollama/ollama:latest
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 20s
+    restart: unless-stopped
+
+  ollama-pull:
+    profiles: ["ollama"]
+    image: ollama/ollama:latest
+    env_file:
+      - ./env/.env.production
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: ollama:11434
+    command:
+      - /bin/sh
+      - -c
+      - |
+        ollama pull "$OLLAMA_MODEL"
+        if [ "$OLLAMA_VISION_MODEL" != "$OLLAMA_MODEL" ]; then
+          ollama pull "$OLLAMA_VISION_MODEL"
+        fi
+    restart: "no"
+
+  web:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    env_file:
+      - ./env/.env.production
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      schema-init:
+        condition: service_completed_successfully
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      REDIS_URL: redis://redis:6379/0
+      AUTO_START_BACKGROUND_WORKERS: "0"
+      AUTO_START_TELEGRAM_BOT: "0"
+      AUTO_START_AI_WORKER: "0"
+      AUTO_START_REPORT_SCHEDULER: "0"
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+    volumes:
+      - uploads_data:/home/user/app/uploads
+      - downloads_data:/home/user/app/downloads
+    healthcheck:
+      test: ["CMD-SHELL", "sh /home/user/app/deploy/scripts/healthcheck_web.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+
+  ai-worker:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    env_file:
+      - ./env/.env.production
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      schema-init:
+        condition: service_completed_successfully
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      REDIS_URL: redis://redis:6379/0
+      SKIP_SCHEMA_INIT: "1"
+      WORKER_HEALTHCHECK_TARGET: ai-worker
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+    volumes:
+      - uploads_data:/home/user/app/uploads
+      - downloads_data:/home/user/app/downloads
+    command: ["python", "-m", "core.ai_worker"]
+    healthcheck:
+      test: ["CMD-SHELL", "sh /home/user/app/deploy/scripts/healthcheck_worker.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
+    restart: unless-stopped
+
+  telegram-worker:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    env_file:
+      - ./env/.env.production
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      schema-init:
+        condition: service_completed_successfully
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      REDIS_URL: redis://redis:6379/0
+      SKIP_SCHEMA_INIT: "1"
+      BOT_MODE: ${BOT_MODE:-bot}
+      WORKER_HEALTHCHECK_TARGET: telegram-worker
+    volumes:
+      - uploads_data:/home/user/app/uploads
+      - downloads_data:/home/user/app/downloads
+    command: ["python", "-m", "core.bot_worker"]
+    healthcheck:
+      test: ["CMD-SHELL", "sh /home/user/app/deploy/scripts/healthcheck_worker.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
+    restart: unless-stopped
+
+  report-scheduler:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    env_file:
+      - ./env/.env.production
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      schema-init:
+        condition: service_completed_successfully
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      REDIS_URL: redis://redis:6379/0
+      SKIP_SCHEMA_INIT: "1"
+      WORKER_HEALTHCHECK_TARGET: report-scheduler
+    volumes:
+      - uploads_data:/home/user/app/uploads
+      - downloads_data:/home/user/app/downloads
+    command: ["python", "-m", "core.report_scheduler"]
+    healthcheck:
+      test: ["CMD-SHELL", "sh /home/user/app/deploy/scripts/healthcheck_worker.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
+    restart: unless-stopped
+
+  reverse-proxy:
+    image: caddy:2-alpine
+    env_file:
+      - ./env/.env.production
+    depends_on:
+      web:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./reverse-proxy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  uploads_data:
+  downloads_data:
+  ollama_data:
+  caddy_data:
+  caddy_config:
