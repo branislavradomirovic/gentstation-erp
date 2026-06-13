@@ -403,17 +403,17 @@ st.markdown(
             backdrop-filter: blur(5px);
         }
 
-        .login-shell {
+        .landing-shell {
             display: grid;
-            grid-template-columns: minmax(0, 1.15fr) minmax(320px, 0.85fr);
-            gap: 2rem;
-            align-items: stretch;
+            grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
+            gap: 1.6rem;
+            align-items: start;
             margin: 0.35rem auto 0 auto;
         }
 
-        .login-panel {
+        .landing-panel {
             border: 1px solid rgba(15, 23, 42, 0.10);
-            border-radius: 18px;
+            border-radius: 22px;
             background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(245,247,250,0.96));
             box-shadow: 0 20px 60px rgba(15, 23, 42, 0.10);
             padding: 1.5rem 1.6rem;
@@ -429,159 +429,269 @@ st.markdown(
             top: 0.35rem !important;
         }
 
-        .login-brand-panel [data-testid="stImage"] img {
+        .landing-brand-panel [data-testid="stImage"] img {
             max-height: 56px;
             width: auto !important;
             object-fit: contain;
         }
 
-        .login-brand-panel [data-testid="stImageContainer"] {
+        .landing-brand-panel [data-testid="stImageContainer"] {
             max-width: 250px !important;
             width: 250px !important;
-            margin: 0 auto;
+            margin: 0;
         }
 
-        .login-brand-panel {
+        .landing-brand-panel {
             display: flex;
             flex-direction: column;
-            justify-content: space-between;
-            gap: 1.5rem;
+            gap: 1.2rem;
         }
 
-        .login-brand-copy {
+        .landing-hero {
             display: grid;
-            gap: 0.9rem;
+            gap: 0.95rem;
         }
 
-        .login-readiness {
-            margin-top: 0.2rem;
-            padding: 1rem 1.05rem;
-            border: 1px solid rgba(15, 23, 42, 0.08);
-            border-radius: 16px;
-            background: linear-gradient(180deg, rgba(248,250,252,0.98), rgba(241,245,249,0.94));
+        .landing-kicker {
+            display: inline-flex;
+            align-items: center;
+            width: fit-content;
+            padding: 0.32rem 0.7rem;
+            border-radius: 999px;
+            background: rgba(11, 94, 215, 0.10);
+            color: #0b5ed7;
+            font-size: 0.76rem;
+            font-weight: 800;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
         }
 
-        .login-readiness-header {
+        .landing-title {
+            margin: 0;
+            font-size: 2.45rem;
+            line-height: 1.02;
+            color: #111827;
+            max-width: 14ch;
+        }
+
+        .landing-subtitle {
+            margin: 0;
+            font-size: 1rem;
+            line-height: 1.7;
+            color: #4b5563;
+            max-width: 40rem;
+        }
+
+        .landing-hero-actions {
             display: flex;
-            justify-content: space-between;
-            align-items: baseline;
+            flex-wrap: wrap;
             gap: 0.75rem;
-            margin-bottom: 0.8rem;
         }
 
-        .login-readiness-title {
-            font-size: 0.96rem;
+        .landing-button {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 2.75rem;
+            padding: 0.72rem 1rem;
+            border-radius: 999px;
+            text-decoration: none;
+            font-size: 0.92rem;
+            font-weight: 700;
+            transition: transform 0.15s ease, box-shadow 0.15s ease;
+        }
+
+        .landing-button:hover {
+            transform: translateY(-1px);
+        }
+
+        .landing-button.primary {
+            background: linear-gradient(135deg, #0b5ed7, #1d4ed8);
+            color: #ffffff !important;
+            box-shadow: 0 10px 26px rgba(29, 78, 216, 0.22);
+        }
+
+        .landing-button.secondary {
+            background: rgba(255,255,255,0.88);
+            color: #111827 !important;
+            border: 1px solid rgba(15, 23, 42, 0.12);
+        }
+
+        .landing-stat-strip {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 0.75rem;
+        }
+
+        .landing-stat {
+            padding: 0.95rem 1rem;
+            border-radius: 18px;
+            background: linear-gradient(180deg, rgba(241,245,249,0.98), rgba(255,255,255,0.98));
+            border: 1px solid rgba(148, 163, 184, 0.20);
+        }
+
+        .landing-stat-value {
+            font-size: 1.25rem;
             font-weight: 800;
             color: #0f172a;
         }
 
-        .login-readiness-subtitle {
-            font-size: 0.76rem;
+        .landing-stat-label {
+            margin-top: 0.24rem;
+            font-size: 0.82rem;
+            line-height: 1.45;
             color: #64748b;
         }
 
-        .login-readiness-grid {
+        .landing-section {
+            margin-top: 0.25rem;
             display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 0.65rem;
+            gap: 0.85rem;
         }
 
-        .login-readiness-card {
-            padding: 0.8rem 0.85rem;
-            border-radius: 14px;
-            border: 1px solid rgba(148, 163, 184, 0.18);
-            background: rgba(255,255,255,0.92);
-        }
-
-        .login-readiness-card.is-ready {
-            background: rgba(240, 253, 244, 0.92);
-            border-color: rgba(34, 197, 94, 0.25);
-        }
-
-        .login-readiness-card.is-warning,
-        .login-readiness-card.is-starting {
-            background: rgba(255, 251, 235, 0.94);
-            border-color: rgba(245, 158, 11, 0.25);
-        }
-
-        .login-readiness-card.is-offline {
-            background: rgba(254, 242, 242, 0.94);
-            border-color: rgba(239, 68, 68, 0.2);
-        }
-
-        .login-readiness-topline {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 0.5rem;
-            margin-bottom: 0.3rem;
-        }
-
-        .login-readiness-label {
-            font-size: 0.8rem;
+        .landing-section-title {
+            margin: 0;
+            font-size: 1.18rem;
             font-weight: 700;
-            color: #0f172a;
+            color: #111827;
         }
 
-        .login-readiness-state {
-            font-size: 0.66rem;
-            font-weight: 800;
-            letter-spacing: 0.05em;
-            text-transform: uppercase;
-            color: #334155;
-        }
-
-        .login-readiness-detail {
-            font-size: 0.76rem;
-            line-height: 1.45;
+        .landing-section-copy {
+            margin: 0;
+            font-size: 0.93rem;
+            line-height: 1.65;
             color: #5b6474;
         }
 
-        .login-kicker {
-            font-size: 0.78rem;
-            font-weight: 700;
-            letter-spacing: 0.08em;
+        .landing-card-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 0.8rem;
+        }
+
+        .landing-card {
+            padding: 1rem 1rem 1.05rem 1rem;
+            border-radius: 18px;
+            background: rgba(255,255,255,0.92);
+            border: 1px solid rgba(15, 23, 42, 0.08);
+        }
+
+        .landing-card-eyebrow {
+            font-size: 0.72rem;
+            font-weight: 800;
+            letter-spacing: 0.05em;
             text-transform: uppercase;
             color: #0b5ed7;
         }
 
-        .login-title {
-            margin: 0;
-            font-size: 2rem;
-            line-height: 1.08;
+        .landing-card-title {
+            margin: 0.42rem 0 0.45rem 0;
+            font-size: 1rem;
+            font-weight: 800;
             color: #111827;
         }
 
-        .login-subtitle {
+        .landing-card-copy {
+            margin: 0;
+            font-size: 0.87rem;
+            line-height: 1.45;
+            color: #5b6474;
+        }
+
+        .landing-tier-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 0.8rem;
+        }
+
+        .landing-tier-card {
+            padding: 1.05rem;
+            border-radius: 20px;
+            border: 1px solid rgba(15, 23, 42, 0.10);
+            background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(248,250,252,0.96));
+        }
+
+        .landing-tier-card.featured {
+            border-color: rgba(11, 94, 215, 0.24);
+            box-shadow: inset 0 0 0 1px rgba(11, 94, 215, 0.06);
+            background: linear-gradient(180deg, rgba(239,246,255,0.98), rgba(255,255,255,0.98));
+        }
+
+        .landing-tier-label {
+            font-size: 0.76rem;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: #0b5ed7;
+            font-weight: 800;
+        }
+
+        .landing-tier-title {
+            margin: 0.4rem 0 0.35rem 0;
+            font-size: 1.12rem;
+            color: #111827;
+            font-weight: 800;
+        }
+
+        .landing-tier-copy {
+            margin: 0;
+            font-size: 0.88rem;
+            line-height: 1.55;
+            color: #5b6474;
+        }
+
+        .landing-tier-list {
+            margin: 0.8rem 0 0 0;
+            padding-left: 1rem;
+            color: #334155;
+            font-size: 0.86rem;
+            line-height: 1.7;
+        }
+
+        .landing-benefits {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 0.75rem;
+        }
+
+        .landing-benefit {
+            padding: 0.95rem 1rem;
+            border-radius: 16px;
+            background: rgba(248,250,252,0.96);
+            border: 1px solid rgba(148, 163, 184, 0.18);
+        }
+
+        .landing-benefit strong {
+            display: block;
+            color: #111827;
+            margin-bottom: 0.25rem;
+        }
+
+        .landing-footnote {
+            padding: 1rem 1.05rem;
+            border-radius: 18px;
+            background: linear-gradient(180deg, rgba(15,23,42,0.98), rgba(30,41,59,0.98));
+            color: rgba(255,255,255,0.92);
+        }
+
+        .landing-footnote-title {
             margin: 0;
             font-size: 1rem;
+            font-weight: 800;
+        }
+
+        .landing-footnote-copy {
+            margin: 0.45rem 0 0 0;
+            font-size: 0.88rem;
             line-height: 1.65;
-            color: #4b5563;
-            max-width: 38rem;
-        }
-
-        .login-brand-panel .login-disclaimer {
-            margin-top: 0;
-            padding: 1rem 1.1rem;
-            text-align: left;
-            font-size: 0.96rem;
-            line-height: 1.6;
-            color: #374151;
-            background: rgba(255,255,255,0.72);
-            border: 1px solid rgba(148, 163, 184, 0.28);
-            border-radius: 14px;
-        }
-
-        .login-brand-actions {
-            display: grid;
-            gap: 0.9rem;
-            align-content: start;
+            color: rgba(255,255,255,0.78);
         }
 
         .login-form-panel {
             display: flex;
             flex-direction: column;
             justify-content: center;
+            position: sticky;
+            top: 1rem;
         }
 
         .login-form-header {
@@ -602,33 +712,30 @@ st.markdown(
             color: #6b7280;
         }
 
-        .login-status {
-            margin: 0.65rem 0 1rem 0;
-            padding: 0.8rem 0.95rem;
-            border-radius: 12px;
-            font-size: 0.9rem;
-            background: rgba(11, 94, 215, 0.08);
-            border: 1px solid rgba(11, 94, 215, 0.14);
-            color: #0f172a;
-        }
-
         @media (max-width: 900px) {
-            .login-shell {
+            .landing-shell {
                 grid-template-columns: 1fr;
                 gap: 1.2rem;
                 margin-top: 0.2rem;
             }
 
-            .login-panel {
+            .landing-panel {
                 padding: 1.4rem;
             }
 
-            .login-title {
-                font-size: 1.65rem;
+            .landing-title {
+                font-size: 1.8rem;
             }
 
-            .login-readiness-grid {
+            .landing-card-grid,
+            .landing-tier-grid,
+            .landing-benefits,
+            .landing-stat-strip {
                 grid-template-columns: 1fr;
+            }
+
+            .login-form-panel {
+                position: static;
             }
         }
     </style>
@@ -690,6 +797,13 @@ from core.auth import (
     logout_user_streamlit,
 )
 from core.session import validate_session_token
+from core.tenant_context import (
+    TenantContext,
+    TenantContextError,
+    clear_current_tenant_context,
+    set_current_tenant_context,
+    tenant_context,
+)
 from core.activity_logger import log_activity
 from core.config import LOGIN_DISCLAIMER_HTML, FOOTER_DISCLAIMER_TEXT
 
@@ -703,14 +817,16 @@ import pages.admin_users as admin_users
 import pages.ai_reports as ai_reports
 import pages.ai_alerts as ai_alerts
 import pages.ai_monitoring as ai_monitoring
+import pages.cctv_intelligence as cctv_intelligence
 import pages.audit_log as audit_log
 import pages.admin_data_import as admin_data_import
+import pages.tenant_plan as tenant_plan
 import pages.settings as settings
 import pages.help as page_help
 
 # UI imports
 from ui.sidebar import display_sidebar
-from core.access_control import PAGE_CONFIG, has_access
+from core.access_control import PAGE_CONFIG, require_page_access
 
 # Communication service for password reset
 try:
@@ -1040,8 +1156,6 @@ def run_boot_sequence():
                 {"label": "Report Scheduler", "state": "offline", "detail": "Disabled"}
             )
 
-    st.session_state["boot_summary_cards"] = boot_summary
-
     # Brief visual confirmation before proceeding
     if "boot_complete" not in st.session_state:
         time.sleep(1)
@@ -1055,55 +1169,10 @@ def ensure_runtime_dirs():
     """Create local runtime directories when they are missing."""
     for name in ("uploads", "downloads"):
         Path(name).mkdir(parents=True, exist_ok=True)
-
-
-def render_login_readiness_panel():
-    cards = st.session_state.get("boot_summary_cards") or []
-    if not cards:
-        return
-
-    def _state_label(state: str) -> str:
-        state = (state or "warning").lower()
-        mapping = {
-            "ready": "Ready",
-            "starting": "Starting",
-            "warning": "Attention",
-            "offline": "Offline",
-        }
-        return mapping.get(state, state.title())
-
-    markup = [
-        '<div class="login-readiness">',
-        '<div class="login-readiness-header">',
-        '<div class="login-readiness-title">System Readiness</div>',
-        '<div class="login-readiness-subtitle">Latest startup verification</div>',
-        "</div>",
-        '<div class="login-readiness-grid">',
-    ]
-
-    for card in cards:
-        state = (card.get("state") or "warning").lower()
-        label = str(card.get("label") or "Service")
-        detail = str(card.get("detail") or "").strip() or "No detail available."
-        markup.extend(
-            [
-                f'<div class="login-readiness-card is-{state}">',
-                '<div class="login-readiness-topline">',
-                f'<div class="login-readiness-label">{label}</div>',
-                f'<div class="login-readiness-state">{_state_label(state)}</div>',
-                "</div>",
-                f'<div class="login-readiness-detail">{detail}</div>',
-                "</div>",
-            ]
-        )
-
-    markup.extend(["</div>", "</div>"])
-    st.markdown("".join(markup), unsafe_allow_html=True)
-
-
 conn = None
 try:
     ensure_runtime_dirs()
+    clear_current_tenant_context()
     # If we are starting fresh, show the boot sequence.
     # Once booted or logged in, we bypass the sequence for snappier navigation.
     if "user_id" not in st.session_state and "boot_complete" not in st.session_state:
@@ -1119,32 +1188,49 @@ try:
         """Checks for an existing session token to keep the user logged in."""
         token = st.session_state.get("session_token")
         if token and "user_id" not in st.session_state:
-            uid = validate_session_token(token)
-            if uid:
+            session_payload = validate_session_token(token)
+            if session_payload:
+                uid = session_payload["user_id"]
+                tenant_id = session_payload["tenant_id"]
+                scoped_context = TenantContext(tenant_id=tenant_id, user_id=uid)
                 # Fetch all user-related data from the single users table
-                row = conn.execute(
-                    "SELECT id, username, email, role, dark_mode_enabled, name, surname, station_id, region_id, telegram_chat_id, force_password_change FROM users WHERE id = %s",
-                    (uid,),
-                ).fetchone()
+                with tenant_context(scoped_context):
+                    with get_connection() as scoped_conn:
+                        row = scoped_conn.execute(
+                            "SELECT id, tenant_id, username, email, role, dark_mode_enabled, name, surname, station_id, region_id, telegram_chat_id, force_password_change FROM users WHERE id = %s",
+                            (uid,),
+                        ).fetchone()
                 if row:
                     st.session_state["user_id"] = row[0]
-                    st.session_state["username"] = row[1]
-                    st.session_state["email"] = row[2]
-                    st.session_state["user_role"] = row[3]
-                    st.session_state["dark_mode"] = bool(row[4])
-                    st.session_state["name"] = row[5]
-                    st.session_state["surname"] = row[6]
-                    st.session_state["user_name_full"] = f"{row[5]} {row[6]}".strip()
-                    st.session_state["user_station_id"] = row[7]
-                    st.session_state["user_region_id"] = row[8]
-                    st.session_state["user_telegram_chat_id"] = row[9]
-                    st.session_state["force_password_change"] = bool(row[10])
+                    st.session_state["tenant_id"] = row[1]
+                    st.session_state["username"] = row[2]
+                    st.session_state["email"] = row[3]
+                    st.session_state["user_role"] = row[4]
+                    st.session_state["dark_mode"] = bool(row[5])
+                    st.session_state["name"] = row[6]
+                    st.session_state["surname"] = row[7]
+                    st.session_state["user_name_full"] = f"{row[6]} {row[7]}".strip()
+                    st.session_state["user_station_id"] = row[8]
+                    st.session_state["user_region_id"] = row[9]
+                    st.session_state["user_telegram_chat_id"] = row[10]
+                    st.session_state["force_password_change"] = bool(row[11])
                 else:
                     if "session_token" in st.session_state:
                         del st.session_state["session_token"]
 
     if "session_token" in st.session_state:
         restore_session()
+
+    current_tenant_context = None
+    if "user_id" in st.session_state and st.session_state.get("tenant_id"):
+        current_tenant_context = TenantContext(
+            tenant_id=int(st.session_state["tenant_id"]),
+            user_id=st.session_state.get("user_id"),
+            role=st.session_state.get("user_role"),
+            username=st.session_state.get("username"),
+            station_id=st.session_state.get("user_station_id"),
+            region_id=st.session_state.get("user_region_id"),
+        )
 
     # --- 4. LOGIN INTERFACE ---
     if "user_id" not in st.session_state:
@@ -1161,9 +1247,9 @@ try:
             unsafe_allow_html=True,
         )
 
-        left_col, right_col = st.columns([1.25, 0.95], gap="large", vertical_alignment="top")
+        left_col, right_col = st.columns([1.45, 0.85], gap="large", vertical_alignment="top")
         with left_col:
-            st.markdown('<div class="login-panel login-brand-panel">', unsafe_allow_html=True)
+            st.markdown('<div class="landing-panel landing-brand-panel">', unsafe_allow_html=True)
             logo_path = Path("assets/GSAI_Horizontal.png")
             if not logo_path.exists():
                 logo_path = Path("assets/OpusLogo.png")
@@ -1171,53 +1257,171 @@ try:
                 st.image(str(logo_path), width=250)
             st.markdown(
                 """
-                <div class="login-brand-copy">
-                    <div class="login-kicker">Operational Video Intelligence</div>
-                    <h1 class="login-title">GentStationAI</h1>
-                    <p class="login-subtitle">
-                        Centralized video reporting, AI risk assessment, and station oversight in one streamlined workspace.
+                <div class="landing-hero">
+                    <div class="landing-kicker">Production-ready Multi-Tenant Platform</div>
+                    <h1 class="landing-title">Operational AI for modern fuel retail networks.</h1>
+                    <p class="landing-subtitle">
+                        GentStationAI gives gas-station companies one secure workspace for daily operations, AI-driven reporting,
+                        and an upgrade path to CCTV intelligence without exposing one tenant's data to another.
+                    </p>
+                    <div class="landing-hero-actions">
+                        <a class="landing-button primary" href="#login-access">Login to Workspace</a>
+                        <a class="landing-button secondary" href="#pilot-cta">Start a Pilot</a>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                """
+                <div class="landing-stat-strip">
+                    <div class="landing-stat">
+                        <div class="landing-stat-value">1 Platform</div>
+                        <div class="landing-stat-label">Shared codebase, isolated tenant operations, and dedicated production services.</div>
+                    </div>
+                    <div class="landing-stat">
+                        <div class="landing-stat-value">2 Tiers</div>
+                        <div class="landing-stat-label">AI Daily Operations for rollout speed and CCTV Intelligence for advanced sites.</div>
+                    </div>
+                    <div class="landing-stat">
+                        <div class="landing-stat-value">24/7 Flow</div>
+                        <div class="landing-stat-label">Web, workers, scheduler, Redis, Postgres, and reverse proxy as separate services.</div>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                """
+                <div class="landing-section">
+                    <h2 class="landing-section-title">The problem</h2>
+                    <p class="landing-section-copy">
+                        Fuel retail teams juggle fragmented station reporting, delayed issue visibility, and manual follow-up across
+                        regions, managers, and field staff. Valuable operational evidence often arrives too late to prevent risk or
+                        coach teams consistently.
                     </p>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
-            render_login_readiness_panel()
-            st.markdown('<div class="login-brand-actions">', unsafe_allow_html=True)
-            if st.button("Forgot Password?", type="secondary", use_container_width=True):
-                st.session_state["show_forgot_pw"] = True
-            st.markdown(LOGIN_DISCLAIMER_HTML, unsafe_allow_html=True)
-            st.markdown("</div>", unsafe_allow_html=True)
+            st.markdown(
+                """
+                <div class="landing-section">
+                    <h2 class="landing-section-title">Three solution pillars</h2>
+                    <div class="landing-card-grid">
+                        <div class="landing-card">
+                            <div class="landing-card-eyebrow">Pillar 1</div>
+                            <div class="landing-card-title">Daily operational visibility</div>
+                            <p class="landing-card-copy">Bring station submissions, management review, AI scoring, alerts, and follow-up into one operating rhythm.</p>
+                        </div>
+                        <div class="landing-card">
+                            <div class="landing-card-eyebrow">Pillar 2</div>
+                            <div class="landing-card-title">Tenant-safe scale</div>
+                            <p class="landing-card-copy">Run multiple gas-station companies on one platform with tenant isolation, scoped access, and centralized plan controls.</p>
+                        </div>
+                        <div class="landing-card">
+                            <div class="landing-card-eyebrow">Pillar 3</div>
+                            <div class="landing-card-title">Upgrade path to CCTV intelligence</div>
+                            <p class="landing-card-copy">Start with Tier 1 operations today and unlock Tier 2 CCTV workflows only for companies and sites that need them.</p>
+                        </div>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                """
+                <div class="landing-section">
+                    <h2 class="landing-section-title">Tier comparison</h2>
+                    <div class="landing-tier-grid">
+                        <div class="landing-tier-card">
+                            <div class="landing-tier-label">Tier 1</div>
+                            <div class="landing-tier-title">AI Daily Operations</div>
+                            <p class="landing-tier-copy">A focused rollout for operational reporting, alerts, summaries, and manager decision support.</p>
+                            <ul class="landing-tier-list">
+                                <li>Telegram-based station intake</li>
+                                <li>AI reports, alerts, and scheduler workflows</li>
+                                <li>Regional and station oversight dashboards</li>
+                                <li>Fast onboarding for pilot networks</li>
+                            </ul>
+                        </div>
+                        <div class="landing-tier-card featured">
+                            <div class="landing-tier-label">Tier 2</div>
+                            <div class="landing-tier-title">CCTV Intelligence</div>
+                            <p class="landing-tier-copy">Adds camera-aware intelligence workflows for operators ready to extend beyond daily submission review.</p>
+                            <ul class="landing-tier-list">
+                                <li>Everything in Tier 1</li>
+                                <li>Tier-gated CCTV routes and future worker pipelines</li>
+                                <li>Camera capacity controls by tenant plan</li>
+                                <li>Designed for advanced site monitoring programs</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                """
+                <div class="landing-section">
+                    <h2 class="landing-section-title">Benefits for pilot rollouts</h2>
+                    <div class="landing-benefits">
+                        <div class="landing-benefit">
+                            <strong>Faster intervention</strong>
+                            Surface operational risks sooner so managers can coach, escalate, and close loops while the context is still fresh.
+                        </div>
+                        <div class="landing-benefit">
+                            <strong>Cleaner regional oversight</strong>
+                            Give regional leaders a single source of truth instead of scattered messages, spreadsheets, and one-off follow-ups.
+                        </div>
+                        <div class="landing-benefit">
+                            <strong>Lower rollout friction</strong>
+                            Start with the daily-operations tier and expand only where the network proves value.
+                        </div>
+                        <div class="landing-benefit">
+                            <strong>Production deployment path</strong>
+                            Move from pilot to dedicated Ubuntu server deployment with Compose, Postgres, Redis, workers, proxy, and backups.
+                        </div>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                """
+                <div class="landing-section" id="pilot-cta">
+                    <div class="landing-footnote">
+                        <p class="landing-footnote-title">Pilot CTA</p>
+                        <p class="landing-footnote-copy">
+                            Start with one tenant, one regional management flow, and a controlled Tier 1 rollout. Expand to more companies,
+                            more stations, and Tier 2 CCTV intelligence only after the operating model is proven.
+                        </p>
+                        <p class="landing-footnote-copy">
+                            Trust &amp; privacy: GentStationAI is designed around tenant isolation, role-based access, and production separation
+                            between web, workers, scheduler, database, cache, and reverse proxy services. No internal runtime health or debug
+                            details are exposed on this public page.
+                        </p>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
             st.markdown("</div>", unsafe_allow_html=True)
 
         with right_col:
-            st.markdown('<div class="login-panel login-form-panel">', unsafe_allow_html=True)
+            st.markdown('<div id="login-access"></div>', unsafe_allow_html=True)
+            st.markdown('<div class="landing-panel login-form-panel">', unsafe_allow_html=True)
             st.markdown(
                 """
                 <div class="login-form-header">
-                    <h2 class="login-form-title">Sign in</h2>
+                    <h2 class="login-form-title">Secure workspace login</h2>
                     <p class="login-form-subtitle">
-                        Use your GentStationAI account to access dashboards, reporting, and station operations.
+                        Authorized tenant users can sign in here to access dashboards, reporting, subscription controls, and station operations.
                     </p>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
-
-            status_markup = '<div class="login-status">System status: Operational</div>'
-            try:
-                sys_row = conn.execute(
-                    "SELECT value FROM system_settings WHERE key='maintenance_mode'"
-                ).fetchone()
-                if sys_row and sys_row[0] == "1":
-                    status_markup = (
-                        '<div class="login-status">'
-                        "<strong>Maintenance mode is active.</strong><br>"
-                        "Login is currently restricted to General Manager accounts."
-                        "</div>"
-                    )
-            except Exception:
-                pass
-            st.markdown(status_markup, unsafe_allow_html=True)
 
             with st.form("login_form"):
                 cred = st.text_input("Username or Email")
@@ -1236,6 +1440,10 @@ try:
                         else:
                             st.error(msg)
 
+            st.markdown(LOGIN_DISCLAIMER_HTML, unsafe_allow_html=True)
+            if st.button("Forgot Password?", type="secondary", use_container_width=True):
+                st.session_state["show_forgot_pw"] = True
+
             if st.session_state.get("show_forgot_pw"):
                 with st.form("forgot_pw_form"):
                     st.subheader("Reset Your Password")
@@ -1244,7 +1452,8 @@ try:
                     )
                     if st.form_submit_button("Send Reset Link", width="stretch"):
                         if email_to_reset:
-                            send_password_reset_email(conn, email_to_reset)
+                            with get_connection(platform_access=True) as platform_conn:
+                                send_password_reset_email(platform_conn, email_to_reset)
                         else:
                             st.error("Please enter an email address.")
             st.markdown("</div>", unsafe_allow_html=True)
@@ -1252,7 +1461,8 @@ try:
         st.stop()
 
     # --- 5. AUTHENTICATED APP SHELL ---
-    selected_page = display_sidebar(conn)
+    set_current_tenant_context(current_tenant_context)
+    selected_page = display_sidebar(conn, current_tenant_context)
 
     # --- 5.1 FORCE PASSWORD CHANGE OVERRIDE ---
     if st.session_state.get("force_password_change"):
@@ -1302,9 +1512,11 @@ try:
             "AI Reports": ai_reports.render,
             "AI Alerts": ai_alerts.render,
             "AI Monitoring": ai_monitoring.render,
+            "CCTV Intelligence": cctv_intelligence.render,
             "Audit Log": audit_log.render,
             "Data Import": admin_data_import.render,
             "Admin Users": admin_users.render,
+            "Tenant Plan": tenant_plan.render,
             "Settings": settings.render,
             "Help": page_help.render,
         }
@@ -1315,18 +1527,27 @@ try:
         username = st.session_state.get("username")
 
         if selected_page in registry:
-            if has_access(selected_page, user_role, username):
+            require_page_access(
+                selected_page,
+                current_tenant_context,
+                user_role,
+                username,
+                conn=conn,
+            )
+            with tenant_context(current_tenant_context):
+                conn.close()
+                conn = get_connection()
                 registry[selected_page](conn)
-                st.divider()
-                st.markdown(
-                    f"<div style='text-align: center; opacity: 0.7;'>{FOOTER_DISCLAIMER_TEXT}</div>",
-                    unsafe_allow_html=True,
-                )
-            else:
-                st.error("Access Denied.")
+            st.divider()
+            st.markdown(
+                f"<div style='text-align: center; opacity: 0.7;'>{FOOTER_DISCLAIMER_TEXT}</div>",
+                unsafe_allow_html=True,
+            )
         else:
             st.error(f"Page '{selected_page}' not found.")
-
+    except TenantContextError as e:
+        st.error(str(e))
+        st.stop()
     except Exception as e:
         st.error(f"Error loading page: {e}")
 finally:

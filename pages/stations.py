@@ -8,6 +8,7 @@ from sqlalchemy import select, func, or_, asc, desc, case
 from sqlalchemy.orm import joinedload, selectinload
 from streamlit_folium import st_folium
 from core.activity_logger import log_activity
+from core.subscription import RESOURCE_STATIONS, UsageLimitError, require_usage_capacity
 from ui.header import render_page_header
 from core.database import get_session, get_schema_readiness
 from core.models import Station, Region, User, Submission, SystemSetting, StationCategory
@@ -54,7 +55,7 @@ def render(conn):
     with get_session() as session:
         # Load Categories from the structured table
         categories_list = session.execute(select(StationCategory).order_by(StationCategory.name)).scalars().all()
-        
+
         CATEGORY_COLORS = {}
         CATEGORY_DESCRIPTIONS = {}
         category_id_map = {}
@@ -63,7 +64,7 @@ def render(conn):
             CATEGORY_COLORS[cat.name] = cat.color
             CATEGORY_DESCRIPTIONS[cat.name] = cat.description
             category_id_map[cat.name] = cat.id
-            
+
         if not CATEGORY_COLORS:
             CATEGORY_COLORS = {"Retail": "blue", "Other": "gray"}
 
@@ -175,26 +176,31 @@ def render(conn):
                         else None
                     )
 
-                    with get_session() as session:
-                        new_station = Station(
-                            name=s_name.strip(),
-                            region_id=region_id,
-                            physical_address=s_addr.strip() or None,
-                            email=s_email.strip() or None,
-                            lat=lat_val,
-                            lon=lon_val,
-                            category_id=category_id_map.get(s_category)
-                        )
-                        session.add(new_station)
-                        session.flush() # Get the new ID
+                    try:
+                        require_usage_capacity(conn, RESOURCE_STATIONS)
+                        with get_session() as session:
+                            new_station = Station(
+                                name=s_name.strip(),
+                                region_id=region_id,
+                                physical_address=s_addr.strip() or None,
+                                email=s_email.strip() or None,
+                                lat=lat_val,
+                                lon=lon_val,
+                                category_id=category_id_map.get(s_category)
+                            )
+                            session.add(new_station)
+                            session.flush() # Get the new ID
 
-                        if mgr_name != "-- None --":
-                            mgr_id = mgr_map.get(mgr_name)
-                            manager = session.get(User, mgr_id)
-                            if manager:
-                                manager.station_id = new_station.id
+                            if mgr_name != "-- None --":
+                                mgr_id = mgr_map.get(mgr_name)
+                                manager = session.get(User, mgr_id)
+                                if manager:
+                                    manager.station_id = new_station.id
 
-                        new_id = new_station.id
+                            new_id = new_station.id
+                    except UsageLimitError as exc:
+                        st.error(str(exc))
+                        return
 
                     # LOGGING AND FEEDBACK
                     log_activity(
@@ -215,17 +221,17 @@ def render(conn):
 
     c_search, c_region, c_cat = st.columns([2, 1, 1])
     search_query = c_search.text_input("🔍 Search", placeholder="Name, address, or email...", key="station_search_input")
-    
+
     # Use session state for the multiselect to allow programmatic updates from the chart
     if "station_filter_regions" not in st.session_state:
         st.session_state.station_filter_regions = []
-        
+
     selected_regions = c_region.multiselect("🌍 Filter Regions", options=list(regions_map.keys()), key="station_filter_regions")
-    
+
     # Use session state for the multiselect to allow programmatic updates from the chart
     if "station_filter_categories" not in st.session_state:
         st.session_state.station_filter_categories = []
-        
+
     selected_categories = c_cat.multiselect("🏷️ Filter Categories", options=list(CATEGORY_COLORS.keys()), key="station_filter_categories")
 
     c_sort_col, c_sort_dir, _ = st.columns([1.5, 1, 1.5])
@@ -248,7 +254,7 @@ def render(conn):
         st.session_state.stations_page = 1
 
     # --- ORM QUERY BUILDING (Optimized Projections) ---
-    # We fetch specific columns and use subqueries for managers. 
+    # We fetch specific columns and use subqueries for managers.
     # This avoids N+1 issues and DetachedInstanceErrors during rendering.
     mgr_priority = case(
         (User.role == 'Gas Station Manager', 1),
@@ -327,12 +333,12 @@ def render(conn):
     if px:
         with get_session() as session:
             st.markdown("#### 📈 Network Analytics")
-            
+
             # Data Toggle for Analytics Charts
             metric_choice = st.radio(
-                "Analytics Metric:", 
-                ["Stations", "Employees"], 
-                horizontal=True, 
+                "Analytics Metric:",
+                ["Stations", "Employees"],
+                horizontal=True,
                 label_visibility="collapsed",
                 key="regional_metric_toggle"
             )
@@ -383,18 +389,18 @@ def render(conn):
                 if not dist_df_all.empty:
                     dist_df_grouped = group_small_items(dist_df_all, "Category")
                     fig_bar = px.bar(
-                        dist_df_grouped, 
-                        y="Category", x="Count", 
+                        dist_df_grouped,
+                        y="Category", x="Count",
                         orientation='h',
                         color="Category",
                         title=f"Category {metric_choice} Distribution",
                         color_discrete_map=CATEGORY_COLORS
                     )
                     fig_bar.update_layout(showlegend=False, height=350, margin=dict(t=40, b=20, l=0, r=0), yaxis={'categoryorder':'total ascending'})
-                    
+
                     # Make the chart interactive
                     bar_event = st.plotly_chart(fig_bar, use_container_width=True, on_select="rerun", key="cat_dist_chart")
-                    
+
                     # If a bar is clicked, add that category to the filters
                     if bar_event and bar_event.get("selection", {}).get("points"):
                         clicked_cat = bar_event["selection"]["points"][0].get("y")
@@ -406,12 +412,12 @@ def render(conn):
             with chart_col2:
                 if not reg_df_all.empty:
                     reg_df_grouped = group_small_items(reg_df_all, "Region", limit=6)
-                    
-                    fig_pie = px.pie(reg_df_grouped, values='Count', names='Region', 
+
+                    fig_pie = px.pie(reg_df_grouped, values='Count', names='Region',
                                  title=f"Regional {metric_choice} Spread",
                                  color_discrete_sequence=px.colors.qualitative.Safe)
                     fig_pie.update_layout(margin=dict(l=10, r=10, t=40, b=10), height=350)
-                    
+
                     # Make the chart interactive
                     pie_event = st.plotly_chart(fig_pie, use_container_width=True, on_select="rerun", key="reg_dist_chart")
 
@@ -430,7 +436,7 @@ def render(conn):
                     st.caption("Category Breakdown")
                     dist_df_all["Share %"] = (dist_df_all["Count"] / dist_df_all["Count"].sum() * 100).round(1)
                     st.dataframe(dist_df_all.sort_values("Count", ascending=False), use_container_width=True, hide_index=True)
-                
+
                 with table_col2:
                     st.caption("Regional Breakdown")
                     reg_df_all["Share %"] = (reg_df_all["Count"] / reg_df_all["Count"].sum() * 100).round(1)
@@ -591,7 +597,7 @@ def render(conn):
             # Use session state or database values for marker
             display_lat = st.session_state.get(f"edit_lat_{sel}", start_lat)
             display_lon = st.session_state.get(f"edit_lon_{sel}", start_lon)
-            
+
             # Get color and description based on station category
             station_category = curr.get("category", "Other")
             marker_color = CATEGORY_COLORS.get(station_category, "#808080")
@@ -712,7 +718,7 @@ def render(conn):
             )
             curr_mgr_name = curr_mgr_name_q["fullname"].iloc[0] if not curr_mgr_name_q.empty else "-- None --"
             sel_mgr = st.selectbox("Select Manager", mgr_options, index=mgr_options.index(curr_mgr_name) if curr_mgr_name in mgr_options else 0)
-            
+
             if st.button("Update Assigned Manager", key=f"btn_assign_mgr_{sel}", type="primary", use_container_width=True):
                 conn.execute("UPDATE users SET station_id = NULL WHERE station_id = %s AND role IN ('Gas Station Manager', 'Gas Station Supervisor')", (sel,))
                 if sel_mgr != "-- None --":
@@ -765,7 +771,7 @@ def render(conn):
             st.subheader("📈 Performance Trends")
             trend_date = st.date_input("Select Month", value=pd.Timestamp.now(), key=f"perf_date_{sel}")
             selected_month = trend_date.strftime("%Y-%m")
-            
+
             t_col1, t_col2 = st.columns(2)
             with t_col1:
                 st.write("**Daily Submissions**")
@@ -775,7 +781,7 @@ def render(conn):
                 )
                 if not trend_df.empty: st.bar_chart(trend_df.set_index("day"))
                 else: st.caption("No data for this month.")
-            
+
             with t_col2:
                 st.write("**12-Month Volume**")
                 monthly_df = pd.read_sql_query(
@@ -795,14 +801,14 @@ def render(conn):
             with c_desc:
                 st.markdown(f"**Bot Link:** {bot_handle}")
                 st.caption("Distribute this QR code to employees at this station. Scanning it will open the reporting bot in Telegram.")
-                
+
                 # Download Logic
                 try:
                     with urllib.request.urlopen(qr_api_url) as resp:
                         qr_bytes = resp.read()
                         st.download_button("⬇️ Download QR Code", qr_bytes, key=f"dl_qr_{sel}", file_name=f"station_{sel}_qr.png", mime="image/png", use_container_width=True)
                 except: st.warning("Download unavailable.")
-                
+
                 # Email Logic
                 mgr_email_row = conn.execute(
                     "SELECT email FROM users WHERE station_id = %s AND role = 'Gas Station Manager'",

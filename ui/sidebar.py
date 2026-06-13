@@ -1,10 +1,11 @@
 import streamlit as st
 
 from core.auth import logout_user_streamlit
+from core.tenant_context import TenantContext
 from core.access_control import PAGE_CONFIG, has_access
 
 
-def display_sidebar(conn):
+def display_sidebar(conn, current_tenant_context: TenantContext | None):
     """Render a simplified, robust sidebar and return the currently selected page id."""
     user_role = st.session_state.get("user_role", "Employee")
     username = st.session_state.get("username", "User")
@@ -104,7 +105,13 @@ def display_sidebar(conn):
         )
 
         def _nav_button(pid: str, label: str, key_suffix: str = ""):
-            if not has_access(pid, user_role):
+            if not has_access(
+                pid,
+                user_role,
+                username,
+                tenant_context=current_tenant_context,
+                conn=conn,
+            ):
                 return
             icon = PAGE_CONFIG[pid].get("icon", "")
             is_active = st.session_state.active_page == pid
@@ -136,11 +143,13 @@ def display_sidebar(conn):
                     ("AI Reports", "AI Reports", "ai_reports"),
                     ("AI Alerts", "AI Alerts", "ai_alerts"),
                     ("AI Monitoring", "AI Monitoring", "ai_monitoring"),
+                    ("CCTV Intelligence", "CCTV Intelligence", "cctv_intelligence"),
                 ],
             },
             {
                 "title": "Administration",
                 "pages": [
+                    ("Tenant Plan", "Tenant Plan", "tenant_plan"),
                     ("Settings", "Settings", "setting_root"),
                     ("Admin Users", "Admin Users", "setting_admin_users"),
                     ("Audit Log", "Audit Log", "setting_audit_log"),
@@ -151,7 +160,15 @@ def display_sidebar(conn):
 
         for group in menu_groups:
             visible_pages = [
-                item for item in group["pages"] if has_access(item[0], user_role)
+                item
+                for item in group["pages"]
+                if has_access(
+                    item[0],
+                    user_role,
+                    username,
+                    tenant_context=current_tenant_context,
+                    conn=conn,
+                )
             ]
             if not visible_pages:
                 continue

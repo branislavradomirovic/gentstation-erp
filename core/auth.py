@@ -7,6 +7,7 @@ from typing import Optional, Tuple, Dict, Any
 from core.database import get_connection
 from core.activity_logger import log_activity
 from core.session import create_session_token, destroy_session_token
+from core.subscription import RESOURCE_EMPLOYEES, require_usage_capacity
 
 # Configuration
 SESSION_TTL_HOURS = 8
@@ -78,6 +79,7 @@ def create_user(
             raise ValueError("Employee requires assignment to a Gas Station Manager.")
 
     with get_connection() as conn:
+        require_usage_capacity(conn, RESOURCE_EMPLOYEES)
         cur = conn.cursor()
         pw_hash = hash_password(password)
         cur.execute(
@@ -129,11 +131,11 @@ def authenticate_user(
 
     username_or_email = username_or_email.strip()
 
-    with get_connection() as conn:
+    with get_connection(platform_access=True) as conn:
         cur = conn.cursor()
         # Try username (exact), then email (case-insensitive)
         cur.execute(
-            """SELECT id, username, email, password_hash, role, is_active, failed_attempts, locked_until,
+            """SELECT id, tenant_id, username, email, password_hash, role, is_active, failed_attempts, locked_until,
                       dark_mode_enabled, name, surname, station_id, region_id, telegram_chat_id,
                       force_password_change
                FROM users WHERE username = %s OR LOWER(email) = LOWER(%s)""",
@@ -146,6 +148,7 @@ def authenticate_user(
 
         (
             uid,
+            tenant_id,
             uname,
             uemail,
             phash,
@@ -205,6 +208,7 @@ def authenticate_user(
 
             user = {
                 "id": uid,
+                "tenant_id": tenant_id,
                 "username": uname,
                 "email": uemail,
                 "role": role,
@@ -249,10 +253,10 @@ def login_user_streamlit(st, username_or_email: str, password: str):
     if not user:
         return False, error_msg
 
-    token, expires_at = create_session_token(user["id"])
-
+    token, expires_at = create_session_token(user["id"], user["tenant_id"])
     st.session_state["session_token"] = token
     st.session_state["user_id"] = user["id"]
+    st.session_state["tenant_id"] = user["tenant_id"]
     st.session_state["username"] = user["username"]
     st.session_state["user_role"] = user["role"]
     st.session_state["email"] = user.get("email")
@@ -265,7 +269,6 @@ def login_user_streamlit(st, username_or_email: str, password: str):
     st.session_state["force_password_change"] = user.get("force_change", False)
 
     st.session_state["dark_mode"] = user.get("dark_mode", False)
-
     return True, "Login successful"
 
 
@@ -277,6 +280,7 @@ def logout_user_streamlit(st):
 
     for key in [
         "session_token",
+        "tenant_id",
         "user_id",
         "username",
         "user_role",

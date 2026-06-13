@@ -77,6 +77,7 @@ from telegram.ext import (
 # Keep your existing DB layer.
 from core.database import get_connection
 from core.runtime_config import load_runtime_env
+from core.tenant_context import TenantContext, tenant_context
 
 load_runtime_env()
 
@@ -152,6 +153,7 @@ def _rate_limit_lock() -> asyncio.Lock:
 class SubmissionJob:
     job_id: str
     chat_id: str
+    tenant_id: int
     employee_id: int
     station_id: int
     file_path: str
@@ -175,6 +177,7 @@ class SubmissionJob:
         return SubmissionJob(
             job_id=str(_get("job_id")),
             chat_id=str(_get("chat_id")),
+            tenant_id=int(_get("tenant_id")),
             employee_id=int(_get("employee_id")),
             station_id=int(_get("station_id")),
             file_path=str(_get("file_path")),
@@ -305,15 +308,15 @@ def _validate_video_file(file_name: str | None, mime_type: str | None) -> bool:
 # ---------------------------------------------------------------------------
 async def db_fetch_employee_by_chat(
     chat_id: str,
-) -> Optional[tuple[int, Optional[int]]]:
+) -> Optional[tuple[int, Optional[int], int]]:
     def _work():
         conn = None
         try:
-            conn = get_connection()
+            conn = get_connection(platform_access=True)
             cur = conn.cursor()
             row = cur.execute(  # Fetch from users table
                 """
-                SELECT id, station_id
+                SELECT id, station_id, tenant_id
                 FROM users
                 WHERE telegram_chat_id = %s
                 ORDER BY (station_id IS NOT NULL) DESC, id DESC
@@ -334,7 +337,7 @@ async def db_link_employee_chat(employee_id: int, chat_id: str) -> int:
     def _work() -> int:
         conn = None
         try:
-            conn = get_connection()
+            conn = get_connection(platform_access=True)
             cur = conn.cursor()
             # Ensure this chat is linked to exactly one account.
             cur.execute(
@@ -364,16 +367,17 @@ async def db_insert_submission(job: SubmissionJob) -> None:
     def _work() -> None:
         conn = None
         try:
-            conn = get_connection()
-            cur = conn.cursor()
-            cur.execute(
-                """
-                INSERT INTO submissions (station_id, employee_id, video_path, processed, status, file_unique_id)
-                VALUES (%s, %s, %s, 0, 'pending', %s)
-                """,
-                (job.station_id, job.employee_id, job.file_path, job.file_unique_id),
-            )
-            conn.commit()
+            with tenant_context(TenantContext(tenant_id=job.tenant_id)):
+                conn = get_connection()
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    INSERT INTO submissions (station_id, employee_id, video_path, processed, status, file_unique_id)
+                    VALUES (%s, %s, %s, 0, 'pending', %s)
+                    """,
+                    (job.station_id, job.employee_id, job.file_path, job.file_unique_id),
+                )
+                conn.commit()
         except Exception:
             if conn:
                 with suppress(Exception):
@@ -645,7 +649,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    emp_id, station_id = emp
+    emp_id, station_id, tenant_id = emp
     if not station_id:
         await message.reply_text(
             "❌ Your profile has no station assigned yet. Please contact an administrator."
@@ -714,6 +718,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     job = SubmissionJob(
         job_id=uuid.uuid4().hex,
         chat_id=chat_id,
+        tenant_id=tenant_id,
         employee_id=emp_id,
         station_id=station_id,
         file_path=str(file_path),
@@ -761,16 +766,18 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 # ---------------------------------------------------------------------------
 # Worker process
 # ---------------------------------------------------------------------------
-async def update_job_status(job_id: str, status: str) -> None:
+async def update_job_status(job: SubmissionJob, status: str) -> None:
     def _work():
         conn = None
         try:
-            conn = get_connection()
-            cur = conn.cursor()
-            cur.execute(
-                "UPDATE submissions SET status=%s WHERE video_path=%s", (status, job_id)
-            )
-            conn.commit()
+            with tenant_context(TenantContext(tenant_id=job.tenant_id)):
+                conn = get_connection()
+                cur = conn.cursor()
+                cur.execute(
+                    "UPDATE submissions SET status=%s WHERE video_path=%s",
+                    (status, job.file_path),
+                )
+                conn.commit()
         finally:
             if conn:
                 with suppress(Exception):
@@ -780,17 +787,17 @@ async def update_job_status(job_id: str, status: str) -> None:
 
 
 async def process_job(redis: Redis, stream_id: str, job: SubmissionJob) -> None:
-    await update_job_status(job.file_path, "processing")
+    await update_job_status(job, "processing")
 
     def _simulate_or_run_heavy_task() -> None:
         return None
 
     try:
         await asyncio.to_thread(_simulate_or_run_heavy_task)
-        await update_job_status(job.file_path, "done")
+        await update_job_status(job, "done")
         logger.info("Processed job %s (stream id %s)", job.job_id, stream_id)
     except Exception as e:
-        await update_job_status(job.file_path, "failed")
+        await update_job_status(job, "failed")
         raise
 
 

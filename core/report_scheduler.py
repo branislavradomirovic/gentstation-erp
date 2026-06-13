@@ -20,6 +20,7 @@ load_runtime_env()
 from core.comm_service import send_scheduled_report_email, send_scheduled_report_telegram
 from core.database import get_connection
 from core.report_builder import cadence_is_due, get_period_window, build_management_report
+from core.tenant_context import TenantContext, platform_context, tenant_context
 
 
 logging.basicConfig(
@@ -89,7 +90,7 @@ def update_scheduler_status(status: str, details: str = None):
 def _recipients_for_report(conn, report_type: str):
     station_rows = conn.execute(
         """
-        SELECT id, station_id, region_id, email, telegram_chat_id,
+        SELECT id, tenant_id, station_id, region_id, email, telegram_chat_id,
                COALESCE(NULLIF(TRIM(COALESCE(name,'') || ' ' || COALESCE(surname,'')), ''), email, username) AS full_name,
                role
         FROM users
@@ -98,7 +99,7 @@ def _recipients_for_report(conn, report_type: str):
     ).fetchall()
     region_rows = conn.execute(
         """
-        SELECT id, region_id, email, telegram_chat_id,
+        SELECT id, tenant_id, region_id, email, telegram_chat_id,
                COALESCE(NULLIF(TRIM(COALESCE(name,'') || ' ' || COALESCE(surname,'')), ''), email, username) AS full_name,
                role
         FROM users
@@ -107,7 +108,7 @@ def _recipients_for_report(conn, report_type: str):
     ).fetchall()
     gm_rows = conn.execute(
         """
-        SELECT id, email, telegram_chat_id,
+        SELECT id, tenant_id, email, telegram_chat_id,
                COALESCE(NULLIF(TRIM(COALESCE(name,'') || ' ' || COALESCE(surname,'')), ''), email, username) AS full_name,
                role
         FROM users
@@ -120,13 +121,14 @@ def _recipients_for_report(conn, report_type: str):
         recipients.append(
             {
                 "recipient_user_id": row[0],
+                "tenant_id": row[1],
                 "scope_type": "station",
-                "scope_id": row[1],
-                "region_id": row[2],
-                "email": row[3],
-                "telegram_chat_id": row[4],
-                "full_name": row[5],
-                "role": row[6],
+                "scope_id": row[2],
+                "region_id": row[3],
+                "email": row[4],
+                "telegram_chat_id": row[5],
+                "full_name": row[6],
+                "role": row[7],
                 "report_type": report_type,
             }
         )
@@ -134,12 +136,13 @@ def _recipients_for_report(conn, report_type: str):
         recipients.append(
             {
                 "recipient_user_id": row[0],
+                "tenant_id": row[1],
                 "scope_type": "region",
-                "scope_id": row[1],
-                "email": row[2],
-                "telegram_chat_id": row[3],
-                "full_name": row[4],
-                "role": row[5],
+                "scope_id": row[2],
+                "email": row[3],
+                "telegram_chat_id": row[4],
+                "full_name": row[5],
+                "role": row[6],
                 "report_type": report_type,
             }
         )
@@ -147,12 +150,13 @@ def _recipients_for_report(conn, report_type: str):
         recipients.append(
             {
                 "recipient_user_id": row[0],
+                "tenant_id": row[1],
                 "scope_type": "company",
                 "scope_id": None,
-                "email": row[1],
-                "telegram_chat_id": row[2],
-                "full_name": row[3],
-                "role": row[4],
+                "email": row[2],
+                "telegram_chat_id": row[3],
+                "full_name": row[4],
+                "role": row[5],
                 "report_type": report_type,
             }
         )
@@ -186,13 +190,14 @@ def _upsert_pending_report(conn, recipient: dict, period_start, period_end, sche
     row = conn.execute(
         """
         INSERT INTO scheduled_reports (
-            report_type, scope_type, scope_id, recipient_user_id,
+            tenant_id, report_type, scope_type, scope_id, recipient_user_id,
             period_start, period_end, scheduled_for, status
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, 'pending')
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'pending')
         RETURNING id
         """,
         (
+            recipient["tenant_id"],
             recipient["report_type"],
             recipient["scope_type"],
             recipient["scope_id"],
@@ -244,34 +249,41 @@ def _deliver_report(conn, report_id: int, recipient: dict, payload: dict):
 
 
 def process_due_reports():
-    with closing(get_connection()) as conn:
-        sent_count = 0
-        for report_type in REPORT_TYPES:
-            if not cadence_is_due(report_type):
-                continue
-
-            period_start, period_end, scheduled_for = get_period_window(report_type)
-            recipients = _recipients_for_report(conn, report_type)
-            for recipient in recipients:
-                report_id, current_status = _upsert_pending_report(
-                    conn, recipient, period_start, period_end, scheduled_for
-                )
-                if current_status in {"sent", "failed"}:
+    with platform_context():
+        with closing(get_connection(platform_access=True)) as conn:
+            sent_count = 0
+            for report_type in REPORT_TYPES:
+                if not cadence_is_due(report_type):
                     continue
 
-                payload = build_management_report(
-                    conn=conn,
-                    report_type=report_type,
-                    scope_type=recipient["scope_type"],
-                    scope_id=recipient["scope_id"],
-                    role=recipient["role"],
-                    recipient_name=recipient["full_name"],
-                    period_start=period_start,
-                    period_end=period_end,
-                )
-                _deliver_report(conn, report_id, recipient, payload)
-                sent_count += 1
-        return sent_count
+                period_start, period_end, scheduled_for = get_period_window(report_type)
+                recipients = _recipients_for_report(conn, report_type)
+                for recipient in recipients:
+                    with tenant_context(TenantContext(tenant_id=recipient["tenant_id"])):
+                        with closing(get_connection()) as scoped_conn:
+                            report_id, current_status = _upsert_pending_report(
+                                scoped_conn,
+                                recipient,
+                                period_start,
+                                period_end,
+                                scheduled_for,
+                            )
+                            if current_status in {"sent", "failed"}:
+                                continue
+
+                            payload = build_management_report(
+                                conn=scoped_conn,
+                                report_type=report_type,
+                                scope_type=recipient["scope_type"],
+                                scope_id=recipient["scope_id"],
+                                role=recipient["role"],
+                                recipient_name=recipient["full_name"],
+                                period_start=period_start,
+                                period_end=period_end,
+                            )
+                            _deliver_report(scoped_conn, report_id, recipient, payload)
+                            sent_count += 1
+            return sent_count
 
 
 def main():

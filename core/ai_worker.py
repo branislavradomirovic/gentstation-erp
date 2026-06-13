@@ -30,6 +30,7 @@ from core.runtime_config import load_runtime_env
 load_runtime_env()
 
 from core.database import get_connection, test_redis_connection
+from core.tenant_context import TenantContext, tenant_context
 from core.video_processor import parse_station_video
 from core.comm_service import send_ai_report_email, send_submission_result_telegram
 
@@ -128,6 +129,14 @@ def _get_connection():
     return conn
 
 
+def _get_platform_connection():
+    conn = get_connection(platform_access=True)
+    with suppress(Exception):
+        conn.rollback()
+    conn.autocommit = False
+    return conn
+
+
 def _status_conn():
     database_url = os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL")
     if database_url:
@@ -151,6 +160,7 @@ def _status_conn():
 @dataclass
 class SubmissionJob:
     sub_id: int
+    tenant_id: int
     video_path: str
     station_id: int
     retry_count: int = 0
@@ -266,7 +276,7 @@ def get_force_run_flag() -> bool:
 
 def get_pending_count():
     try:
-        with closing(_get_connection()) as conn:
+        with closing(_get_platform_connection()) as conn:
             cur = conn.cursor()
             cur.execute(
                 """
@@ -281,13 +291,14 @@ def get_pending_count():
 
 
 def claim_job() -> Optional[SubmissionJob]:
+    conn = None
     try:
-        conn = _get_connection()
+        conn = _get_platform_connection()
         cur = conn.cursor()
 
         cur.execute(
             """
-            SELECT id, video_path, station_id, retry_count, file_unique_id
+            SELECT id, tenant_id, video_path, station_id, retry_count, file_unique_id
             FROM submissions
             WHERE status='pending'
             FOR UPDATE SKIP LOCKED
@@ -301,7 +312,7 @@ def claim_job() -> Optional[SubmissionJob]:
             conn.rollback()
             return None
 
-        sub_id, path, station_id, retries, file_unique_id = row
+        sub_id, tenant_id, path, station_id, retries, file_unique_id = row
         backend_pid = conn.get_backend_pid()
 
         logger.info(
@@ -323,7 +334,9 @@ def claim_job() -> Optional[SubmissionJob]:
         )
 
         conn.commit()
-        job = SubmissionJob(sub_id, path, station_id, retries, file_unique_id)
+        job = SubmissionJob(
+            sub_id, tenant_id, path, station_id, retries, file_unique_id
+        )
 
         # Do not skip by Redis dedupe key here: the bot sets dedupe on enqueue.
         # Skipping in AI worker would prevent legitimate queued jobs from being processed.
@@ -393,7 +406,7 @@ def mark_failed(sub_id, error):
 
 def reset_stuck_jobs(timeout=1800):
     cutoff = _now() - timeout
-    with closing(_get_connection()) as conn:
+    with closing(_get_platform_connection()) as conn:
         cur = conn.cursor()
         cur.execute(
             """
@@ -469,31 +482,38 @@ def process_job(job: SubmissionJob):
             f"Video not found at: {job.video_path} (Resolved to: {abs_path})"
         )
 
-    result = parse_station_video(job.video_path)
-    latency = time.time() - start
+    with tenant_context(TenantContext(tenant_id=job.tenant_id)):
+        result = parse_station_video(job.video_path)
+        latency = time.time() - start
 
-    mark_done(job.sub_id, result)
-    record_inference_latency(job.sub_id, result.get("_model_used", "unknown"), latency)
-    cleanup_processed_media(job.sub_id, job.video_path)
+        mark_done(job.sub_id, result)
+        record_inference_latency(
+            job.sub_id, result.get("_model_used", "unknown"), latency
+        )
+        cleanup_processed_media(job.sub_id, job.video_path)
 
-    try:
-        with closing(_get_connection()) as conn:
-            db_pid = conn.get_backend_pid()
-            try:
-                send_ai_report_email(conn, job.station_id, result)
-            except Exception as e:
-                logger.warning("AI report email failed for job %s: %s", job.sub_id, e)
+        try:
+            with closing(_get_connection()) as conn:
+                db_pid = conn.get_backend_pid()
+                try:
+                    send_ai_report_email(conn, job.station_id, result)
+                except Exception as e:
+                    logger.warning(
+                        "AI report email failed for job %s: %s", job.sub_id, e
+                    )
 
-            try:
-                send_submission_result_telegram(conn, job.sub_id, report_data=result)
-            except Exception as e:
-                logger.warning(
-                    "Telegram completion notification failed for job %s: %s",
-                    job.sub_id,
-                    e,
-                )
-    except Exception as e:
-        logger.warning("Completion notification connection failed: %s", e)
+                try:
+                    send_submission_result_telegram(
+                        conn, job.sub_id, report_data=result
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Telegram completion notification failed for job %s: %s",
+                        job.sub_id,
+                        e,
+                    )
+        except Exception as e:
+            logger.warning("Completion notification connection failed: %s", e)
 
     logger.info(
         "Processed job %s in %.2fs [Final DB PID: %s]",
@@ -568,15 +588,17 @@ def main():
                     process_job(job)
                 except Exception as e:
                     logger.error("Job %s failed: %s", job.sub_id, e)
-                    final_status = mark_failed(job.sub_id, str(e))
+                    with tenant_context(TenantContext(tenant_id=job.tenant_id)):
+                        final_status = mark_failed(job.sub_id, str(e))
                     if final_status == "failed":
                         try:
-                            with closing(_get_connection()) as conn:
-                                send_submission_result_telegram(
-                                    conn,
-                                    job.sub_id,
-                                    error_message=str(e),
-                                )
+                            with tenant_context(TenantContext(tenant_id=job.tenant_id)):
+                                with closing(_get_connection()) as conn:
+                                    send_submission_result_telegram(
+                                        conn,
+                                        job.sub_id,
+                                        error_message=str(e),
+                                    )
                         except Exception as notify_err:
                             logger.warning(
                                 "Telegram failure notification failed for job %s: %s",

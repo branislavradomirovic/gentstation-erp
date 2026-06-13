@@ -17,6 +17,11 @@ from contextlib import contextmanager
 from psycopg2 import pool
 from core.models import Base
 from core.schema_migrations import run_alembic_upgrade_to_head
+from core.tenant_context import (
+    TenantContext,
+    TenantContextError,
+    get_current_tenant_context,
+)
 from psycopg2 import sql
 from psycopg2.extras import RealDictCursor
 
@@ -48,6 +53,20 @@ _ENGINE = None
 _SESSION_FACTORY = None
 _START_TIME = time.time()
 SLOW_QUERY_THRESHOLD = float(os.getenv("DB_SLOW_QUERY_THRESHOLD", "1.0"))
+TENANT_OWNED_TABLES = {
+    "regions",
+    "station_categories",
+    "stations",
+    "users",
+    "sessions",
+    "activity_logs",
+    "submissions",
+    "ai_alerts",
+    "ai_inference_latency",
+    "scheduled_reports",
+    "ai_jobs",
+    "ai_reports",
+}
 
 
 def _has_complete_component_db_config() -> bool:
@@ -402,7 +421,30 @@ def get_schema_readiness(conn) -> dict:
     }
 
 
-def get_connection(on_retry=None):
+def _apply_tenant_session_settings(conn, platform_access: bool = False):
+    tenant_context = get_current_tenant_context()
+    effective_platform_access = platform_access or bool(
+        tenant_context and tenant_context.platform_access
+    )
+    tenant_id = None
+    if tenant_context and tenant_context.tenant_id is not None and tenant_context.tenant_id > 0:
+        tenant_id = tenant_context.tenant_id
+
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "SELECT set_config('app.platform_access', %s, false)",
+            ("on" if effective_platform_access else "off",),
+        )
+        cursor.execute(
+            "SELECT set_config('app.current_tenant_id', %s, false)",
+            (str(tenant_id) if tenant_id is not None else "",),
+        )
+    finally:
+        cursor.close()
+
+
+def get_connection(on_retry=None, platform_access: bool = False):
     """Wrapper function for backward compatibility."""
     global _SCHEMA_INITIALIZED, _ALEMBIC_MIGRATIONS_APPLIED
 
@@ -421,6 +463,13 @@ def get_connection(on_retry=None):
             skip_schema_init = env_bool("SKIP_SCHEMA_INIT", "0")
             run_schema_init = env_bool("RUN_SCHEMA_MIGRATIONS_ON_STARTUP", "1")
             strict_schema_init = env_bool("STRICT_SCHEMA_INIT", "1")
+            bootstrap_platform_access = (
+                not _SCHEMA_INITIALIZED and not platform_access and run_schema_init
+            )
+            _apply_tenant_session_settings(
+                conn,
+                platform_access=platform_access or bootstrap_platform_access,
+            )
 
             # Create tables if they don't exist, but only once per process to avoid
             # repeated noisy logs on every Streamlit rerun.
@@ -1107,6 +1156,99 @@ def ensure_schema(conn):
         ON slow_query_logs(timestamp);
         """
         )
+
+        cursor.execute(
+            """
+            CREATE OR REPLACE FUNCTION gsai_platform_access_enabled()
+            RETURNS BOOLEAN
+            AS $$
+            BEGIN
+                RETURN COALESCE(current_setting('app.platform_access', true), '') = 'on';
+            END;
+            $$ LANGUAGE plpgsql STABLE;
+            """
+        )
+        cursor.execute(
+            """
+            CREATE OR REPLACE FUNCTION gsai_current_tenant_id()
+            RETURNS INTEGER
+            AS $$
+            DECLARE
+                raw_value TEXT;
+            BEGIN
+                raw_value := NULLIF(current_setting('app.current_tenant_id', true), '');
+                IF raw_value IS NULL THEN
+                    RETURN NULL;
+                END IF;
+                RETURN raw_value::INTEGER;
+            END;
+            $$ LANGUAGE plpgsql STABLE;
+            """
+        )
+        cursor.execute(
+            """
+            CREATE OR REPLACE FUNCTION gsai_assign_tenant_id()
+            RETURNS TRIGGER
+            AS $$
+            DECLARE
+                session_tenant_id INTEGER;
+            BEGIN
+                IF gsai_platform_access_enabled() THEN
+                    RETURN NEW;
+                END IF;
+
+                session_tenant_id := gsai_current_tenant_id();
+                IF session_tenant_id IS NULL THEN
+                    RAISE EXCEPTION 'Tenant context missing for table %', TG_TABLE_NAME;
+                END IF;
+
+                IF NEW.tenant_id IS NULL THEN
+                    NEW.tenant_id := session_tenant_id;
+                ELSIF NEW.tenant_id <> session_tenant_id THEN
+                    RAISE EXCEPTION 'Cross-tenant write blocked on table %', TG_TABLE_NAME;
+                END IF;
+
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql;
+            """
+        )
+
+        for table_name in TENANT_OWNED_TABLES:
+            cursor.execute(
+                f'ALTER TABLE "{table_name}" ENABLE ROW LEVEL SECURITY;'
+            )
+            cursor.execute(
+                f'ALTER TABLE "{table_name}" FORCE ROW LEVEL SECURITY;'
+            )
+            cursor.execute(
+                f'DROP POLICY IF EXISTS "{table_name}_tenant_isolation_policy" ON "{table_name}";'
+            )
+            cursor.execute(
+                f"""
+                CREATE POLICY "{table_name}_tenant_isolation_policy"
+                ON "{table_name}"
+                USING (
+                    gsai_platform_access_enabled()
+                    OR tenant_id = gsai_current_tenant_id()
+                )
+                WITH CHECK (
+                    gsai_platform_access_enabled()
+                    OR tenant_id = gsai_current_tenant_id()
+                );
+                """
+            )
+            cursor.execute(
+                f'DROP TRIGGER IF EXISTS "trg_{table_name}_assign_tenant_id" ON "{table_name}";'
+            )
+            cursor.execute(
+                f"""
+                CREATE TRIGGER "trg_{table_name}_assign_tenant_id"
+                BEFORE INSERT OR UPDATE ON "{table_name}"
+                FOR EACH ROW
+                EXECUTE FUNCTION gsai_assign_tenant_id();
+                """
+            )
 
         def sync_serial_sequence(table_name: str, column_name: str = "id"):
             seq_row = cursor.execute(
