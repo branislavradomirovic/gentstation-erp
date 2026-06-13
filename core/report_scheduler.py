@@ -10,11 +10,12 @@ import time
 from contextlib import suppress, closing
 from pathlib import Path
 
-from dotenv import load_dotenv
-
 os.environ.setdefault("SKIP_SCHEMA_INIT", "1")
 sys.path.append(str(Path(__file__).resolve().parents[1]))
-load_dotenv()
+
+from core.runtime_config import load_runtime_env
+
+load_runtime_env()
 
 from core.comm_service import send_scheduled_report_email, send_scheduled_report_telegram
 from core.database import get_connection

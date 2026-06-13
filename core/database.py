@@ -18,18 +18,11 @@ from psycopg2 import pool
 from core.models import Base
 from psycopg2 import sql
 from psycopg2.extras import RealDictCursor
-from dotenv import load_dotenv
+
+from core.runtime_config import env_bool, is_production_env, load_runtime_env
 
 
-def _is_production_like_env() -> bool:
-    app_env = os.getenv("APP_ENV", "").strip().lower()
-    render_flag = os.getenv("RENDER", "").strip().lower()
-    render_service = os.getenv("RENDER_SERVICE_ID", "").strip()
-    return app_env in {"production", "prod"} or render_flag in {"1", "true", "yes", "on"} or bool(render_service)
-
-
-if not _is_production_like_env():
-    load_dotenv()
+load_runtime_env()
 
 # Database configuration
 DB_HOST = os.getenv("DB_HOST", "localhost")
@@ -65,7 +58,7 @@ def _has_complete_component_db_config() -> bool:
 
 
 def _assert_safe_database_config():
-    production_like = _is_production_like_env()
+    production_like = is_production_env()
     if not production_like:
         return
 
@@ -423,28 +416,9 @@ def get_connection(on_retry=None):
             conn = CompatConnection(raw_conn)
 
             # Allow workers to skip schema migrations to avoid cross-process DDL deadlocks.
-            skip_schema_init = os.getenv("SKIP_SCHEMA_INIT", "").strip().lower() in {
-                "1",
-                "true",
-                "yes",
-                "on",
-            }
-            run_schema_init = os.getenv(
-                "RUN_SCHEMA_MIGRATIONS_ON_STARTUP", "1"
-            ).strip().lower() in {
-                "1",
-                "true",
-                "yes",
-                "on",
-            }
-            strict_schema_init = os.getenv(
-                "STRICT_SCHEMA_INIT", "1"
-            ).strip().lower() in {
-                "1",
-                "true",
-                "yes",
-                "on",
-            }
+            skip_schema_init = env_bool("SKIP_SCHEMA_INIT", "0")
+            run_schema_init = env_bool("RUN_SCHEMA_MIGRATIONS_ON_STARTUP", "1")
+            strict_schema_init = env_bool("STRICT_SCHEMA_INIT", "1")
 
             # Create tables if they don't exist, but only once per process to avoid
             # repeated noisy logs on every Streamlit rerun.
@@ -484,10 +458,7 @@ def test_redis_connection(on_retry=None, timeout=2) -> bool:
     """Test if Redis server is running and responding."""
     # If background workers are disabled or REDIS_URL is not set, skip Redis checks.
     auto_start = os.getenv("AUTO_START_BACKGROUND_WORKERS", "1")
-    try:
-        auto_start_bool = auto_start.strip().lower() in {"1", "true", "yes", "on"}
-    except Exception:
-        auto_start_bool = True
+    auto_start_bool = env_bool("AUTO_START_BACKGROUND_WORKERS", "1")
 
     redis_url = os.getenv("REDIS_URL", "").strip()
     if not auto_start_bool or not redis_url:

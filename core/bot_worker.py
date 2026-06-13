@@ -76,8 +76,9 @@ from telegram.ext import (
 
 # Keep your existing DB layer.
 from core.database import get_connection
+from core.runtime_config import load_runtime_env
 
-load_dotenv()
+load_runtime_env()
 
 
 # ---------------------------------------------------------------------------
@@ -946,7 +947,7 @@ def _install_signal_handlers(loop: asyncio.AbstractEventLoop) -> None:
 
 async def main() -> None:
     global shutdown_event, bot_running_event, rate_limit_lock
-    load_dotenv()
+    load_runtime_env()
     UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
     shutdown_event = asyncio.Event()
     bot_running_event = asyncio.Event()

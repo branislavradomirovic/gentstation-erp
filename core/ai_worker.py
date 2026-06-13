@@ -20,12 +20,14 @@ from typing import Any, Optional
 from contextlib import suppress, closing
 
 import redis
-from dotenv import load_dotenv
 
 os.environ.setdefault("SKIP_SCHEMA_INIT", "1")
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
-load_dotenv()
+
+from core.runtime_config import load_runtime_env
+
+load_runtime_env()
 
 from core.database import get_connection, test_redis_connection
 from core.video_processor import parse_station_video

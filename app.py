@@ -8,9 +8,16 @@ from pathlib import Path
 
 import subprocess
 import sys
-from dotenv import load_dotenv
 
-load_dotenv()
+from core.runtime_config import (
+    background_workers_enabled_by_env,
+    env_bool,
+    is_production_env,
+    load_runtime_env,
+    should_spawn_embedded_workers,
+)
+
+load_runtime_env()
 
 warnings.filterwarnings(
     "ignore",
@@ -27,12 +34,6 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
 )
 logger = logging.getLogger("gentstation.app")
-
-
-def _env_bool(name: str, default: str = "0") -> bool:
-    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
-
-
 # --- 1. PAGE CONFIGURATION (MUST BE FIRST) ---
 st.set_page_config(
     page_title="Gas Station Manager", layout="wide", initial_sidebar_state="expanded"
@@ -183,12 +184,19 @@ def start_background_workers():
         except Exception:
             return True
 
+    if not should_spawn_embedded_workers():
+        logger.info(
+            "Embedded worker startup is disabled in production. Use dedicated worker services."
+        )
+        return
+
     default_worker_start = os.getenv("AUTO_START_BACKGROUND_WORKERS_DEFAULT", "0")
-    global_worker_start = _env_bool(
+    global_worker_start = env_bool(
         "AUTO_START_BACKGROUND_WORKERS", default_worker_start
     )
     worker_enabled_flags = {
-        cfg["name"]: _env_bool(cfg["enabled_env"], default_worker_start) for cfg in WORKERS
+        cfg["name"]: env_bool(cfg["enabled_env"], default_worker_start)
+        for cfg in WORKERS
     }
 
     if not global_worker_start and not any(worker_enabled_flags.values()):
@@ -781,11 +789,11 @@ def run_boot_sequence():
 
     # 2. Redis Connectivity
     redis_url = os.getenv("REDIS_URL", "").strip()
-    auto_start_bool = _env_bool("AUTO_START_BACKGROUND_WORKERS", "1")
-    external_scheduler_enabled = _env_bool(
+    auto_start_bool = env_bool("AUTO_START_BACKGROUND_WORKERS", "1")
+    external_scheduler_enabled = env_bool(
         "EXTERNAL_REPORT_SCHEDULER_ENABLED", "0"
     )
-    external_telegram_worker_enabled = _env_bool(
+    external_telegram_worker_enabled = env_bool(
         "EXTERNAL_TELEGRAM_WORKER_ENABLED", "0"
     )
 
@@ -897,7 +905,7 @@ def run_boot_sequence():
 
     # 6. Spawn Internal Workers
     report_scheduler_enabled = (
-        _env_bool("AUTO_START_REPORT_SCHEDULER", "0") or external_scheduler_enabled
+        env_bool("AUTO_START_REPORT_SCHEDULER", "0") or external_scheduler_enabled
     )
     if report_scheduler_enabled:
         _conn.execute(
@@ -919,9 +927,20 @@ def run_boot_sequence():
         )
         _conn.commit()
 
-    worker_status.info("⏳ Launching Telegram Bot, AI Worker, and Report Scheduler processes...")
-    start_background_workers()
-    worker_status.success("✅ System Workers: **Operational**")
+    if should_spawn_embedded_workers() and background_workers_enabled_by_env():
+        worker_status.info(
+            "⏳ Launching Telegram Bot, AI Worker, and Report Scheduler processes..."
+        )
+        start_background_workers()
+        worker_status.success("✅ System Workers: **Operational**")
+    elif is_production_env():
+        worker_status.info(
+            "ℹ️ Production mode detected. Worker processes must run as separate services."
+        )
+    else:
+        worker_status.info(
+            "ℹ️ Embedded worker startup is disabled for this local session."
+        )
 
     # 7. Check Telegram Bot Worker Status
     bot_status_row = _conn.execute(
@@ -1092,7 +1111,8 @@ try:
     else:
         conn = get_connection()
         # Ensure workers are checked if we skipped boot sequence (e.g. page refresh)
-        start_background_workers()
+        if should_spawn_embedded_workers():
+            start_background_workers()
 
     # --- 3. SESSION PERSISTENCE ---
     def restore_session():
