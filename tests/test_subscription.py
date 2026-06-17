@@ -13,7 +13,9 @@ from core.subscription import (
     build_plan_summary,
     enforce_limit_for_snapshot,
     feature_enabled_for_snapshot,
+    require_usage_capacity,
     require_feature,
+    UsageLimitError,
 )
 from core.tenant_context import TenantContext, tenant_context
 
@@ -45,6 +47,8 @@ class FakeConnection:
             return FakeResult([(self.usage_rows[RESOURCE_STATIONS],)])
         if "COUNT(*) FROM users" in normalized:
             return FakeResult([(self.usage_rows[RESOURCE_EMPLOYEES],)])
+        if "COUNT(*) FROM cctv_cameras" in normalized:
+            return FakeResult([(self.usage_rows[RESOURCE_CAMERAS],)])
         raise AssertionError(f"Unexpected query: {query}")
 
 
@@ -110,6 +114,26 @@ def test_usage_limit_enforcement_blocks_overages() -> None:
         )
 
 
+def test_require_usage_capacity_blocks_tier_1_camera_overages() -> None:
+    conn = FakeConnection(
+        subscription_row=(
+            TIER_1_AI_DAILY_OPERATIONS,
+            "active",
+            "monthly",
+            "EUR",
+            10,
+            10,
+            0,
+        ),
+        feature_rows=[],
+        usage_rows={RESOURCE_STATIONS: 1, RESOURCE_EMPLOYEES: 2, RESOURCE_CAMERAS: 1},
+    )
+
+    with tenant_context(TenantContext(tenant_id=11, role="General Manager")):
+        with pytest.raises(UsageLimitError):
+            require_usage_capacity(conn, RESOURCE_CAMERAS)
+
+
 def test_require_feature_fails_closed_without_tier_access() -> None:
     conn = FakeConnection(
         subscription_row=(
@@ -142,7 +166,7 @@ def test_build_plan_summary_includes_usage_and_feature_matrix() -> None:
             24,
         ),
         feature_rows=[(FEATURE_CCTV_INTELLIGENCE, True)],
-        usage_rows={RESOURCE_STATIONS: 3, RESOURCE_EMPLOYEES: 11},
+        usage_rows={RESOURCE_STATIONS: 3, RESOURCE_EMPLOYEES: 11, RESOURCE_CAMERAS: 0},
     )
 
     with tenant_context(TenantContext(tenant_id=8, role="General Manager")):

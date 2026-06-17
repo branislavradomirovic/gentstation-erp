@@ -48,7 +48,8 @@ Alternative plain SQL format is acceptable but less flexible.
 
 ## Restore target
 
-In the VM deployment, PostgreSQL runs in the `postgres` container.
+In the current Ubuntu production bundle, PostgreSQL runs in the `postgres`
+container.
 
 The team should:
 
@@ -61,7 +62,7 @@ The team should:
 Custom format example:
 
 ```bash
-docker compose -f deployment-handoff/vm/docker-compose.vm.yml --env-file .env up -d postgres
+docker compose --env-file deploy/env/.env.production -f deploy/docker-compose.prod.yml up -d postgres
 docker cp gentstation_backup.dump gentstation-postgres:/tmp/gentstation_backup.dump
 docker exec -it gentstation-postgres pg_restore -U "$DB_USER" -d "$DB_NAME" --clean --if-exists /tmp/gentstation_backup.dump
 ```
@@ -76,13 +77,13 @@ cat gentstation_backup.sql | docker exec -i gentstation-postgres psql -U <db_use
 
 ## Restore order recommendation
 
-1. prepare `.env`
+1. prepare `deploy/env/.env.production`
 2. start `postgres` and `redis`
 3. restore the PostgreSQL dump
-4. start the `app`
+4. start the `web`
 5. verify login and core pages
 6. start `ai-worker` and `report-scheduler`
-7. start `telegram-worker` with the `telegram` profile if required
+7. start `telegram-worker` if required
 
 ## Uploaded/generated file assets
 

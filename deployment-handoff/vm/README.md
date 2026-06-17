@@ -1,8 +1,12 @@
-# Ubuntu Production Target
+# Legacy VM Production Target
 
 GentStationAI production should run on a dedicated Ubuntu 22.04 or 24.04 server with Docker Engine and the Docker Compose plugin installed.
 
-Use this folder as the authoritative starting point for Phase 0 and later production work:
+The current canonical production path is `deploy/docker-compose.prod.yml`.
+This VM bundle is retained for legacy or archival reference only.
+
+Use this folder as the authoritative starting point only if you are following
+the legacy VM handoff package:
 
 - `docker-compose.vm.yml` keeps `web`, `ai-worker`, `telegram-worker`, and `report-scheduler` as separate services.
 - `.env.vm.example` is the safe baseline for single-VM Compose deployments.
@@ -20,6 +24,6 @@ Suggested server flow:
 1. Copy the repository to the Ubuntu host.
 2. Copy `.env.vm.example` or `.env.production.example` to a local untracked `.env`.
 3. Fill real secrets on the server only.
-4. Run `docker compose -f deployment-handoff/vm/docker-compose.vm.yml up -d --build`.
+4. Run `docker compose -f deploy/docker-compose.prod.yml up -d --build`.
 
-Legacy AWS-oriented handoff notes remain in the parent folder for reference, but this VM target is the production default going forward.
+Legacy AWS-oriented handoff notes remain in the parent folder for reference.

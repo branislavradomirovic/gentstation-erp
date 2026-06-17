@@ -28,8 +28,6 @@ WORKDIR $HOME/app
 
 COPY --chown=user . .
 
-RUN mkdir -p "$HOME/app/uploads" "$HOME/app/downloads"
-
 EXPOSE 8501
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \

@@ -1,5 +1,8 @@
 name: vm_genstationai
 
+# Legacy VM deployment bundle.
+# The current production path is deploy/docker-compose.prod.yml.
+
 services:
   postgres:
     image: postgres:15-alpine
@@ -153,9 +156,6 @@ services:
       STREAMLIT_BROWSER_GATHERUSAGESTATS: "false"
     ports:
       - "${APP_PORT:-8501}:8501"
-    volumes:
-      - ../../uploads:/home/user/app/uploads
-      - ../../downloads:/home/user/app/downloads
     restart: unless-stopped
 
   ai-worker:
@@ -194,9 +194,6 @@ services:
       AI_WORKER_STUCK_TIMEOUT_SECONDS: ${AI_WORKER_STUCK_TIMEOUT_SECONDS:-900}
     healthcheck:
       disable: true
-    volumes:
-      - ../../uploads:/home/user/app/uploads
-      - ../../downloads:/home/user/app/downloads
     command: ["python", "-m", "core.ai_worker"]
     restart: unless-stopped
 
@@ -228,9 +225,6 @@ services:
       BOT_MODE: ${BOT_MODE:-bot}
     healthcheck:
       disable: true
-    volumes:
-      - ../../uploads:/home/user/app/uploads
-      - ../../downloads:/home/user/app/downloads
     command: ["python", "-m", "core.bot_worker"]
     restart: unless-stopped
 
@@ -257,9 +251,6 @@ services:
       SKIP_SCHEMA_INIT: "1"
     healthcheck:
       disable: true
-    volumes:
-      - ../../uploads:/home/user/app/uploads
-      - ../../downloads:/home/user/app/downloads
     command: ["python", "-m", "core.report_scheduler"]
     restart: unless-stopped
 

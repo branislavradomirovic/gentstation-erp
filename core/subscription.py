@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Optional, Dict
 
 from core.tenant_context import (
     TenantContext,
@@ -38,7 +38,7 @@ class TierDefinition:
     label: str
     description: str
     feature_keys: frozenset[str]
-    default_limits: dict[str, int | None]
+    default_limits: Dict[str, Optional[int]]
 
 
 @dataclass(frozen=True)
@@ -54,9 +54,9 @@ class SubscriptionSnapshot:
     tenant_id: int
     tier_code: str
     status: str
-    billing_cycle: str | None
-    billing_currency: str | None
-    limits: dict[str, int | None]
+    billing_cycle: Optional[str]
+    billing_currency: Optional[str]
+    limits: Dict[str, Optional[int]]
     feature_overrides: dict[str, bool] = field(default_factory=dict)
 
 
@@ -137,17 +137,17 @@ FEATURE_DEFINITIONS: dict[str, FeatureDefinition] = {
 }
 
 
-def _normalize_tier_code(tier_code: str | None) -> str:
+def _normalize_tier_code(tier_code: Optional[str]) -> str:
     if tier_code in TIER_DEFINITIONS:
         return str(tier_code)
     return TIER_1_AI_DAILY_OPERATIONS
 
 
-def get_tier_definition(tier_code: str | None) -> TierDefinition:
+def get_tier_definition(tier_code: Optional[str]) -> TierDefinition:
     return TIER_DEFINITIONS[_normalize_tier_code(tier_code)]
 
 
-def is_tier_at_least(current_tier: str | None, minimum_tier: str) -> bool:
+def is_tier_at_least(current_tier: Optional[str], minimum_tier: str) -> bool:
     current = get_tier_definition(current_tier)
     required = get_tier_definition(minimum_tier)
     return current.rank >= required.rank
@@ -171,7 +171,7 @@ def feature_enabled_for_snapshot(
     return bool(override)
 
 
-def resolve_limit(snapshot: SubscriptionSnapshot, resource_key: str) -> int | None:
+def resolve_limit(snapshot: SubscriptionSnapshot, resource_key: str) -> Optional[int]:
     configured = snapshot.limits.get(resource_key)
     if configured is not None:
         return configured
@@ -198,7 +198,7 @@ def enforce_limit_for_snapshot(
     )
 
 
-def _tenant_id_from_context(tenant_context: TenantContext | None = None) -> int:
+def _tenant_id_from_context(tenant_context: Optional[TenantContext] = None) -> int:
     context = tenant_context or require_current_tenant_context()
     if context.tenant_id is None:
         raise TenantContextError("Tenant context is required for subscription access.")
@@ -207,7 +207,7 @@ def _tenant_id_from_context(tenant_context: TenantContext | None = None) -> int:
 
 def load_subscription_snapshot(
     conn,
-    tenant_context: TenantContext | None = None,
+    tenant_context: Optional[TenantContext] = None,
 ) -> SubscriptionSnapshot:
     tenant_id = _tenant_id_from_context(tenant_context)
     row = conn.execute(
@@ -258,22 +258,37 @@ def load_subscription_snapshot(
     )
 
 
-def load_usage_counts(conn) -> dict[str, int]:
+def load_usage_counts(conn, tenant_context: Optional[TenantContext] = None) -> dict[str, int]:
+    tenant_id = _tenant_id_from_context(tenant_context)
     return {
         RESOURCE_STATIONS: int(
-            conn.execute("SELECT COUNT(*) FROM stations").fetchone()[0] or 0
+            conn.execute(
+                "SELECT COUNT(*) FROM stations WHERE tenant_id = %s",
+                (tenant_id,),
+            ).fetchone()[0]
+            or 0
         ),
         RESOURCE_EMPLOYEES: int(
-            conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] or 0
+            conn.execute(
+                "SELECT COUNT(*) FROM users WHERE tenant_id = %s",
+                (tenant_id,),
+            ).fetchone()[0]
+            or 0
         ),
-        RESOURCE_CAMERAS: 0,
+        RESOURCE_CAMERAS: int(
+            conn.execute(
+                "SELECT COUNT(*) FROM cctv_cameras WHERE tenant_id = %s",
+                (tenant_id,),
+            ).fetchone()[0]
+            or 0
+        ),
     }
 
 
 def is_feature_enabled(
     conn,
     feature_key: str,
-    tenant_context: TenantContext | None = None,
+    tenant_context: Optional[TenantContext] = None,
 ) -> bool:
     snapshot = load_subscription_snapshot(conn, tenant_context=tenant_context)
     return feature_enabled_for_snapshot(snapshot, feature_key)
@@ -282,8 +297,8 @@ def is_feature_enabled(
 def require_feature(
     conn,
     feature_key: str,
-    tenant_context: TenantContext | None = None,
-    message: str | None = None,
+    tenant_context: Optional[TenantContext] = None,
+    message: Optional[str] = None,
 ) -> None:
     if is_feature_enabled(conn, feature_key, tenant_context=tenant_context):
         return
@@ -297,16 +312,16 @@ def require_usage_capacity(
     conn,
     resource_key: str,
     requested: int = 1,
-    tenant_context: TenantContext | None = None,
+    tenant_context: Optional[TenantContext] = None,
 ) -> None:
     snapshot = load_subscription_snapshot(conn, tenant_context=tenant_context)
-    usage = load_usage_counts(conn)
+    usage = load_usage_counts(conn, tenant_context=tenant_context)
     enforce_limit_for_snapshot(snapshot, usage, resource_key, requested=requested)
 
 
-def build_plan_summary(conn, tenant_context: TenantContext | None = None) -> dict[str, Any]:
+def build_plan_summary(conn, tenant_context: Optional[TenantContext] = None) -> dict[str, Any]:
     snapshot = load_subscription_snapshot(conn, tenant_context=tenant_context)
-    usage = load_usage_counts(conn)
+    usage = load_usage_counts(conn, tenant_context=tenant_context)
     tier = get_tier_definition(snapshot.tier_code)
     features = {
         key: {

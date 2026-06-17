@@ -4,6 +4,10 @@
 
 This is the easiest deployment model if the external team wants to recreate the application quickly on one cloud VM rather than build a full AWS-managed platform first.
 
+Note: the current production default for this repository is the Ubuntu bundle in
+`deploy/docker-compose.prod.yml`. This document is retained for reference and
+for teams that still need the historical VM handoff package.
+
 Recommended target examples:
 
 - AWS EC2
@@ -42,7 +46,14 @@ Use these files from this handoff package:
 - `vm/.env.vm.example`
 - `vm/.env.production.example`
 
-These files are intended to be used in place from the `deployment-handoff/vm/` folder, or adapted carefully by the external team.
+For new deployments, prefer the canonical bundle:
+
+- `deploy/docker-compose.prod.yml`
+- `deploy/env/.env.production.example`
+- `deploy/env/.env.production`
+
+The VM files are intended to be used in place from the `deployment-handoff/vm/`
+folder, or adapted carefully by the external team.
 
 ## Required prerequisites on the VM
 
@@ -67,12 +78,12 @@ The team should clone the exact release tag or commit provided by the applicatio
 
 Recommended:
 
-- copy `deployment-handoff/vm/.env.vm.example` to `.env` in the repo root
-- leave `deployment-handoff/vm/docker-compose.vm.yml` in place and run it with `-f`
+- copy `deploy/env/.env.production.example` to `deploy/env/.env.production`
+- use `deploy/docker-compose.prod.yml` as the production compose file
 
 Important:
 
-- the provided compose file uses paths relative to `deployment-handoff/vm/`
+- the production compose file uses paths relative to the repository root and the `deploy/` folder
 - if the team copies the compose file to another location, they must also update the relative `build` and volume paths inside it
 
 ### Step 3. Populate `.env`
@@ -101,13 +112,7 @@ Without a database dump, the deployment will start with an empty database schema
 The simplest startup command is:
 
 ```bash
-docker compose -f deployment-handoff/vm/docker-compose.vm.yml --env-file .env up -d --build
-```
-
-If Telegram is enabled, include the Telegram profile:
-
-```bash
-docker compose -f deployment-handoff/vm/docker-compose.vm.yml --env-file .env --profile telegram up -d --build
+docker compose --env-file deploy/env/.env.production -f deploy/docker-compose.prod.yml up -d --build
 ```
 
 ### Step 6. Validate startup
@@ -115,9 +120,8 @@ docker compose -f deployment-handoff/vm/docker-compose.vm.yml --env-file .env --
 Confirm:
 
 - `postgres` is healthy
-- `schema-init` completed successfully
 - `redis` is healthy
-- `app` is running
+- `web` is running
 - `ai-worker` is running if AI is enabled
 - `report-scheduler` is running
 - `telegram-worker` is running if Telegram is enabled
@@ -125,14 +129,15 @@ Confirm:
 Use:
 
 ```bash
-docker compose -f deployment-handoff/vm/docker-compose.vm.yml --env-file .env ps
-docker compose -f deployment-handoff/vm/docker-compose.vm.yml --env-file .env logs app
-docker compose -f deployment-handoff/vm/docker-compose.vm.yml --env-file .env logs ai-worker
-docker compose -f deployment-handoff/vm/docker-compose.vm.yml --env-file .env logs report-scheduler
-docker compose -f deployment-handoff/vm/docker-compose.vm.yml --env-file .env --profile telegram logs telegram-worker
+docker compose --env-file deploy/env/.env.production -f deploy/docker-compose.prod.yml ps
+docker compose --env-file deploy/env/.env.production -f deploy/docker-compose.prod.yml logs web
+docker compose --env-file deploy/env/.env.production -f deploy/docker-compose.prod.yml logs ai-worker
+docker compose --env-file deploy/env/.env.production -f deploy/docker-compose.prod.yml logs report-scheduler
+docker compose --env-file deploy/env/.env.production -f deploy/docker-compose.prod.yml logs telegram-worker
 ```
 
-The `telegram-worker` service is profile-gated and will only start when the `telegram` profile is enabled.
+The `telegram-worker` service is always defined in the production bundle and
+should be left idle if Telegram is not in scope.
 
 ### Step 7. Open the application
 

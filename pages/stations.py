@@ -9,9 +9,11 @@ from sqlalchemy.orm import joinedload, selectinload
 from streamlit_folium import st_folium
 from core.activity_logger import log_activity
 from core.subscription import RESOURCE_STATIONS, UsageLimitError, require_usage_capacity
+from core.tenant_context import current_tenant_id
 from ui.header import render_page_header
 from core.database import get_session, get_schema_readiness
 from core.models import Station, Region, User, Submission, SystemSetting, StationCategory
+from core.submission_storage import get_submission_video_bytes
 import urllib.parse
 import urllib.request
 import json
@@ -38,6 +40,7 @@ def _ensure_dict(payload):
 
 def render(conn):
     render_page_header("⛽ Stations Management")
+    tenant_id = current_tenant_id()
 
     schema_state = get_schema_readiness(conn)
     if not schema_state["is_ready"]:
@@ -54,7 +57,9 @@ def render(conn):
     # --- DATA PREPARATION WITH ORM ---
     with get_session() as session:
         # Load Categories from the structured table
-        categories_list = session.execute(select(StationCategory).order_by(StationCategory.name)).scalars().all()
+        categories_list = session.execute(
+            select(StationCategory).where(StationCategory.tenant_id == tenant_id).order_by(StationCategory.name)
+        ).scalars().all()
 
         CATEGORY_COLORS = {}
         CATEGORY_DESCRIPTIONS = {}
@@ -75,9 +80,9 @@ def render(conn):
         threshold_over = int(s_over.value) if s_over else 5
         threshold_under = int(s_under.value) if s_under else 2
 
-        st_count = session.scalar(select(func.count(Station.id)))
-        staff_count = session.scalar(select(func.count(User.id)).where(User.station_id.isnot(None)))
-        pending_count = session.scalar(select(func.count(Submission.id)).where(Submission.processed == 0))
+        st_count = session.scalar(select(func.count(Station.id)).where(Station.tenant_id == tenant_id))
+        staff_count = session.scalar(select(func.count(User.id)).where(User.tenant_id == tenant_id, User.station_id.isnot(None)))
+        pending_count = session.scalar(select(func.count(Submission.id)).where(Submission.tenant_id == tenant_id, Submission.processed == 0))
 
         m_col1, m_col2, m_col3 = st.columns(3)
         m_col1.metric("Total Stations", st_count or 0)
@@ -85,11 +90,14 @@ def render(conn):
         m_col3.metric("Pending Audits", pending_count or 0)
         st.divider()
 
-        regions_list = session.execute(select(Region).order_by(Region.name)).scalars().all()
+        regions_list = session.execute(
+            select(Region).where(Region.tenant_id == tenant_id).order_by(Region.name)
+        ).scalars().all()
         regions_map = {r.name: r.id for r in regions_list}
 
         # Fetch only necessary fields for managers to optimize memory and speed
         mgr_query = select(User.id, User.name, User.surname, User.username).where(
+            User.tenant_id == tenant_id,
             User.role.in_(['Gas Station Manager', 'Gas Station Supervisor', 'General Manager'])
         )
         managers = session.execute(mgr_query).all()
@@ -180,6 +188,7 @@ def render(conn):
                         require_usage_capacity(conn, RESOURCE_STATIONS)
                         with get_session() as session:
                             new_station = Station(
+                                tenant_id=tenant_id,
                                 name=s_name.strip(),
                                 region_id=region_id,
                                 physical_address=s_addr.strip() or None,
@@ -200,7 +209,7 @@ def render(conn):
                             new_id = new_station.id
                     except UsageLimitError as exc:
                         st.error(str(exc))
-                        return
+                        return # Exit the function if limit is hit
 
                     # LOGGING AND FEEDBACK
                     log_activity(
@@ -265,17 +274,19 @@ def render(conn):
     mgr_name_sub = select(
         func.coalesce(func.nullif(func.trim(User.name + ' ' + User.surname), ''), User.email, User.username)
     ).where(
+        User.tenant_id == tenant_id,
         User.station_id == Station.id,
         User.role.in_(['Gas Station Manager', 'Gas Station Supervisor', 'General Manager'])
     ).order_by(mgr_priority).limit(1).scalar_subquery()
 
     mgr_id_sub = select(User.id).where(
+        User.tenant_id == tenant_id,
         User.station_id == Station.id,
         User.role.in_(['Gas Station Manager', 'Gas Station Supervisor', 'General Manager'])
     ).order_by(mgr_priority).limit(1).scalar_subquery()
 
     # Subquery to calculate current staffing levels per station
-    staff_count_sub = select(func.count(User.id)).where(User.station_id == Station.id).scalar_subquery()
+    staff_count_sub = select(func.count(User.id)).where(User.tenant_id == tenant_id, User.station_id == Station.id).scalar_subquery()
 
     # Base statement for both table view and export
     base_stmt = select(
@@ -289,6 +300,7 @@ def render(conn):
         mgr_id_sub.label("manager_id"),
         staff_count_sub.label("staff_count")
     ).outerjoin(Region).outerjoin(StationCategory, Station.category_id == StationCategory.id)
+    base_stmt = base_stmt.where(Station.tenant_id == tenant_id)
 
 
     # --- 2. STATIONS TABLE ---
@@ -361,6 +373,7 @@ def render(conn):
                 ).select_from(StationCategory)\
                     .outerjoin(Station, Station.category_id == StationCategory.id)\
                     .group_by(StationCategory.name)
+            dist_stmt = dist_stmt.where(StationCategory.tenant_id == tenant_id)
 
             if filters:
                 dist_stmt = dist_stmt.where(*filters)
@@ -378,6 +391,7 @@ def render(conn):
             else:
                 reg_dist_stmt = select(Region.name, func.count(Station.id).label("Count"))\
                     .outerjoin(Region).group_by(Region.name)
+            reg_dist_stmt = reg_dist_stmt.where(Region.tenant_id == tenant_id)
 
             if filters:
                 reg_dist_stmt = reg_dist_stmt.where(*filters)
@@ -445,7 +459,7 @@ def render(conn):
     with get_session() as session:
         # Get total count for pagination UI
         # We need to join Region if sorting or filtering by Region attributes
-        count_stmt = select(func.count(Station.id)).outerjoin(Region)
+        count_stmt = select(func.count(Station.id)).outerjoin(Region).where(Station.tenant_id == tenant_id)
         if filters:
             count_stmt = count_stmt.where(*filters)
 
@@ -567,7 +581,7 @@ def render(conn):
         # Load existing data for selected station
         # We extract attributes into a dictionary to avoid DetachedInstanceError after the session closes
         with get_session() as session:
-            st_obj = session.get(Station, sel)
+            st_obj = session.query(Station).filter(Station.id == sel, Station.tenant_id == tenant_id).one_or_none()
             if not st_obj:
                 st.error("Station not found.")
                 st.stop()
@@ -688,8 +702,8 @@ def render(conn):
                     else:
                         region_id = regions_map.get(sel_region) if sel_region != "-- None --" else None
                         conn.execute(
-                            "UPDATE stations SET name=%s, physical_address=%s, email=%s, region_id=%s, lat=%s, lon=%s, category_id=%s WHERE id=%s",
-                            (name.strip(), addr.strip() or None, email.strip() or None, region_id, u_lat, u_lon, category_id_map.get(sel_cat), sel),
+                            "UPDATE stations SET name=%s, physical_address=%s, email=%s, region_id=%s, lat=%s, lon=%s, category_id=%s WHERE id=%s AND tenant_id=%s",
+                            (name.strip(), addr.strip() or None, email.strip() or None, region_id, u_lat, u_lon, category_id_map.get(sel_cat), sel, tenant_id),
                         )
                         conn.commit()
                         log_activity(conn, "UPDATE_STATION", f"Updated station ID {sel} ({name})")
@@ -698,7 +712,7 @@ def render(conn):
 
             if st.button("🗑️ Delete Station", type="secondary", use_container_width=True):
                 try:
-                    conn.execute("DELETE FROM stations WHERE id = %s", (sel,))
+                    conn.execute("DELETE FROM stations WHERE id = %s AND tenant_id = %s", (sel, tenant_id))
                     conn.commit()
                     log_activity(conn, "DELETE_STATION", f"Deleted station ID {sel}")
                     st.success(f"Station ID {sel} removed.")
@@ -712,18 +726,18 @@ def render(conn):
             curr_mgr_name_q = pd.read_sql_query(
                 """
                 SELECT COALESCE(NULLIF(TRIM(COALESCE(name, '') || ' ' || COALESCE(surname, '')), ''), email, username) as fullname
-                FROM users WHERE station_id = %s
+                FROM users WHERE tenant_id = %s AND station_id = %s
                 ORDER BY CASE role WHEN 'Gas Station Manager' THEN 0 WHEN 'Gas Station Supervisor' THEN 1 ELSE 2 END, id LIMIT 1
-                """, conn, params=(sel,)
+                """, conn, params=(tenant_id, sel)
             )
             curr_mgr_name = curr_mgr_name_q["fullname"].iloc[0] if not curr_mgr_name_q.empty else "-- None --"
             sel_mgr = st.selectbox("Select Manager", mgr_options, index=mgr_options.index(curr_mgr_name) if curr_mgr_name in mgr_options else 0)
 
             if st.button("Update Assigned Manager", key=f"btn_assign_mgr_{sel}", type="primary", use_container_width=True):
-                conn.execute("UPDATE users SET station_id = NULL WHERE station_id = %s AND role IN ('Gas Station Manager', 'Gas Station Supervisor')", (sel,))
+                conn.execute("UPDATE users SET station_id = NULL WHERE tenant_id = %s AND station_id = %s AND role IN ('Gas Station Manager', 'Gas Station Supervisor')", (tenant_id, sel))
                 if sel_mgr != "-- None --":
                     mgr_id = mgr_map.get(sel_mgr)
-                    conn.execute("UPDATE users SET station_id = %s WHERE id = %s", (sel, mgr_id))
+                    conn.execute("UPDATE users SET station_id = %s WHERE tenant_id = %s AND id = %s", (sel, tenant_id, mgr_id))
                 conn.commit()
                 st.success("Manager assignment updated.")
                 st.rerun()
@@ -731,9 +745,9 @@ def render(conn):
             st.divider()
             st.subheader("Assigned Staff")
             assigned_employees_df = pd.read_sql_query(
-                "SELECT name, surname, role, email FROM users WHERE station_id = %s",
+                "SELECT name, surname, role, email FROM users WHERE tenant_id = %s AND station_id = %s",
                 conn,
-                params=(sel,),
+                params=(tenant_id, sel),
             )
             if assigned_employees_df.empty:
                 st.info("No employees are currently assigned to this station.")
@@ -743,13 +757,13 @@ def render(conn):
         with tab_audit:
             st.subheader("📜 AI Audit History")
             audit_query = """
-                SELECT s.timestamp, s.data_json, u.name || ' ' || u.surname as employee_name, s.video_path
+                SELECT s.id, s.timestamp, s.data_json, u.name || ' ' || u.surname as employee_name
                 FROM submissions s
                 JOIN users u ON s.employee_id = u.id
-                WHERE s.station_id = %s AND s.processed = 1 AND s.data_json IS NOT NULL
+                WHERE s.tenant_id = %s AND s.station_id = %s AND s.processed = 1 AND s.data_json IS NOT NULL
                 ORDER BY s.timestamp DESC LIMIT 50
             """
-            audit_df = pd.read_sql_query(audit_query, conn, params=(sel,))
+            audit_df = pd.read_sql_query(audit_query, conn, params=(tenant_id, sel))
             if audit_df.empty:
                 st.info("No AI-processed audit reports found for this station.")
             else:
@@ -763,9 +777,10 @@ def render(conn):
                         score_cols[2].metric("Staff", f"{report_data.get('staff_score', 'N/A')}/10")
                         score_cols[3].metric("Merchandising", f"{report_data.get('merchandising_score', 'N/A')}/10")
                         st.markdown(f"**AI Summary:** *{report_data.get('summary', 'No summary available.')}*")
-                        if report["video_path"] and os.path.exists(report["video_path"]):
+                        video_bytes = get_submission_video_bytes(int(report["id"]), tenant_id=tenant_id)
+                        if video_bytes:
                             with st.expander("🎥 Watch Video Footage"):
-                                st.video(report["video_path"])
+                                st.video(video_bytes)
 
         with tab_perf:
             st.subheader("📈 Performance Trends")
@@ -776,8 +791,8 @@ def render(conn):
             with t_col1:
                 st.write("**Daily Submissions**")
                 trend_df = pd.read_sql_query(
-                    "SELECT to_char(timestamp, 'YYYY-MM-DD') as day, COUNT(*) as count FROM submissions WHERE station_id = %s AND to_char(timestamp, 'YYYY-MM') = %s GROUP BY day ORDER BY day",
-                    conn, params=(sel, selected_month)
+                    "SELECT to_char(timestamp, 'YYYY-MM-DD') as day, COUNT(*) as count FROM submissions WHERE tenant_id = %s AND station_id = %s AND to_char(timestamp, 'YYYY-MM') = %s GROUP BY day ORDER BY day",
+                    conn, params=(tenant_id, sel, selected_month)
                 )
                 if not trend_df.empty: st.bar_chart(trend_df.set_index("day"))
                 else: st.caption("No data for this month.")
@@ -785,8 +800,8 @@ def render(conn):
             with t_col2:
                 st.write("**12-Month Volume**")
                 monthly_df = pd.read_sql_query(
-                    "SELECT to_char(timestamp, 'YYYY-MM') as month, COUNT(*) as count FROM submissions WHERE station_id = %s AND timestamp >= NOW() - INTERVAL '12 months' GROUP BY month ORDER BY month",
-                    conn, params=(sel,)
+                    "SELECT to_char(timestamp, 'YYYY-MM') as month, COUNT(*) as count FROM submissions WHERE tenant_id = %s AND station_id = %s AND timestamp >= NOW() - INTERVAL '12 months' GROUP BY month ORDER BY month",
+                    conn, params=(tenant_id, sel)
                 )
                 if not monthly_df.empty: st.line_chart(monthly_df.set_index("month"))
                 else: st.caption("No yearly data.")
@@ -811,8 +826,8 @@ def render(conn):
 
                 # Email Logic
                 mgr_email_row = conn.execute(
-                    "SELECT email FROM users WHERE station_id = %s AND role = 'Gas Station Manager'",
-                    (sel,)
+                    "SELECT email FROM users WHERE tenant_id = %s AND station_id = %s AND role = 'Gas Station Manager'",
+                    (tenant_id, sel)
                 ).fetchone()
 
                 if st.button("📧 Share via Email", key=f"email_qr_{sel}", disabled=(not mgr_email_row), use_container_width=True):

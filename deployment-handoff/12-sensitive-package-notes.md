@@ -4,6 +4,11 @@ This repository must not include real production secrets or live customer data.
 
 Allowed sanitized handoff artifacts:
 
+- `deploy/env/.env.production.example`
+- `deploy/docker-compose.prod.yml`
+- `deploy/scripts/healthcheck.sh`
+- `deploy/scripts/healthcheck_web.sh`
+- `deploy/scripts/healthcheck_worker.sh`
 - `vm/.env.vm.example`
 - `vm/.env.production.example`
 - `vm/docker-compose.vm.yml`
@@ -29,10 +34,11 @@ Database transfer guidance:
 - share dumps only through an approved internal channel
 - keep backup retention and restore testing in the production operations plan, not in git
 
-This handoff folder now contains the core items needed for a one-folder VM deployment transfer:
+This handoff folder now contains the core items needed for a production handoff,
+with the `deploy/` bundle as the default path:
 
-- VM deployment documentation
-- Docker Compose stack for VM deployment
+- Ubuntu production deployment documentation
+- Docker Compose stack for the production bundle
 - sanitized production environment examples
 
 Recommended next step:

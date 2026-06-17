@@ -1,25 +1,45 @@
-__pycache__/
-*.py[cod]
-*.db
-*.dump
-*.sql.gz
-
-# Environment variables and secrets
+# Environment files
 .env
 .env.*
 !.env.example
-!**/*.example
+!.env.production.example
+!.env.vm.example
 
+# macOS
 .DS_Store
-**/.DS_Store
-uploads/
-downloads/
-.vscode/
-.idea/
-.venv/
-venv/
-*.log
+.AppleDouble
+.LSOverride
+.Spotlight-V100/
+.Trashes/
+Thumbs.db
+__MACOSX/
+
+# Backup / patch artifacts
+*.bak
+*.orig
+*.rej
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
-.coverage
+.venv/
+venv/
+
+# App Runtime Data
+uploads/
+downloads/
+backups/
+evidence/
+reports/
+*.db
+*.dump
+*.sqlite
+*.sqlite3
+
+# IDEs
+.vscode/
+.idea/

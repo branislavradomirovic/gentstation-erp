@@ -1,3 +1,4 @@
+from __future__ import annotations
 import streamlit as st
 
 from core.auth import logout_user_streamlit
@@ -144,12 +145,17 @@ def display_sidebar(conn, current_tenant_context: TenantContext | None):
                     ("AI Alerts", "AI Alerts", "ai_alerts"),
                     ("AI Monitoring", "AI Monitoring", "ai_monitoring"),
                     ("CCTV Intelligence", "CCTV Intelligence", "cctv_intelligence"),
+                    ("Camera Registry", "Camera Registry", "cctv_cameras"),
+                    ("Review Center", "Review Center", "review_center"),
                 ],
             },
             {
                 "title": "Administration",
                 "pages": [
+                    ("Platform Admin", "Platform Admin", "platform_admin"),
+                    ("Platform Health", "Platform Health", "platform_health"),
                     ("Tenant Plan", "Tenant Plan", "tenant_plan"),
+                    ("Integrations", "Integrations", "integrations"),
                     ("Settings", "Settings", "setting_root"),
                     ("Admin Users", "Admin Users", "setting_admin_users"),
                     ("Audit Log", "Audit Log", "setting_audit_log"),

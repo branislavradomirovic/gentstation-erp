@@ -60,10 +60,9 @@ The supported production target is a dedicated Ubuntu server running Docker Comp
 - Redis
 - reverse proxy and backups outside the app container set
 
-Start with the VM deployment guide in [deployment-handoff/vm/README.md](/Users/branislavradomirovic/Applications/Python/GentStationAI/deployment-handoff/vm/README.md:1) and the sanitized examples in `deployment-handoff/vm/`.
+Start with the Production Guide in docs/production/README.md.
 
 Important production notes:
-
 - Do not commit `.env` or production env files.
 - Keep the web app and workers as separate containers in production.
 - Preserve current Tier 1 behavior until later multi-tenant phases explicitly change it.

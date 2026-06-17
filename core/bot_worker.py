@@ -13,7 +13,6 @@ Optional env vars:
 - TELEGRAM_RETRY_BASE_SECONDS=10
 - TELEGRAM_RETRY_MAX_SECONDS=180
 - MAX_VIDEO_SIZE_MB=300
-- UPLOADS_DIR=/path/to/uploads
 - LOCK_FILE=/tmp/gentstationai_bot_worker.lock
 - QUEUE_STREAM=telegram:submissions
 - QUEUE_GROUP=telegram-workers
@@ -35,13 +34,13 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import io
 import json
 import logging
 import os
 import signal
 import subprocess
 import socket
-import tempfile
 import time
 import uuid
 import psycopg2
@@ -77,6 +76,7 @@ from telegram.ext import (
 # Keep your existing DB layer.
 from core.database import get_connection
 from core.runtime_config import load_runtime_env
+from core.submission_storage import build_media_payload
 from core.tenant_context import TenantContext, tenant_context
 
 load_runtime_env()
@@ -105,9 +105,6 @@ MAX_VIDEO_SIZE_MB = int(os.getenv("MAX_VIDEO_SIZE_MB", "300"))
 RATE_LIMIT_MAX_FILES = int(os.getenv("RATE_LIMIT_MAX_FILES", "5"))
 RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60"))
 LOCK_FILE = Path(os.getenv("LOCK_FILE", "/tmp/gentstationai_bot_worker.lock"))
-UPLOADS_DIR = Path(
-    os.getenv("UPLOADS_DIR", str(Path(__file__).resolve().parents[1] / "uploads"))
-)
 QUEUE_STREAM = os.getenv("QUEUE_STREAM", "telegram:submissions")
 QUEUE_GROUP = os.getenv("QUEUE_GROUP", "telegram-workers")
 BOT_MODE = os.getenv("BOT_MODE", "bot").strip().lower()  # bot | worker | both
@@ -152,11 +149,11 @@ def _rate_limit_lock() -> asyncio.Lock:
 @dataclass
 class SubmissionJob:
     job_id: str
+    submission_id: int
     chat_id: str
     tenant_id: int
     employee_id: int
     station_id: int
-    file_path: str
     original_file_name: str
     size_bytes: int
     created_ts: float
@@ -176,11 +173,11 @@ class SubmissionJob:
 
         return SubmissionJob(
             job_id=str(_get("job_id")),
+            submission_id=int(_get("submission_id")),
             chat_id=str(_get("chat_id")),
             tenant_id=int(_get("tenant_id")),
             employee_id=int(_get("employee_id")),
             station_id=int(_get("station_id")),
-            file_path=str(_get("file_path")),
             original_file_name=str(_get("original_file_name", "")),
             size_bytes=int(_get("size_bytes", 0)),
             created_ts=float(_get("created_ts", time.time())),
@@ -276,7 +273,7 @@ def release_lock() -> None:
 atexit.register(release_lock)
 
 
-def _is_video_document(message) -> bool:
+def _is_video_document(message: Any) -> bool:
     document = getattr(message, "document", None)
     if not document:
         return False
@@ -289,14 +286,14 @@ def _is_video_document(message) -> bool:
     )
 
 
-def _guess_suffix(filename: str | None, fallback: str = ".mp4") -> str:
+def _guess_suffix(filename: Optional[str], fallback: str = ".mp4") -> str:
     if not filename:
         return fallback
     suffix = Path(filename).suffix.lower()
     return suffix if suffix in ALLOWED_VIDEO_SUFFIXES else fallback
 
 
-def _validate_video_file(file_name: str | None, mime_type: str | None) -> bool:
+def _validate_video_file(file_name: Optional[str], mime_type: Optional[str]) -> bool:
     suffix_ok = _guess_suffix(file_name) in ALLOWED_VIDEO_SUFFIXES
     mime = (mime_type or "").lower()
     mime_ok = mime.startswith(ALLOWED_MIME_PREFIXES) or mime in ALLOWED_MIME_TYPES
@@ -363,21 +360,57 @@ async def db_link_employee_chat(employee_id: int, chat_id: str) -> int:
     return await asyncio.to_thread(_work)
 
 
-async def db_insert_submission(job: SubmissionJob) -> None:
-    def _work() -> None:
+async def db_insert_submission(
+    tenant_id: int,
+    employee_id: int,
+    station_id: int,
+    file_unique_id: Optional[str],
+    original_file_name: str,
+    mime_type: Optional[str],
+    media_bytes: bytes,
+) -> int:
+    def _work() -> int:
         conn = None
         try:
-            with tenant_context(TenantContext(tenant_id=job.tenant_id)):
+            with tenant_context(TenantContext(tenant_id=tenant_id)):
+                payload = build_media_payload(
+                    media_bytes,
+                    filename=original_file_name,
+                    mime_type=mime_type,
+                )
                 conn = get_connection()
                 cur = conn.cursor()
                 cur.execute(
                     """
-                    INSERT INTO submissions (station_id, employee_id, video_path, processed, status, file_unique_id)
-                    VALUES (%s, %s, %s, 0, 'pending', %s)
+                    INSERT INTO submissions (
+                        station_id,
+                        employee_id,
+                        video_filename,
+                        video_mime_type,
+                        video_size_bytes,
+                        video_checksum,
+                        video_blob,
+                        processed,
+                        status,
+                        file_unique_id
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, 0, 'pending', %s)
+                    RETURNING id
                     """,
-                    (job.station_id, job.employee_id, job.file_path, job.file_unique_id),
+                    (
+                        station_id,
+                        employee_id,
+                        payload.filename,
+                        payload.mime_type,
+                        payload.size_bytes,
+                        payload.checksum,
+                        payload.content_bytes,
+                        file_unique_id,
+                    ),
                 )
+                row = cur.fetchone()
                 conn.commit()
+                return int(row[0])
         except Exception:
             if conn:
                 with suppress(Exception):
@@ -388,11 +421,11 @@ async def db_insert_submission(job: SubmissionJob) -> None:
                 with suppress(Exception):
                     conn.close()
 
-    await asyncio.to_thread(_work)
+    return await asyncio.to_thread(_work)
 
 
 async def update_bot_status(
-    status: str, details: str | None = None, redis_health: Optional[bool] = None
+    status: str, details: Optional[str] = None, redis_health: Optional[bool] = None
 ) -> None:
     """
     Updates the bot status in system_settings and optionally logs Redis/Worker health.
@@ -523,17 +556,6 @@ async def check_rate_limit(chat_id: str) -> bool:
 
 async def cleanup_old_uploads() -> None:
     while not _shutdown_event().is_set():
-        try:
-            cutoff = _now() - 24 * 3600
-            if UPLOADS_DIR.exists():
-                for item in UPLOADS_DIR.iterdir():
-                    try:
-                        if item.is_file() and item.stat().st_mtime < cutoff:
-                            item.unlink()
-                    except Exception:
-                        continue
-        except Exception as e:
-            logger.warning("Cleanup loop error: %s", e)
         try:
             await asyncio.wait_for(_shutdown_event().wait(), timeout=3600)
         except asyncio.TimeoutError:
@@ -697,40 +719,43 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
-    suffix = _guess_suffix(getattr(media, "file_name", None), ".mp4")
-    safe_name = f"vid_{chat_id}_{message.message_id}_{uuid.uuid4().hex}{suffix}"
-    file_path = UPLOADS_DIR / Path(safe_name).name
-
     try:
         tg_file = await media.get_file()
-        await tg_file.download_to_drive(custom_path=str(file_path))
+        if hasattr(tg_file, "download_as_bytearray"):
+            media_bytes = bytes(await tg_file.download_as_bytearray())
+        else:
+            buffer = io.BytesIO()
+            await tg_file.download_to_memory(out=buffer)
+            media_bytes = buffer.getvalue()
     except Exception as e:
         logger.exception("Failed to download media for chat %s: %s", chat_id, e)
-        with suppress(Exception):
-            if file_path.exists():
-                file_path.unlink()
         await message.reply_text(
             "⚠️ Could not download your video. Please try sending it again."
         )
         return
 
-    job = SubmissionJob(
-        job_id=uuid.uuid4().hex,
-        chat_id=chat_id,
-        tenant_id=tenant_id,
-        employee_id=emp_id,
-        station_id=station_id,
-        file_path=str(file_path),
-        original_file_name=str(getattr(media, "file_name", "") or ""),
-        size_bytes=media_size,
-        created_ts=_now(),
-        file_unique_id=file_unique_id,
-    )
-
     try:
-        # Insert the submission record first, then enqueue the processing job.
-        await db_insert_submission(job)
+        submission_id = await db_insert_submission(
+            tenant_id=tenant_id,
+            employee_id=emp_id,
+            station_id=station_id,
+            file_unique_id=file_unique_id,
+            original_file_name=str(getattr(media, "file_name", "") or original_name),
+            mime_type=getattr(media, "mime_type", None),
+            media_bytes=media_bytes,
+        )
+        job = SubmissionJob(
+            job_id=uuid.uuid4().hex,
+            submission_id=submission_id,
+            chat_id=chat_id,
+            tenant_id=tenant_id,
+            employee_id=emp_id,
+            station_id=station_id,
+            original_file_name=str(getattr(media, "file_name", "") or original_name),
+            size_bytes=media_size,
+            created_ts=_now(),
+            file_unique_id=file_unique_id,
+        )
         await enqueue_job(job)
 
         if file_unique_id:
@@ -745,10 +770,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
             emp_id,
         )
     except Exception as e:
-        logger.exception("Error queuing submission %s: %s", job.job_id, e)
-        with suppress(Exception):
-            if file_path.exists():
-                file_path.unlink()
+        logger.exception("Error queuing submission for chat %s: %s", chat_id, e)
         await message.reply_text(
             "⚠️ I received the file, but could not queue it for analysis."
         )
@@ -774,8 +796,8 @@ async def update_job_status(job: SubmissionJob, status: str) -> None:
                 conn = get_connection()
                 cur = conn.cursor()
                 cur.execute(
-                    "UPDATE submissions SET status=%s WHERE video_path=%s",
-                    (status, job.file_path),
+                    "UPDATE submissions SET status=%s WHERE id=%s AND tenant_id=%s",
+                    (status, job.submission_id, job.tenant_id),
                 )
                 conn.commit()
         finally:
@@ -955,7 +977,6 @@ def _install_signal_handlers(loop: asyncio.AbstractEventLoop) -> None:
 async def main() -> None:
     global shutdown_event, bot_running_event, rate_limit_lock
     load_runtime_env()
-    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
     shutdown_event = asyncio.Event()
     bot_running_event = asyncio.Event()
     rate_limit_lock = asyncio.Lock()

@@ -4,7 +4,8 @@
 
 The starting point for environment configuration is:
 
-- `.env.example`
+- `deploy/env/.env.production.example` for production
+- `.env.example` for local development
 
 The deployment team should use that file as the basis for production configuration, but production secrets must not be committed to source control.
 
@@ -25,7 +26,9 @@ Notes:
 
 - In production-like environments the application expects `DATABASE_URL`.
 - The app does not safely fall back to localhost in production.
-- For the single-VM Docker Compose path, the app can also use a complete `DB_HOST`/`DB_PORT`/`DB_NAME`/`DB_USER`/`DB_PASSWORD` configuration when the host is the internal Postgres service rather than localhost.
+- For the production Docker Compose path, the app uses a complete
+  `DB_HOST`/`DB_PORT`/`DB_NAME`/`DB_USER`/`DB_PASSWORD` configuration when the
+  host is the internal Postgres service rather than localhost.
 
 ### Redis
 
@@ -180,6 +183,28 @@ SKIP_SCHEMA_INIT=1
 OLLAMA_BASE_URL=<reachable endpoint>
 OLLAMA_MODEL=bakllava:latest
 OLLAMA_VISION_MODEL=bakllava:latest
+```
+
+### Production bundle minimum
+
+If the team uses `deploy/docker-compose.prod.yml`, the safe baseline is:
+
+```text
+APP_ENV=production
+AUTO_START_BACKGROUND_WORKERS=0
+AUTO_START_TELEGRAM_BOT=0
+AUTO_START_AI_WORKER=0
+AUTO_START_REPORT_SCHEDULER=0
+RUN_SCHEMA_MIGRATIONS_ON_STARTUP=1
+STRICT_SCHEMA_INIT=1
+SKIP_SCHEMA_INIT=1
+DB_HOST=postgres
+DB_PORT=5432
+DB_NAME=gentstation
+DB_USER=gentstation_user
+DB_PASSWORD=<secret>
+REDIS_URL=redis://redis:6379/0
+APP_LOGIN_URL=https://<public app url>
 ```
 
 ### Telegram worker minimum

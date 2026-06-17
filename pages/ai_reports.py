@@ -4,13 +4,13 @@ import pandas as pd
 import json
 import os
 from datetime import datetime, timedelta
-from pathlib import Path
 from ui.header import render_page_header
 from core.database import get_session
 from core.models import Station
 from core.activity_logger import log_activity  # Keep this import
 from ai_engine.risk_engine import compute_station_risk_from_metrics
 from core.report_scope import get_scope_filter_clause
+from core.tenant_context import current_tenant_id
 
 QUEUE_STALLED_AFTER_MINUTES = 10
 
@@ -117,6 +117,7 @@ def render(conn):
 
     user_role = st.session_state.user_role
     current_user_id = st.session_state.user_id
+    tenant_id = current_tenant_id()
 
     ai_status_row = conn.execute(
         "SELECT value FROM system_settings WHERE key='ai_processing_status'"
@@ -138,29 +139,32 @@ def render(conn):
         where_clause = "AND 1=0"
 
     aggregate_where_clause = where_clause.replace("s.", "sub.")
+    tenant_scope_clause = "s.tenant_id = %s"
+    tenant_params = [tenant_id]
 
     queue_query = f"""
         SELECT
             s.id, s.timestamp, st.name as station_name,
             COALESCE(NULLIF(TRIM(COALESCE(e.name,'') || ' ' || COALESCE(e.surname,'')), ''), e.email, e.username) as employee_name,
-            s.processed, s.retry_count, s.status, s.processing_started_ts, s.video_path
+            s.processed, s.retry_count, s.status, s.processing_started_ts
         FROM submissions s
-        JOIN stations st ON s.station_id = st.id
-        JOIN users e ON s.employee_id = e.id -- submissions.employee_id now references users.id
-        WHERE (s.processed IN (0, -1) OR (s.status = 'done' AND COALESCE(s.processed, 0) = 0)) {where_clause}
+        JOIN stations st ON s.station_id = st.id AND st.tenant_id = s.tenant_id
+        JOIN users e ON s.employee_id = e.id AND e.tenant_id = s.tenant_id -- submissions.employee_id now references users.id
+        WHERE {tenant_scope_clause}
+          AND (s.processed IN (0, -1) OR (s.status = 'done' AND COALESCE(s.processed, 0) = 0)) {where_clause}
         ORDER BY s.timestamp DESC
     """
-    queue_df = pd.read_sql_query(queue_query, conn, params=params)
+    queue_df = pd.read_sql_query(queue_query, conn, params=tenant_params + params)
     if not queue_df.empty:
         queue_df["raw_status"] = queue_df["status"]
 
     completed_count_query = f"""
         SELECT COUNT(*)
         FROM submissions s
-        JOIN stations st ON s.station_id = st.id
-        WHERE s.processed = 1 AND s.data_json IS NOT NULL {where_clause}
+        JOIN stations st ON s.station_id = st.id AND st.tenant_id = s.tenant_id
+        WHERE {tenant_scope_clause} AND s.processed = 1 AND s.data_json IS NOT NULL {where_clause}
     """
-    completed_count_row = conn.execute(completed_count_query, params).fetchone()
+    completed_count_row = conn.execute(completed_count_query, tuple(tenant_params + params)).fetchone()
     completed_count = completed_count_row[0] if completed_count_row else 0
 
     stalled_cutoff = datetime.utcnow() - timedelta(minutes=QUEUE_STALLED_AFTER_MINUTES)
@@ -201,13 +205,13 @@ def render(conn):
         JOIN (
             SELECT station_id, MAX(timestamp) as max_ts
             FROM submissions
-            WHERE processed = 1 AND data_json IS NOT NULL
+            WHERE tenant_id = %s AND processed = 1 AND data_json IS NOT NULL
             GROUP BY station_id
         ) latest
             ON latest.station_id = sub.station_id AND latest.max_ts = sub.timestamp
-        WHERE sub.data_json IS NOT NULL
+        WHERE sub.tenant_id = %s AND sub.data_json IS NOT NULL
     """
-    latest_company_rows = conn.execute(latest_company_query).fetchall()
+    latest_company_rows = conn.execute(latest_company_query, (tenant_id, tenant_id)).fetchall()
     company_risk = _scope_risk_average(latest_company_rows)
 
     m1, m2, m3, m4, m5, m6 = st.columns(6)
@@ -341,14 +345,6 @@ def render(conn):
                         type="secondary",
                         width="stretch",
                     ):
-                        failed_row = failed_submissions[
-                            failed_submissions["id"] == failed_delete_id
-                        ].iloc[0]
-                        media_path = failed_row.get("video_path")
-                        if media_path:
-                            media_file = Path(str(media_path))
-                            if media_file.exists():
-                                media_file.unlink()
                         conn.execute(
                             "DELETE FROM submissions WHERE id = %s AND processed = -1",
                             (int(failed_delete_id),),
@@ -357,10 +353,10 @@ def render(conn):
                         log_activity(
                             conn,
                             "DELETE_FAILED_SUBMISSION",
-                            f"Deleted failed submission ID {failed_delete_id} and removed its media file.",
+                            f"Deleted failed submission ID {failed_delete_id} and removed its Postgres-backed media payload.",
                         )
                         st.success(
-                            f"Failed submission ID {failed_delete_id} and its local media were removed."
+                            f"Failed submission ID {failed_delete_id} and its stored media were removed."
                         )
                         st.rerun()
 
@@ -369,15 +365,16 @@ def render(conn):
             st.name as "Station",
             AVG(CAST(COALESCE(s.data_json->>'overall_risk_score', '0') AS REAL)) as "Average Risk Score"
         FROM submissions s
-        JOIN stations st ON s.station_id = st.id
+        JOIN stations st ON s.station_id = st.id AND st.tenant_id = s.tenant_id
         WHERE s.processed = 1
+          AND s.tenant_id = %s
           AND s.data_json IS NOT NULL
           AND s.timestamp >= NOW() - INTERVAL '30 days'
           {where_clause}
         GROUP BY st.id
         ORDER BY "Average Risk Score" DESC
     """
-    analytics_df = pd.read_sql_query(analytics_query, conn, params=params)
+    analytics_df = pd.read_sql_query(analytics_query, conn, params=tenant_params + params)
 
     with trends_tab:
         st.subheader("30-Day Risk Trends")
@@ -402,11 +399,11 @@ def render(conn):
         SELECT
             s.id, s.timestamp, s.station_id, st.region_id, st.name as "Station", s.data_json as kpi_json
         FROM submissions s
-        JOIN stations st ON s.station_id = st.id
-        WHERE s.processed = 1 AND s.data_json IS NOT NULL {where_clause}
+        JOIN stations st ON s.station_id = st.id AND st.tenant_id = s.tenant_id
+        WHERE s.tenant_id = %s AND s.processed = 1 AND s.data_json IS NOT NULL {where_clause}
         ORDER BY s.timestamp DESC LIMIT 200
     """
-    df = pd.read_sql_query(completed_query, conn, params=params)
+    df = pd.read_sql_query(completed_query, conn, params=tenant_params + params)
 
     with reports_tab:
         st.subheader("Completed Reports")
@@ -486,11 +483,11 @@ def render(conn):
                 station_rows = conn.execute(
                     """
                     SELECT data_json FROM submissions
-                    WHERE station_id = %s AND processed = 1 AND data_json IS NOT NULL
+                    WHERE tenant_id = %s AND station_id = %s AND processed = 1 AND data_json IS NOT NULL
                     ORDER BY timestamp DESC
                     LIMIT 10
                     """,
-                    (int(row["station_id"]),),
+                    (tenant_id, int(row["station_id"])),
                 ).fetchall()
                 station_risk = _scope_risk_average(station_rows)
 
@@ -502,13 +499,13 @@ def render(conn):
                     JOIN (
                         SELECT station_id, MAX(timestamp) as max_ts
                         FROM submissions
-                        WHERE processed = 1 AND data_json IS NOT NULL
+                        WHERE tenant_id = %s AND processed = 1 AND data_json IS NOT NULL
                         GROUP BY station_id
                     ) latest
                         ON latest.station_id = sub.station_id AND latest.max_ts = sub.timestamp
-                    WHERE st.region_id = %s AND sub.data_json IS NOT NULL
+                    WHERE sub.tenant_id = %s AND st.tenant_id = sub.tenant_id AND st.region_id = %s AND sub.data_json IS NOT NULL
                     """,
-                    (int(row["region_id"]),),
+                    (tenant_id, tenant_id, int(row["region_id"])),
                 ).fetchall()
                 region_risk = _scope_risk_average(region_rows)
 

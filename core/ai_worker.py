@@ -4,11 +4,11 @@ import atexit
 import json
 import logging
 import os
+import random
+import psycopg2
 import subprocess
 import sys
-import random
 import time
-import psycopg2
 
 try:
     import psutil
@@ -17,7 +17,7 @@ except ImportError:
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
-from contextlib import suppress, closing
+from contextlib import closing, suppress
 
 import redis
 
@@ -30,6 +30,7 @@ from core.runtime_config import load_runtime_env
 load_runtime_env()
 
 from core.database import get_connection, test_redis_connection
+from core.submission_storage import materialize_submission_video
 from core.tenant_context import TenantContext, tenant_context
 from core.video_processor import parse_station_video
 from core.comm_service import send_ai_report_email, send_submission_result_telegram
@@ -161,7 +162,8 @@ def _status_conn():
 class SubmissionJob:
     sub_id: int
     tenant_id: int
-    video_path: str
+    video_filename: Optional[str]
+    video_blob: Optional[bytes]
     station_id: int
     retry_count: int = 0
     file_unique_id: Optional[str] = None
@@ -298,7 +300,7 @@ def claim_job() -> Optional[SubmissionJob]:
 
         cur.execute(
             """
-            SELECT id, tenant_id, video_path, station_id, retry_count, file_unique_id
+            SELECT id, tenant_id, video_filename, video_blob, station_id, retry_count, file_unique_id
             FROM submissions
             WHERE status='pending'
             FOR UPDATE SKIP LOCKED
@@ -312,7 +314,7 @@ def claim_job() -> Optional[SubmissionJob]:
             conn.rollback()
             return None
 
-        sub_id, tenant_id, path, station_id, retries, file_unique_id = row
+        sub_id, tenant_id, video_filename, video_blob, station_id, retries, file_unique_id = row
         backend_pid = conn.get_backend_pid()
 
         logger.info(
@@ -335,7 +337,7 @@ def claim_job() -> Optional[SubmissionJob]:
 
         conn.commit()
         job = SubmissionJob(
-            sub_id, tenant_id, path, station_id, retries, file_unique_id
+            sub_id, tenant_id, video_filename, video_blob, station_id, retries, file_unique_id
         )
 
         # Do not skip by Redis dedupe key here: the bot sets dedupe on enqueue.
@@ -441,56 +443,24 @@ def record_inference_latency(sub_id: int, model: str, latency: float):
         logger.warning("Could not record latency: %s", e)
 
 
-def cleanup_processed_media(sub_id: int, video_path: Optional[str]) -> None:
-    """
-    Delete processed media from local storage and clear the stored path so the
-    platform does not retain uploaded videos after successful analysis.
-    """
-    if not video_path:
-        return
-
-    with suppress(Exception):
-        path = Path(video_path)
-        if path.exists():
-            path.unlink()
-
-    try:
-        with closing(_get_connection()) as conn:
-            cur = conn.cursor()
-            cur.execute(
-                """
-                UPDATE submissions
-                SET video_path = NULL,
-                    audio_path = NULL
-                WHERE id = %s
-                """,
-                (sub_id,),
-            )
-            conn.commit()
-    except Exception as e:
-        logger.warning("Could not clear stored media path for submission %s: %s", sub_id, e)
-
-
 def process_job(job: SubmissionJob):
     start = time.time()
     db_pid = "unknown"
 
-    # Help debug path issues by logging the absolute path being checked
-    if not os.path.exists(job.video_path):
-        abs_path = os.path.abspath(job.video_path)
+    if not job.video_blob:
         raise FileNotFoundError(
-            f"Video not found at: {job.video_path} (Resolved to: {abs_path})"
+            f"Submission {job.sub_id} has no database-backed video payload available for processing."
         )
 
     with tenant_context(TenantContext(tenant_id=job.tenant_id)):
-        result = parse_station_video(job.video_path)
+        with materialize_submission_video(job.video_blob, job.video_filename) as processing_video_path:
+            result = parse_station_video(processing_video_path)
         latency = time.time() - start
 
         mark_done(job.sub_id, result)
         record_inference_latency(
             job.sub_id, result.get("_model_used", "unknown"), latency
         )
-        cleanup_processed_media(job.sub_id, job.video_path)
 
         try:
             with closing(_get_connection()) as conn:

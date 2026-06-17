@@ -16,6 +16,8 @@ import streamlit as st
 from dotenv import load_dotenv
 from core.auth import hash_password as hash_password_bcrypt
 from core.activity_logger import log_activity
+from core.tenant_context import require_current_tenant_context
+from core.runtime_config import configured_app_login_url
 
 logger = logging.getLogger("gentstation.comm_service")
 
@@ -24,7 +26,7 @@ load_dotenv()
 
 
 def _login_url() -> str:
-    return os.getenv("APP_LOGIN_URL", "https://genstationai.onrender.com/")
+    return configured_app_login_url()
 
 
 def _bot_handle() -> str:
@@ -33,7 +35,7 @@ def _bot_handle() -> str:
 
 def _smtp_settings():
     return (
-        os.getenv("SMTP_SERVER", "smtp.gmail.com"),
+        os.getenv("SMTP_SERVER") or os.getenv("SMTP_HOST", "smtp.gmail.com"),
         int(os.getenv("SMTP_PORT", 587)),
         os.getenv("SMTP_USER"),
         os.getenv("SMTP_PASS"),
@@ -202,15 +204,16 @@ def send_submission_result_telegram(
         logger.debug("Telegram bot token missing. Completion notification skipped.")
         return False
 
+    tenant_id = require_current_tenant_context().tenant_id
     row = conn.execute(
         """
         SELECT u.telegram_chat_id, COALESCE(s.name, 'Unknown Station') AS station_name
         FROM submissions sub
         JOIN users u ON sub.employee_id = u.id
         LEFT JOIN stations s ON sub.station_id = s.id
-        WHERE sub.id = %s
+        WHERE sub.id = %s AND sub.tenant_id = %s
         """,
-        (submission_id,),
+        (submission_id, tenant_id),
     ).fetchone()
     if not row or not row[0]:
         logger.debug(
@@ -274,18 +277,21 @@ def send_submission_result_telegram(
     return False
 
 
-def send_activation_email(conn, user_id: int, reset_password: bool = False):
+def send_activation_email(
+    conn, user_id: int, reset_password: bool = False, tenant_id: Optional[int] = None
+):
     """
     Sends a full activation email with account details and Telegram bot activation link.
     If reset_password=True, generates a fresh temporary password and stores its hash.
     """
+    tenant_id = int(tenant_id) if tenant_id is not None else require_current_tenant_context().tenant_id
     user_row = conn.execute(
         """
         SELECT id, username, email, role, is_active, station_id, region_id, name, surname
         FROM users
-        WHERE id = %s
+        WHERE id = %s AND tenant_id = %s
         """,
-        (user_id,),
+        (user_id, tenant_id),
     ).fetchone()
     if not user_row:
         return False, "User not found."
@@ -307,7 +313,10 @@ def send_activation_email(conn, user_id: int, reset_password: bool = False):
 
     smtp_server, smtp_port, sender_email, sender_password = _smtp_settings()
     bot_handle = _bot_handle()
-    login_url = _login_url()
+    try:
+        login_url = _login_url()
+    except RuntimeError as exc:
+        return False, str(exc)
 
     if not sender_email or not sender_password:
         return False, "SMTP credentials missing in .env."
@@ -317,8 +326,8 @@ def send_activation_email(conn, user_id: int, reset_password: bool = False):
         alphabet = string.ascii_letters + string.digits
         temp_password = "".join(secrets.choice(alphabet) for _ in range(10))
         conn.execute(
-            "UPDATE users SET password_hash = %s, updated_at = NOW() WHERE id = %s",
-            (hash_password_bcrypt(temp_password), uid),
+            "UPDATE users SET password_hash = %s, updated_at = NOW() WHERE tenant_id = %s AND id = %s",
+            (hash_password_bcrypt(temp_password), tenant_id, uid),
         )
         conn.commit()
 
@@ -367,11 +376,19 @@ def send_activation_email(conn, user_id: int, reset_password: bool = False):
             server.starttls()
             server.login(sender_email, sender_password)
             server.send_message(msg)
-        log_activity(
-            conn,
-            "SEND_ACTIVATION_EMAIL",
-            f"Activation email sent to user_id={uid}, email={email}, reset_password={reset_password}",
-        )
+        try:
+            log_activity(
+                conn,
+                "SEND_ACTIVATION_EMAIL",
+                f"Activation email sent to user_id={uid}, email={email}, reset_password={reset_password}",
+                tenant_id=tenant_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Activation email audit logging failed for user_id=%s: %s",
+                uid,
+                exc,
+            )
         return True, f"Activation email sent to {email}."
     except Exception as e:
         return False, f"Failed to send email: {e}"
@@ -677,12 +694,12 @@ def send_station_qr_email(
 
 def send_password_reset_email(conn, email: str):
     """
-    Finds a user by email, generates a new password, updates the DB, and sends it.
-    Checks both users and employees tables to ensure they stay in sync.
+    Finds a user by email, generates a new temporary password, updates the DB,
+    and emails it to the user.
     """
     if not email:
         st.error("Please enter an email address.")
-        return
+        return False, "Please enter an email address."
 
     email = email.strip()
 
@@ -694,12 +711,17 @@ def send_password_reset_email(conn, email: str):
 
     # 1. Verify user exists (Case-insensitive)
     user_row = conn.execute(
-        "SELECT id, username, role FROM users WHERE LOWER(email) = LOWER(%s)", (email,)
+        """
+        SELECT id, username, role, tenant_id, password_hash, force_password_change, lifecycle_state
+        FROM users
+        WHERE LOWER(email) = LOWER(%s)
+        """,
+        (email,),
     ).fetchone()
 
     if not user_row:
         st.error("No account found with that email address.")
-        return
+        return False, "No account found with that email address."
 
     # 1.5 Rate Limit Check (Prevent abuse)
     # Check if a reset was requested for this email in the last 15 minutes
@@ -714,56 +736,74 @@ def send_password_reset_email(conn, email: str):
         st.error(
             "A password reset was already requested recently. Please check your email or wait 15 minutes."
         )
-        return
+        return False, "A password reset was already requested recently."
 
-    user_id, username, role = user_row
+    (
+        user_id,
+        username,
+        role,
+        tenant_id,
+        old_password_hash,
+        old_force_password_change,
+        old_lifecycle_state,
+    ) = user_row
 
-    # 2. Generate new password
+    # 2. Validate email delivery configuration before changing credentials.
+    SMTP_SERVER, SMTP_PORT, SENDER_EMAIL, SENDER_PASSWORD = _smtp_settings()
+
+    if not SENDER_EMAIL or not SENDER_PASSWORD:
+        st.error("SMTP service not configured. Cannot send reset email.")
+        return False, "SMTP service not configured. Cannot send reset email."
+
+    try:
+        login_url = _login_url()
+    except RuntimeError as exc:
+        st.error(str(exc))
+        return False, str(exc)
+
+    # 3. Generate new password
     import string
 
     alphabet = string.ascii_letters + string.digits
     new_pw = "".join(secrets.choice(alphabet) for _ in range(10))
 
-    # 3. Hash and update databases
+    # 4. Hash and update databases
     try:
         # Update users table (bcrypt)
         new_bcrypt_hash = hash_password_bcrypt(new_pw)
         conn.execute(
-            "UPDATE users SET password_hash = %s, force_password_change = TRUE WHERE id = %s",
-            (new_bcrypt_hash, user_id),
+            """
+            UPDATE users
+            SET password_hash = %s, force_password_change = TRUE, lifecycle_state = 'password_reset_required'
+            WHERE tenant_id = %s AND id = %s
+            """,
+            (new_bcrypt_hash, tenant_id, user_id),
         )
 
         conn.commit()
     except Exception as e:
         st.error(f"Database error during password reset: {e}")
-        return
-
-    # 4. Send the email
-    SMTP_SERVER, SMTP_PORT, SENDER_EMAIL, SENDER_PASSWORD = _smtp_settings()
-
-    if not SENDER_EMAIL or not SENDER_PASSWORD:
-        st.error("SMTP service not configured. Cannot send reset email.")
-        return
+        return False, f"Database error during password reset: {e}"
 
     msg = MIMEMultipart("related")
     msg["From"] = f"GentStation System <{SENDER_EMAIL}>"
     msg["To"] = email
-    msg["Subject"] = "Your Password Has Been Reset"
+    msg["Subject"] = "Your Temporary Password for GentStationAI"
 
     html_body = f"""
     <html>
         <body style="font-family: Arial, sans-serif; color: #333;">
             <div style="text-align: center; padding: 20px;">
                 <img src="cid:company_logo" alt="GentStation Logo" width="150" style="margin-bottom: 10px;">
-                <h2 style="color: #2c3e50;">Password Reset</h2>
+                <h2 style="color: #2c3e50;">Temporary Password Request</h2>
             </div>
             <p>Hello <strong>{username}</strong>,</p>
-            <p>A password reset was requested for your account.</p>
+            <p>A temporary password was requested for your account.</p>
 
             <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0;">
-                <p><strong>Login URL:</strong> <a href="{_login_url()}">{_login_url()}</a></p>
+                <p><strong>Login URL:</strong> <a href="{login_url}">{login_url}</a></p>
                 <p><strong>Username:</strong> {email}</p>
-                <p><strong>New Temporary Password:</strong> <code style="background: #e0e0e0; padding: 4px 8px; border-radius: 4px; font-size: 1.1em;">{new_pw}</code></p>
+                <p><strong>Temporary Password:</strong> <code style="background: #e0e0e0; padding: 4px 8px; border-radius: 4px; font-size: 1.1em;">{new_pw}</code></p>
             </div>
 
             """
@@ -800,12 +840,50 @@ def send_password_reset_email(conn, email: str):
             server.starttls()
             server.login(SENDER_EMAIL, SENDER_PASSWORD)
             server.send_message(msg)
-        log_activity(conn, "RESET_REQUEST", f"Password reset email sent to {email}")
-        st.success(
-            "Password reset successful. Please check your email for a new temporary password."
-        )
     except Exception as e:
-        st.error(f"Failed to send reset email: {e}")
+        try:
+            conn.execute(
+                """
+                UPDATE users
+                SET password_hash = %s, force_password_change = %s, lifecycle_state = %s
+                WHERE tenant_id = %s AND id = %s
+                """,
+                (
+                    old_password_hash,
+                    old_force_password_change,
+                    old_lifecycle_state,
+                    tenant_id,
+                    user_id,
+                ),
+            )
+            conn.commit()
+        except Exception as rollback_exc:
+            logger.error(
+                "Failed to restore password after reset email failure for user_id=%s: %s",
+                user_id,
+                rollback_exc,
+            )
+        st.error(f"Failed to send temporary password email: {e}")
+        return False, f"Failed to send temporary password email: {e}"
+
+    try:
+        log_activity(
+            conn,
+            "RESET_REQUEST",
+            f"Temporary password email sent to {email}",
+            tenant_id=tenant_id,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Password reset audit logging failed for user_id=%s: %s",
+            user_id,
+            exc,
+        )
+
+    st.success(
+        "Temporary password sent. Please check your email and sign in with it before changing your password."
+    )
+    return True, "Temporary password email sent."
 
 
 def test_smtp_connection(on_retry=None) -> bool:

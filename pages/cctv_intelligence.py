@@ -1,10 +1,11 @@
 import streamlit as st
 
+from core.subscription import FEATURE_CCTV_INTELLIGENCE, require_feature
 from ui.header import render_page_header
 
 
 def render(conn):
-    del conn
+    require_feature(conn, FEATURE_CCTV_INTELLIGENCE)
     render_page_header("🎥 CCTV Intelligence")
     st.markdown(
         '<div class="gs-page-intro">This Tier 2 workspace is reserved for CCTV-specific intelligence flows, camera-aware worker pipelines, and future multi-camera analytics.</div>',

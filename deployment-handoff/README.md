@@ -1,6 +1,10 @@
 # GentStationAI Deployment Handoff
 
-This folder contains deployment notes for GentStationAI, with the dedicated Ubuntu single-VM Docker Compose path as the production default.
+This folder contains deployment notes for GentStationAI.
+
+The dedicated Ubuntu production bundle in `deploy/` is now the canonical
+production path. The older VM handoff materials in `deployment-handoff/vm/`
+remain as legacy/reference notes.
 
 The application is a containerized Python/Streamlit platform with supporting worker processes and stateful services.
 
@@ -10,6 +14,7 @@ Primary target:
 - Docker Engine + Docker Compose plugin
 - separate `web`, `ai-worker`, `telegram-worker`, and `report-scheduler` services
 - PostgreSQL, Redis, reverse proxy, backups, and optional local Ollama
+- `deploy/docker-compose.prod.yml` as the production entry point
 
 Read the documents in this order:
 
@@ -43,5 +48,6 @@ High-level deployment summary:
 - Deploy background workers as separate containerized services.
 - Use PostgreSQL and Redis alongside the app services.
 - Keep secrets outside git and fill them only on the target host.
+- Prefer the `deploy/` production bundle for new deployments.
 
 Use `vm/README.md` and `09-vm-deployment.md` first. AWS-oriented notes remain for historical context, but they are no longer the default production path for this repository.

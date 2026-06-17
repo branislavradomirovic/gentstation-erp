@@ -13,6 +13,8 @@ from core.report_scope import (
     get_region_manager_options,
     get_general_manager_options,
 )
+from core.tenant_context import current_tenant_id
+from core.user_admin import set_user_lifecycle_state, update_user_profile
 from ui.header import render_page_header
 
 # Import the communication service logic
@@ -31,16 +33,17 @@ def generate_temp_password(n: int = 10) -> str:
 
 def render(conn):
     render_page_header("👥 Employees")
+    tenant_id = current_tenant_id()
     st.markdown(
         '<div class="gs-page-intro">Manage reporting users, Telegram linkage, and account access from one tabbed workspace.</div>',
         unsafe_allow_html=True,
     )
 
     # --- PRE-FETCH DATA FOR DROPDOWNS ---
-    stations_df = pd.read_sql_query("SELECT id, name FROM stations ORDER BY name", conn)
+    stations_df = pd.read_sql_query("SELECT id, name FROM stations WHERE tenant_id = %s ORDER BY name", conn, params=(tenant_id,))
     station_options = [(row["name"], row["id"]) for _, row in stations_df.iterrows()]
 
-    regions_df = pd.read_sql_query("SELECT id, name FROM regions ORDER BY name", conn)
+    regions_df = pd.read_sql_query("SELECT id, name FROM regions WHERE tenant_id = %s ORDER BY name", conn, params=(tenant_id,))
     region_options = [(row["name"], row["id"]) for _, row in regions_df.iterrows()]
 
     role_options = ["Employee", "Gas Station Manager", "Region Manager", "General Manager"]
@@ -61,7 +64,7 @@ def render(conn):
         LEFT JOIN stations s ON u.station_id = s.id
         LEFT JOIN regions r ON u.region_id = r.id
         LEFT JOIN regions rs ON s.region_id = rs.id
-        WHERE 1=1
+        WHERE u.tenant_id = %s
     """
     df = pd.DataFrame()
 
@@ -144,7 +147,7 @@ def render(conn):
                 name_regex = r"^[a-zA-Z\s\-\']+$"
                 clean_first = (first or "").strip()
                 clean_email = (email or "").strip()
-                
+
                 if not clean_first or not re.match(name_regex, clean_first):
                     st.error("A valid first name is required (letters, spaces, hyphens only).")
                 elif not re.match(email_regex, clean_email):
@@ -175,6 +178,7 @@ def render(conn):
                             station_id=assign_station_id,
                             region_id=assign_region_id,
                             manager_user_id=assign_manager_user_id,
+                            tenant_id=tenant_id,
                         )
                         new_id = user_data["id"]
 
@@ -232,7 +236,7 @@ def render(conn):
             )
 
         dir_query_filtered = directory_query
-        dir_params_filtered = []
+        dir_params_filtered = [tenant_id]
         if sel_region_filter != "All":
             rid_filter = next(
                 (opt[1] for opt in region_options if opt[0] == sel_region_filter), None
@@ -308,7 +312,7 @@ def render(conn):
             format_func=lambda x: f"ID {x}: {df[df['id'] == x]['fullname'].values[0]}",
         )
         rec = pd.read_sql_query(
-            "SELECT * FROM users WHERE id = %s", conn, params=(sel,)
+            "SELECT * FROM users WHERE tenant_id = %s AND id = %s", conn, params=(tenant_id, sel)
         ).iloc[0]
 
         tab_edit, tab_security, tab_activity = st.tabs(
@@ -416,7 +420,7 @@ def render(conn):
                     name_regex = r"^[a-zA-Z\s\-\']+$"
                     clean_e_name = (e_name or "").strip()
                     clean_e_email = (e_email or "").strip()
-                    
+
                     if not clean_e_name or not re.match(name_regex, clean_e_name):
                         st.error("A valid first name is required (letters, spaces, hyphens only).")
                     elif not re.match(email_regex, clean_e_email):
@@ -433,28 +437,23 @@ def render(conn):
                         st.error("A reporting manager MUST be selected for this role.")
                     else:
                         try:
-                            if e_role in ["Employee", "Gas Station Manager"]:
-                                region_row = conn.execute(
-                                    "SELECT region_id FROM stations WHERE id = %s",
-                                    (e_station_id,),
-                                ).fetchone()
-                                if not region_row or region_row[0] is None:
-                                    st.error("Selected station must belong to a region.")
-                                    st.stop()
-                                final_station_id = e_station_id
-                                final_region_id = region_row[0]
-                            elif e_role == "Region Manager":
-                                final_station_id = None
-                                final_region_id = e_region_id
-                            else:
-                                final_station_id = None
-                                final_region_id = None
-
-                            conn.execute(
-                                "UPDATE users SET name=%s, surname=%s, email=%s, role=%s, station_id=%s, region_id=%s, manager_user_id=%s, username=%s WHERE id=%s",
-                                (clean_e_name or None, (e_surname or "").strip() or None, clean_e_email, e_role, final_station_id, final_region_id, e_manager_user_id, clean_e_email, sel),
+                            update_user_profile(
+                                conn,
+                                tenant_id=tenant_id,
+                                user_id=sel,
+                                email=clean_e_email,
+                                role=e_role,
+                                first_name=clean_e_name or None,
+                                surname=(e_surname or "").strip() or None,
+                                station_id=e_station_id,
+                                region_id=e_region_id,
+                                manager_user_id=e_manager_user_id,
                             )
-                            conn.commit()
+                            log_activity(
+                                conn,
+                                "USER_ASSIGNMENT_UPDATE",
+                                f"Updated user {sel} role={e_role} station_id={e_station_id} region_id={e_region_id} manager_user_id={e_manager_user_id}",
+                            )
                             st.success("Changes saved successfully.")
                             st.rerun()
                         except Exception as e:
@@ -470,7 +469,7 @@ def render(conn):
                 c_del_1, c_del_2 = st.columns(2)
                 if c_del_1.button("✅ Yes, Delete Permanently", key=f"real_del_{sel}", type="primary", use_container_width=True):
                     try:
-                        conn.execute("DELETE FROM users WHERE id = %s", (sel,))
+                        conn.execute("DELETE FROM users WHERE tenant_id = %s AND id = %s", (tenant_id, sel))
                         conn.commit()
                         log_activity(conn, "DELETE_EMPLOYEE", f"Deleted ID {sel}")
                         st.session_state.pop(f"confirm_delete_{sel}", None)
@@ -489,7 +488,7 @@ def render(conn):
                 help="Used to link the employee to the Telegram reporting bot."
             )
             if st.button("Update Telegram ID", key=f"btn_update_tg_{sel}", use_container_width=True):
-                conn.execute("UPDATE users SET telegram_chat_id = %s WHERE id = %s", (e_tg.strip() if e_tg.strip() else None, sel))
+                conn.execute("UPDATE users SET telegram_chat_id = %s WHERE tenant_id = %s AND id = %s", (e_tg.strip() if e_tg.strip() else None, tenant_id, sel))
                 conn.commit()
                 st.success("Telegram Chat ID updated.")
                 st.rerun()
@@ -500,8 +499,14 @@ def render(conn):
                 try:
                     new_pw = generate_temp_password()
                     new_bcrypt = hash_password_bcrypt(new_pw)
-                    conn.execute("UPDATE users SET password_hash = %s WHERE id = %s", (new_bcrypt, sel))
+                    conn.execute("UPDATE users SET password_hash = %s WHERE tenant_id = %s AND id = %s", (new_bcrypt, tenant_id, sel))
                     conn.commit()
+                    set_user_lifecycle_state(
+                        conn,
+                        tenant_id=tenant_id,
+                        user_id=sel,
+                        lifecycle_state="password_reset_required",
+                    )
 
                     user_info = {
                         "id": sel,
@@ -511,6 +516,7 @@ def render(conn):
                         "password_plain": new_pw,
                     }
                     send_welcome_comms(user_info)
+                    log_activity(conn, "USER_REINVITE", f"Resent welcome invite for user {sel}")
                     st.success(f"Invite resent. New Temp PW: **{new_pw}**")
                 except Exception as e:
                     st.error(f"Error resending credentials: {e}")
@@ -520,8 +526,8 @@ def render(conn):
 
             st.markdown("#### 🤖 Last 5 AI Submissions")
             subs_df = pd.read_sql_query(
-                "SELECT timestamp as \"Date\", (data_json->>'safety_score') as \"Safety\", processed FROM submissions WHERE employee_id = %s ORDER BY timestamp DESC LIMIT 5",
-                conn, params=(sel,)
+                "SELECT timestamp as \"Date\", (data_json->>'safety_score') as \"Safety\", processed FROM submissions WHERE tenant_id = %s AND employee_id = %s ORDER BY timestamp DESC LIMIT 5",
+                conn, params=(tenant_id, sel)
             )
             if subs_df.empty:
                 st.info("No submission history found.")

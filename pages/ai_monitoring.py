@@ -532,7 +532,12 @@ def render(conn):
             return "Error"
 
     pending_row = conn.execute(
-        "SELECT COUNT(*) FROM submissions WHERE processed = 0 AND video_path IS NOT NULL"
+        """
+        SELECT COUNT(*)
+        FROM submissions
+        WHERE processed = 0
+          AND video_blob IS NOT NULL
+        """
     ).fetchone()
     failed_row = conn.execute(
         "SELECT COUNT(*) FROM submissions WHERE processed = -1"

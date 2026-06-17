@@ -1,6 +1,10 @@
 # gentstation_opus/core/activity_logger.py
 import streamlit as st
 import logging
+from typing import Optional
+
+from core.observability import structured_log
+from core.tenant_context import require_current_tenant_context
 
 logger = logging.getLogger("gentstation.activity_logger")
 
@@ -37,15 +41,29 @@ def get_client_ip():
     return None
 
 
-def log_activity(conn, action, details):
-    user = st.session_state.get("username", "System")  # Use username from session state
+def log_activity(conn, action, details, tenant_id: Optional[int] = None):
+    user = st.session_state.get("username", "System")
     ip = get_client_ip()
 
+    # Resolve tenant_id for logging
+    if tenant_id is None:
+        current_context = require_current_tenant_context()
+        tenant_id = -1 if current_context.platform_access else current_context.tenant_id
+
+    # Structured logging for production observability (Stdout/Log Aggregators)
+    structured_log(
+        "activity_log",
+        tenant_id=tenant_id,
+        user=user,
+        action=action,
+        ip=ip,
+        details=details,
+    )
+
     try:
-        # Attempt insert with ip_address column
         conn.execute(
-            "INSERT INTO activity_logs (user_name, action, details, ip_address) VALUES (%s, %s, %s, %s)",
-            (user, action, details, ip),
+            "INSERT INTO activity_logs (tenant_id, user_name, action, details, ip_address) VALUES (%s, %s, %s, %s, %s)",
+            (tenant_id, user, action, details, ip),
         )
         conn.commit()
     except Exception:

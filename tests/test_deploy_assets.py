@@ -22,6 +22,8 @@ def test_prod_compose_separates_web_and_workers() -> None:
     assert 'AUTO_START_TELEGRAM_BOT: "0"' in compose_text
     assert 'AUTO_START_AI_WORKER: "0"' in compose_text
     assert 'AUTO_START_REPORT_SCHEDULER: "0"' in compose_text
+    assert "cctv-worker:" not in compose_text
+    assert "env_file: ./env/.env.production" in compose_text
 
 
 def test_prod_compose_uses_healthcheck_scripts() -> None:
@@ -29,6 +31,14 @@ def test_prod_compose_uses_healthcheck_scripts() -> None:
 
     assert "deploy/scripts/healthcheck_web.sh" in compose_text
     assert "deploy/scripts/healthcheck_worker.sh" in compose_text
+    assert "caddy:2.8-alpine" in compose_text
+
+
+def test_prod_deploy_script_uses_env_file() -> None:
+    deploy_script = (REPO_ROOT / "deploy/scripts/deploy.sh").read_text()
+
+    assert "--env-file" in deploy_script
+    assert "deploy/env/.env.production" in deploy_script
 
 
 def test_production_env_example_stays_sanitized() -> None:

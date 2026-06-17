@@ -31,6 +31,9 @@ TENANT_TABLES = (
     "ai_alerts",
     "ai_inference_latency",
     "scheduled_reports",
+    "report_schedules",
+    "report_subscriptions",
+    "report_delivery_attempts",
     "ai_jobs",
     "ai_reports",
 )

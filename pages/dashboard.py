@@ -3,7 +3,11 @@ import pandas as pd
 import folium
 from streamlit_folium import st_folium
 from ui.header import render_page_header
+from core.cctv_reports import get_cctv_summary_for_scope
 from core.database import fetch_df, get_schema_readiness
+from core.database import get_session
+from core.subscription import FEATURE_CCTV_INTELLIGENCE, is_feature_enabled
+from core.tenant_context import current_tenant_id
 from ai_engine.risk_engine import run_risk_cycle
 
 
@@ -94,6 +98,29 @@ def render(conn):
 
     st.divider()
 
+    try:
+        if is_feature_enabled(conn, FEATURE_CCTV_INTELLIGENCE):
+            with get_session() as session:
+                cctv_summary = get_cctv_summary_for_scope(
+                    session,
+                    current_tenant_id(),
+                    scope_type="company",
+                    scope_id=None,
+                    conn=conn,
+                )
+            st.subheader("CCTV Intelligence Snapshot")
+            cctv_metric_1, cctv_metric_2, cctv_metric_3, cctv_metric_4 = st.columns(4)
+            average_metrics = cctv_summary.get("average_metrics", {})
+            event_summary = cctv_summary.get("event_summary", {})
+            cctv_metric_1.metric("CCTV Risk", average_metrics.get("overall_risk_score", 0))
+            cctv_metric_2.metric("Safety", average_metrics.get("safety_score", 0))
+            cctv_metric_3.metric("Review Events", event_summary.get("review_required_events", 0))
+            cctv_metric_4.metric("Open CCTV Events", event_summary.get("open_events", 0))
+            st.caption("Tier 2 CCTV metrics appear only when CCTV Intelligence is enabled for the active tenant.")
+            st.divider()
+    except Exception:
+        conn.rollback()
+
     # --- 2. REGIONAL STATUS TABLE (Existing Dashboard Element) ---
     st.subheader("Regional Status")
     try:
@@ -171,9 +198,9 @@ def render(conn):
         else:
             try:
                 query_stations = """
-                    SELECT s.id, s.name, sc.name as category, sc.color, sc.description, s.physical_address, s.lat, s.lon 
-                    FROM stations s 
-                    LEFT JOIN station_categories sc ON s.category_id = sc.id 
+                    SELECT s.id, s.name, sc.name as category, sc.color, sc.description, s.physical_address, s.lat, s.lon
+                    FROM stations s
+                    LEFT JOIN station_categories sc ON s.category_id = sc.id
                     WHERE s.lat IS NOT NULL
                 """
                 df_stats = fetch_df(conn, query_stations)
@@ -189,7 +216,7 @@ def render(conn):
                         cat_color = s["color"] or "#808080"
                         cat_desc = s["description"] or ""
                         tooltip_text = f"{s['name']} ({s['category']})" + (f" - {cat_desc}" if cat_desc else "")
-                        
+
                         # Custom HTML Marker
                         marker_html = f'''
                             <div style="
@@ -205,9 +232,9 @@ def render(conn):
                                 box-shadow: 0 0 5px rgba(0,0,0,0.3);
                             ">
                                 <div style="
-                                    width: 6px; 
-                                    height: 6px; 
-                                    background: white; 
+                                    width: 6px;
+                                    height: 6px;
+                                    background: white;
                                     border-radius: 50%;
                                     transform: rotate(45deg);
                                 "></div>

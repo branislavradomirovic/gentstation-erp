@@ -1,25 +1,49 @@
-name: gentstationai_prod
+name: gentstationai-prod
+
+x-prod-env: &prod-env
+  APP_ENV: production
+  AUTO_START_BACKGROUND_WORKERS: "0"
+  AUTO_START_TELEGRAM_BOT: "0"
+  AUTO_START_AI_WORKER: "0"
+  AUTO_START_REPORT_SCHEDULER: "0"
+  RUN_SCHEMA_MIGRATIONS_ON_STARTUP: "1"
+  STRICT_SCHEMA_INIT: "1"
+  SKIP_SCHEMA_INIT: "1"
+  PYTHONUNBUFFERED: "1"
+  OMP_NUM_THREADS: ${OMP_NUM_THREADS:-1}
+  OPENBLAS_NUM_THREADS: ${OPENBLAS_NUM_THREADS:-1}
+  MKL_NUM_THREADS: ${MKL_NUM_THREADS:-1}
+  NUMEXPR_NUM_THREADS: ${NUMEXPR_NUM_THREADS:-1}
 
 services:
   postgres:
     image: postgres:15-alpine
+    restart: unless-stopped
+    env_file: ./env/.env.production
     environment:
-      POSTGRES_DB: ${DB_NAME}
-      POSTGRES_USER: ${DB_USER}
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME:-gentstation}
+      POSTGRES_USER: ${DB_USER:-gentstation_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-change_me_vm_password}
       POSTGRES_INITDB_ARGS: "--encoding=UTF8"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ../init_db.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 10s
       timeout: 5s
       retries: 10
-    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "${POSTGRES_CPU_LIMIT:-1.50}"
+          memory: ${POSTGRES_MEMORY_LIMIT:-1536M}
+        reservations:
+          memory: ${POSTGRES_MEMORY_RESERVATION:-512M}
 
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
+    env_file: ./env/.env.production
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
       - redis_data:/data
@@ -28,193 +52,195 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
-    restart: unless-stopped
-
-  schema-init:
-    build:
-      context: ..
-      dockerfile: Dockerfile
-    env_file:
-      - ./env/.env.production
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      DB_HOST: postgres
-      DB_PORT: 5432
-      RUN_SCHEMA_MIGRATIONS_ON_STARTUP: "1"
-      STRICT_SCHEMA_INIT: "1"
-      SKIP_SCHEMA_INIT: "0"
-    command: ["python", "scripts/init_schema.py"]
-    restart: "no"
-
-  ollama:
-    profiles: ["ollama"]
-    image: ollama/ollama:latest
-    environment:
-      OLLAMA_HOST: 0.0.0.0:11434
-    volumes:
-      - ollama_data:/root/.ollama
-    healthcheck:
-      test: ["CMD", "ollama", "list"]
-      interval: 15s
-      timeout: 10s
-      retries: 20
-      start_period: 20s
-    restart: unless-stopped
-
-  ollama-pull:
-    profiles: ["ollama"]
-    image: ollama/ollama:latest
-    env_file:
-      - ./env/.env.production
-    depends_on:
-      ollama:
-        condition: service_healthy
-    environment:
-      OLLAMA_HOST: ollama:11434
-    command:
-      - /bin/sh
-      - -c
-      - |
-        ollama pull "$OLLAMA_MODEL"
-        if [ "$OLLAMA_VISION_MODEL" != "$OLLAMA_MODEL" ]; then
-          ollama pull "$OLLAMA_VISION_MODEL"
-        fi
-    restart: "no"
+    deploy:
+      resources:
+        limits:
+          cpus: "${REDIS_CPU_LIMIT:-0.50}"
+          memory: ${REDIS_MEMORY_LIMIT:-512M}
+        reservations:
+          memory: ${REDIS_MEMORY_RESERVATION:-128M}
 
   web:
     build:
       context: ..
       dockerfile: Dockerfile
-    env_file:
-      - ./env/.env.production
+    restart: unless-stopped
+    env_file: ./env/.env.production
+    environment:
+      <<: *prod-env
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: ${DB_NAME:-gentstation}
+      DB_USER: ${DB_USER:-gentstation_user}
+      DB_PASSWORD: ${DB_PASSWORD:-change_me_vm_password}
+      REDIS_URL: redis://redis:6379/0
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-bakllava:latest}
+      OLLAMA_VISION_MODEL: ${OLLAMA_VISION_MODEL:-bakllava:latest}
+      OLLAMA_LOCAL_ONLY: ${OLLAMA_LOCAL_ONLY:-0}
+      APP_LOGIN_URL: ${APP_LOGIN_URL:-https://gentstation.example.com}
+      STREAMLIT_SERVER_PORT: "8501"
+      STREAMLIT_SERVER_ADDRESS: 0.0.0.0
+      STREAMLIT_BROWSER_GATHERUSAGESTATS: "false"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-      schema-init:
-        condition: service_completed_successfully
-    environment:
-      DB_HOST: postgres
-      DB_PORT: 5432
-      REDIS_URL: redis://redis:6379/0
-      AUTO_START_BACKGROUND_WORKERS: "0"
-      AUTO_START_TELEGRAM_BOT: "0"
-      AUTO_START_AI_WORKER: "0"
-      AUTO_START_REPORT_SCHEDULER: "0"
-      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+    ports:
+      - "${APP_PORT:-8501}:8501"
     volumes:
-      - uploads_data:/home/user/app/uploads
-      - downloads_data:/home/user/app/downloads
+      - ../reports:/home/user/app/reports
     healthcheck:
-      test: ["CMD-SHELL", "sh /home/user/app/deploy/scripts/healthcheck_web.sh"]
+      test: ["CMD", "sh", "deploy/scripts/healthcheck_web.sh"]
       interval: 30s
       timeout: 10s
-      retries: 3
       start_period: 60s
-    restart: unless-stopped
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "${WEB_CPU_LIMIT:-1.00}"
+          memory: ${WEB_MEMORY_LIMIT:-1024M}
+        reservations:
+          memory: ${WEB_MEMORY_RESERVATION:-512M}
 
   ai-worker:
     build:
       context: ..
       dockerfile: Dockerfile
-    env_file:
-      - ./env/.env.production
+    restart: unless-stopped
+    env_file: ./env/.env.production
+    environment:
+      <<: *prod-env
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: ${DB_NAME:-gentstation}
+      DB_USER: ${DB_USER:-gentstation_user}
+      DB_PASSWORD: ${DB_PASSWORD:-change_me_vm_password}
+      REDIS_URL: redis://redis:6379/0
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-bakllava:latest}
+      OLLAMA_VISION_MODEL: ${OLLAMA_VISION_MODEL:-bakllava:latest}
+      OLLAMA_LOCAL_ONLY: ${OLLAMA_LOCAL_ONLY:-0}
+      VIDEO_FRAME_SAMPLES: ${VIDEO_FRAME_SAMPLES:-6}
+      VIDEO_MAX_FRAME_DIMENSION: ${VIDEO_MAX_FRAME_DIMENSION:-768}
+      AI_WORKER_POLL_INTERVAL_SECONDS: ${AI_WORKER_POLL_INTERVAL_SECONDS:-15}
+      AI_WORKER_EMPTY_BACKOFF_MAX_SECONDS: ${AI_WORKER_EMPTY_BACKOFF_MAX_SECONDS:-90}
+      AI_WORKER_MAX_RETRIES: ${AI_WORKER_MAX_RETRIES:-3}
+      AI_WORKER_MEMORY_LIMIT_MB: ${AI_WORKER_MEMORY_LIMIT_MB:-2048}
+      AI_WORKER_STUCK_TIMEOUT_SECONDS: ${AI_WORKER_STUCK_TIMEOUT_SECONDS:-900}
+      WORKER_HEALTHCHECK_TARGET: ai-worker
+      AI_WORKER_LOCK_FILE: /tmp/gentstationai_ai_worker.lock
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-      schema-init:
-        condition: service_completed_successfully
-    environment:
-      DB_HOST: postgres
-      DB_PORT: 5432
-      REDIS_URL: redis://redis:6379/0
-      SKIP_SCHEMA_INIT: "1"
-      WORKER_HEALTHCHECK_TARGET: ai-worker
-      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
-    volumes:
-      - uploads_data:/home/user/app/uploads
-      - downloads_data:/home/user/app/downloads
+      web:
+        condition: service_healthy
     command: ["python", "-m", "core.ai_worker"]
     healthcheck:
-      test: ["CMD-SHELL", "sh /home/user/app/deploy/scripts/healthcheck_worker.sh"]
+      test: ["CMD", "sh", "deploy/scripts/healthcheck_worker.sh"]
       interval: 30s
       timeout: 10s
-      retries: 3
-      start_period: 45s
-    restart: unless-stopped
+      start_period: 60s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "${AI_WORKER_CPU_LIMIT:-2.00}"
+          memory: ${AI_WORKER_CONTAINER_MEMORY_LIMIT:-3072M}
+        reservations:
+          memory: ${AI_WORKER_CONTAINER_MEMORY_RESERVATION:-1024M}
 
   telegram-worker:
     build:
       context: ..
       dockerfile: Dockerfile
-    env_file:
-      - ./env/.env.production
+    restart: unless-stopped
+    env_file: ./env/.env.production
+    environment:
+      <<: *prod-env
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: ${DB_NAME:-gentstation}
+      DB_USER: ${DB_USER:-gentstation_user}
+      DB_PASSWORD: ${DB_PASSWORD:-change_me_vm_password}
+      REDIS_URL: redis://redis:6379/0
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-replace_if_telegram_enabled}
+      TELEGRAM_BOT_URL: ${TELEGRAM_BOT_URL:-https://t.me/your_bot_username}
+      TELEGRAM_BOT_HANDLE: ${TELEGRAM_BOT_HANDLE:-your_bot_username}
+      WORKER_HEALTHCHECK_TARGET: telegram-worker
+      BOT_WORKER_LOCK_FILE: /tmp/gentstationai_bot_worker.lock
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-      schema-init:
-        condition: service_completed_successfully
-    environment:
-      DB_HOST: postgres
-      DB_PORT: 5432
-      REDIS_URL: redis://redis:6379/0
-      SKIP_SCHEMA_INIT: "1"
-      BOT_MODE: ${BOT_MODE:-bot}
-      WORKER_HEALTHCHECK_TARGET: telegram-worker
-    volumes:
-      - uploads_data:/home/user/app/uploads
-      - downloads_data:/home/user/app/downloads
+      web:
+        condition: service_healthy
     command: ["python", "-m", "core.bot_worker"]
     healthcheck:
-      test: ["CMD-SHELL", "sh /home/user/app/deploy/scripts/healthcheck_worker.sh"]
+      test: ["CMD", "sh", "deploy/scripts/healthcheck_worker.sh"]
       interval: 30s
       timeout: 10s
-      retries: 3
-      start_period: 45s
-    restart: unless-stopped
+      start_period: 60s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "${TELEGRAM_WORKER_CPU_LIMIT:-0.75}"
+          memory: ${TELEGRAM_WORKER_MEMORY_LIMIT:-768M}
+        reservations:
+          memory: ${TELEGRAM_WORKER_MEMORY_RESERVATION:-256M}
 
   report-scheduler:
     build:
       context: ..
       dockerfile: Dockerfile
-    env_file:
-      - ./env/.env.production
+    restart: unless-stopped
+    env_file: ./env/.env.production
+    environment:
+      <<: *prod-env
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: ${DB_NAME:-gentstation}
+      DB_USER: ${DB_USER:-gentstation_user}
+      DB_PASSWORD: ${DB_PASSWORD:-change_me_vm_password}
+      REDIS_URL: redis://redis:6379/0
+      REPORT_SCHEDULER_POLL_INTERVAL_SECONDS: ${REPORT_SCHEDULER_POLL_INTERVAL_SECONDS:-60}
+      WORKER_HEALTHCHECK_TARGET: report-scheduler
+      REPORT_SCHEDULER_LOCK_FILE: /tmp/gentstationai_report_scheduler.lock
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-      schema-init:
-        condition: service_completed_successfully
-    environment:
-      DB_HOST: postgres
-      DB_PORT: 5432
-      REDIS_URL: redis://redis:6379/0
-      SKIP_SCHEMA_INIT: "1"
-      WORKER_HEALTHCHECK_TARGET: report-scheduler
-    volumes:
-      - uploads_data:/home/user/app/uploads
-      - downloads_data:/home/user/app/downloads
+      web:
+        condition: service_healthy
     command: ["python", "-m", "core.report_scheduler"]
+    volumes:
+      - ../reports:/home/user/app/reports
     healthcheck:
-      test: ["CMD-SHELL", "sh /home/user/app/deploy/scripts/healthcheck_worker.sh"]
+      test: ["CMD", "sh", "deploy/scripts/healthcheck_worker.sh"]
       interval: 30s
       timeout: 10s
-      retries: 3
-      start_period: 45s
-    restart: unless-stopped
+      start_period: 60s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "${REPORT_SCHEDULER_CPU_LIMIT:-0.75}"
+          memory: ${REPORT_SCHEDULER_MEMORY_LIMIT:-768M}
+        reservations:
+          memory: ${REPORT_SCHEDULER_MEMORY_RESERVATION:-256M}
 
   reverse-proxy:
-    image: caddy:2-alpine
-    env_file:
-      - ./env/.env.production
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    env_file: ./env/.env.production
+    command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
     depends_on:
       web:
         condition: service_healthy
@@ -225,13 +251,36 @@ services:
       - ./reverse-proxy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
+    deploy:
+      resources:
+        limits:
+          cpus: "${REVERSE_PROXY_CPU_LIMIT:-0.50}"
+          memory: ${REVERSE_PROXY_MEMORY_LIMIT:-512M}
+        reservations:
+          memory: ${REVERSE_PROXY_MEMORY_RESERVATION:-128M}
+
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["ollama"]
     restart: unless-stopped
+    env_file: ./env/.env.production
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    deploy:
+      resources:
+        limits:
+          cpus: "${OLLAMA_CPU_LIMIT:-4.00}"
+          memory: ${OLLAMA_MEMORY_LIMIT:-6144M}
+        reservations:
+          memory: ${OLLAMA_MEMORY_RESERVATION:-2048M}
 
 volumes:
   postgres_data:
   redis_data:
-  uploads_data:
-  downloads_data:
-  ollama_data:
   caddy_data:
   caddy_config:
+  ollama_data:

@@ -5,9 +5,12 @@ from functools import lru_cache
 
 from dotenv import load_dotenv
 
+from core.deployment_config import PRODUCTION_ENV_VALUES
+
 
 TRUE_VALUES = {"1", "true", "yes", "on"}
-PRODUCTION_ENVS = {"production", "prod"}
+STRICT_CANONICAL_URL_ENVS = {"production", "prod", "preprod", "staging"}
+LOCAL_APP_LOGIN_URL = "http://localhost:8501/"
 
 
 def env_bool(name: str, default: str = "0") -> bool:
@@ -18,11 +21,30 @@ def app_env() -> str:
     return os.getenv("APP_ENV", "").strip().lower()
 
 
+def configured_app_login_url() -> str:
+    """Resolve the canonical login URL for emails and external user links."""
+    candidate = (
+        os.getenv("APP_LOGIN_URL", "").strip()
+        or os.getenv("APP_BASE_URL", "").strip()
+    )
+    if candidate:
+        return candidate if candidate.endswith("/") else f"{candidate}/"
+
+    current_env = app_env()
+    if current_env in STRICT_CANONICAL_URL_ENVS or is_production_env():
+        raise RuntimeError(
+            "APP_LOGIN_URL or APP_BASE_URL must be configured for staging, "
+            "pre-production, or production environments."
+        )
+
+    return LOCAL_APP_LOGIN_URL
+
+
 def is_production_env() -> bool:
     render_flag = os.getenv("RENDER", "").strip().lower()
     render_service = os.getenv("RENDER_SERVICE_ID", "").strip()
     return (
-        app_env() in PRODUCTION_ENVS
+        app_env() in PRODUCTION_ENV_VALUES
         or render_flag in TRUE_VALUES
         or bool(render_service)
     )

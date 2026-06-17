@@ -9,14 +9,14 @@ Use this checklist before sending the package to the external deployment team.
 - `deployment-handoff/` folder
 - repository URL or source bundle
 - exact release tag or commit SHA
-- deployment target decision: single VM
+- deployment target decision: Ubuntu production bundle in `deploy/`
 - the real production `.env` values or equivalent secure secrets handoff
 - PostgreSQL dump if the team must recreate current data
 
 If delivering by repository URL only, also provide separately:
 
-- `deployment-handoff/vm/.env.vm.example` if the team should use the packaged VM template
-- `deployment-handoff/vm/.env.production.example`
+- `deploy/env/.env.production.example`
+- `deployment-handoff/vm/.env.vm.example` if the team needs the legacy VM template
 
 ## Secrets and credentials to provide securely
 
@@ -58,7 +58,7 @@ If delivering by repository URL only, also provide separately:
 
 The owner should explicitly tell the team:
 
-- this deployment should use the single-VM Docker Compose path
+- this deployment should use `deploy/docker-compose.prod.yml`
 - the goal is to recreate the current environment as closely as possible
 - whether the supplied PostgreSQL dump is the authoritative production dataset
 - which URL/domain should be used publicly

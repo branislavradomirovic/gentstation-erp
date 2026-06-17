@@ -6,8 +6,11 @@ from typing import Optional, Tuple, Dict, Any
 
 from core.database import get_connection
 from core.activity_logger import log_activity
+from core.tenant_context import get_current_tenant_context, require_current_tenant_context
+from core.tenant_context import TenantContext
 from core.session import create_session_token, destroy_session_token
 from core.subscription import RESOURCE_EMPLOYEES, require_usage_capacity
+from core.user_admin import validate_user_assignment
 
 # Configuration
 SESSION_TTL_HOURS = 8
@@ -42,56 +45,44 @@ def create_user(
     station_id: Optional[int] = None,
     region_id: Optional[int] = None,
     manager_user_id: Optional[int] = None,
+    tenant_id: Optional[int] = None, # New parameter
+    phone: Optional[str] = None,
+    telegram_chat_id: Optional[str] = None,
+    lifecycle_state: str = "invited",
 ) -> Dict[str, Any]:
     """Create new user in users table. Returns user row dict."""
-    station_scoped_roles = {
-        "Employee",
-        "Gas Station Supervisor",
-        "Gas Station Manager",
-    }
-    if role in station_scoped_roles:
-        if not station_id:
-            raise ValueError(f"{role} requires station assignment.")
-        with get_connection() as c2:
-            station_row = c2.execute(
-                "SELECT region_id FROM stations WHERE id = %s", (station_id,)
-            ).fetchone()
-        if not station_row or station_row[0] is None:
-            raise ValueError("Assigned station must exist and belong to a region.")
-        region_id = station_row[0]
-    elif role == "Region Manager":
-        if not region_id:
-            raise ValueError("Region Manager requires region assignment.")
-        station_id = None
-    else:
-        station_id = None if station_id is None else station_id
+    # Resolve tenant_id
+    if tenant_id is None:
+        current_context = require_current_tenant_context()
+        tenant_id = current_context.tenant_id
+        if tenant_id is None:
+            raise ValueError("Tenant ID is required to create a user.")
+    tenant_context = TenantContext(tenant_id=int(tenant_id))
 
-    if role == "General Manager":
-        manager_user_id = None
-    elif role == "Region Manager":
-        if not manager_user_id:
-            raise ValueError("Region Manager requires assignment to a General Manager.")
-    elif role == "Gas Station Manager":
-        if not manager_user_id:
-            raise ValueError("Gas Station Manager requires assignment to a Region Manager.")
-    elif role == "Employee":
-        if not manager_user_id:
-            raise ValueError("Employee requires assignment to a Gas Station Manager.")
-
-    with get_connection() as conn:
-        require_usage_capacity(conn, RESOURCE_EMPLOYEES)
+    with get_connection(platform_access=(get_current_tenant_context() is None)) as conn:
+        require_usage_capacity(conn, RESOURCE_EMPLOYEES, tenant_context=tenant_context)
+        normalized_assignment = validate_user_assignment(
+            conn,
+            tenant_id=int(tenant_id),
+            role=role,
+            station_id=station_id,
+            region_id=region_id,
+            manager_user_id=manager_user_id,
+        )
         cur = conn.cursor()
         pw_hash = hash_password(password)
         cur.execute(
             """
             INSERT INTO users (
-                username, email, password_hash, role, is_active, created_at,
-                force_password_change, name, surname, station_id, region_id, manager_user_id
+                tenant_id, username, email, password_hash, role, is_active, created_at,
+                force_password_change, name, surname, station_id, region_id, manager_user_id,
+                phone, telegram_chat_id, lifecycle_state
             )
-            VALUES (%s, %s, %s, %s, TRUE, %s, TRUE, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, TRUE, %s, TRUE, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
         """,
             (
+                tenant_id,
                 username,
                 email,
                 pw_hash,
@@ -99,23 +90,30 @@ def create_user(
                 datetime.utcnow().isoformat(),
                 (name or "").strip() or None,
                 (surname or "").strip() or None,
-                station_id,
-                region_id,
-                manager_user_id,
+                normalized_assignment["station_id"],
+                normalized_assignment["region_id"],
+                normalized_assignment["manager_user_id"],
+                (phone or "").strip() or None,
+                (telegram_chat_id or "").strip() or None,
+                lifecycle_state,
             ),
         )
         uid = cur.fetchone()[0]
         conn.commit()
         return {
             "id": uid,
+            "tenant_id": tenant_id, # Include tenant_id in the returned dict
             "username": username,
             "email": email,
             "role": role,
             "name": (name or "").strip() or None,
             "surname": (surname or "").strip() or None,
-            "station_id": station_id,
-            "region_id": region_id,
-            "manager_user_id": manager_user_id,
+            "station_id": normalized_assignment["station_id"],
+            "region_id": normalized_assignment["region_id"],
+            "manager_user_id": normalized_assignment["manager_user_id"],
+            "phone": (phone or "").strip() or None,
+            "telegram_chat_id": (telegram_chat_id or "").strip() or None,
+            "lifecycle_state": lifecycle_state,
         }
 
 

@@ -63,6 +63,40 @@ def test_has_access_hides_feature_gated_pages_without_connection() -> None:
     ) is True
 
 
+def test_platform_admin_page_requires_platform_superadmin_username() -> None:
+    context = TenantContext(tenant_id=1, role="General Manager", username="gm-user")
+
+    assert has_access(
+        "Platform Admin",
+        "General Manager",
+        "gm-user",
+        tenant_context=context,
+    ) is False
+    assert has_access(
+        "Platform Admin",
+        "General Manager",
+        "admin",
+        tenant_context=context,
+    ) is True
+
+
+def test_platform_health_page_requires_platform_superadmin_username() -> None:
+    context = TenantContext(tenant_id=1, role="General Manager", username="gm-user")
+
+    assert has_access(
+        "Platform Health",
+        "General Manager",
+        "gm-user",
+        tenant_context=context,
+    ) is False
+    assert has_access(
+        "Platform Health",
+        "General Manager",
+        "admin",
+        tenant_context=context,
+    ) is True
+
+
 def test_has_access_blocks_cctv_page_for_tier_1() -> None:
     context = TenantContext(tenant_id=1, role="General Manager", username="gm-user")
     conn = FakeConn(

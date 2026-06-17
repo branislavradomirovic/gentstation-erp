@@ -45,6 +45,12 @@ def start_background_workers():
     Ensure background processes (Telegram Bot, AI Worker) are running.
     Uses lock-file PID checks to avoid duplicate launches across reruns.
     """
+    if is_production_env():
+        logger.info(
+            "Embedded worker startup is disabled in production. Use dedicated worker services."
+        )
+        return
+
     project_root = Path(__file__).resolve().parent
 
     # Worker Registry for robust management
@@ -71,6 +77,14 @@ def start_background_workers():
             "lock": Path("/tmp/gentstationai_report_scheduler.lock"),
             "log": Path("/tmp/gentstation_report_scheduler.log"),
             "enabled_env": "AUTO_START_REPORT_SCHEDULER",
+            "requires_env": [],
+        },
+        {
+            "name": "CCTV Worker",
+            "script": project_root / "core" / "cctv_worker.py",
+            "lock": Path("/tmp/gentstationai_cctv_worker.lock"),
+            "log": Path("/tmp/gentstation_cctv.log"),
+            "enabled_env": "AUTO_START_CCTV_WORKER",
             "requires_env": [],
         },
     ]
@@ -183,12 +197,6 @@ def start_background_workers():
             return (time.time() - float(ts)) > stale_after_seconds
         except Exception:
             return True
-
-    if not should_spawn_embedded_workers():
-        logger.info(
-            "Embedded worker startup is disabled in production. Use dedicated worker services."
-        )
-        return
 
     default_worker_start = os.getenv("AUTO_START_BACKGROUND_WORKERS_DEFAULT", "0")
     global_worker_start = env_bool(
@@ -768,7 +776,7 @@ if st.session_state.get("dark_mode"):
     )
 
 # Core imports
-from core.database import Base
+from core.models import Base
 from sqlalchemy.orm import configure_mappers
 try:
     # Import models package to register classes in the SQLAlchemy registry
@@ -817,11 +825,18 @@ import pages.admin_users as admin_users
 import pages.ai_reports as ai_reports
 import pages.ai_alerts as ai_alerts
 import pages.ai_monitoring as ai_monitoring
+import pages.cctv_cameras as cctv_cameras
+import pages.review_center as review_center
 import pages.cctv_intelligence as cctv_intelligence
+import pages.benchmarking as benchmarking
+import pages.integrations as integrations
 import pages.audit_log as audit_log
 import pages.admin_data_import as admin_data_import
+import pages.platform_admin as platform_admin
+import pages.platform_health as platform_health
 import pages.tenant_plan as tenant_plan
 import pages.settings as settings
+import ui.landing as landing_page
 import pages.help as page_help
 
 # UI imports
@@ -1107,7 +1122,14 @@ def run_boot_sequence():
     scheduler_status_row = _conn.execute(
         "SELECT value FROM system_settings WHERE key='report_scheduler_status'"
     ).fetchone()
-    if scheduler_status_row and scheduler_status_row[0]:
+    if not report_scheduler_enabled:
+        report_scheduler_status_display.info(
+            "ℹ️ Report Scheduler: **Disabled for this session**"
+        )
+        boot_summary.append(
+            {"label": "Report Scheduler", "state": "offline", "detail": "Disabled"}
+        )
+    elif scheduler_status_row and scheduler_status_row[0]:
         try:
             status_info = json.loads(scheduler_status_row[0])
             scheduler_state = status_info.get("status", "Offline")
@@ -1120,6 +1142,17 @@ def run_boot_sequence():
                         "label": "Report Scheduler",
                         "state": "ready" if scheduler_state in {"running", "idle"} else "starting",
                         "detail": scheduler_state.title(),
+                    }
+                )
+            elif scheduler_state == "error":
+                report_scheduler_status_display.warning(
+                    "⚠️ Report Scheduler: **Error**"
+                )
+                boot_summary.append(
+                    {
+                        "label": "Report Scheduler",
+                        "state": "warning",
+                        "detail": str(status_info.get("details") or "Error"),
                     }
                 )
             else:
@@ -1141,20 +1174,12 @@ def run_boot_sequence():
                 {"label": "Report Scheduler", "state": "warning", "detail": "Status unknown"}
             )
     else:
-        if report_scheduler_enabled:
-            report_scheduler_status_display.info(
-                "⏳ Report Scheduler: **Starting**"
-            )
-            boot_summary.append(
-                {"label": "Report Scheduler", "state": "starting", "detail": "Launching"}
-            )
-        else:
-            report_scheduler_status_display.warning(
-                "⚠️ Report Scheduler: **Offline** (No status record)"
-            )
-            boot_summary.append(
-                {"label": "Report Scheduler", "state": "offline", "detail": "Disabled"}
-            )
+        report_scheduler_status_display.info(
+            "⏳ Report Scheduler: **Starting**"
+        )
+        boot_summary.append(
+            {"label": "Report Scheduler", "state": "starting", "detail": "Launching"}
+        )
 
     # Brief visual confirmation before proceeding
     if "boot_complete" not in st.session_state:
@@ -1166,390 +1191,193 @@ def run_boot_sequence():
 
 
 def ensure_runtime_dirs():
-    """Create local runtime directories when they are missing."""
-    for name in ("uploads", "downloads"):
-        Path(name).mkdir(parents=True, exist_ok=True)
-conn = None
-try:
-    ensure_runtime_dirs()
-    clear_current_tenant_context()
-    # If we are starting fresh, show the boot sequence.
-    # Once booted or logged in, we bypass the sequence for snappier navigation.
-    if "user_id" not in st.session_state and "boot_complete" not in st.session_state:
-        conn = run_boot_sequence()
-    else:
-        conn = get_connection()
-        # Ensure workers are checked if we skipped boot sequence (e.g. page refresh)
-        if should_spawn_embedded_workers():
-            start_background_workers()
+    """Runtime artifacts are stored in Postgres; no local persistence dirs are created."""
 
-    # --- 3. SESSION PERSISTENCE ---
-    def restore_session():
-        """Checks for an existing session token to keep the user logged in."""
-        token = st.session_state.get("session_token")
-        if token and "user_id" not in st.session_state:
-            session_payload = validate_session_token(token)
-            if session_payload:
-                uid = session_payload["user_id"]
-                tenant_id = session_payload["tenant_id"]
-                scoped_context = TenantContext(tenant_id=tenant_id, user_id=uid)
-                # Fetch all user-related data from the single users table
-                with tenant_context(scoped_context):
-                    with get_connection() as scoped_conn:
-                        row = scoped_conn.execute(
-                            "SELECT id, tenant_id, username, email, role, dark_mode_enabled, name, surname, station_id, region_id, telegram_chat_id, force_password_change FROM users WHERE id = %s",
-                            (uid,),
-                        ).fetchone()
-                if row:
-                    st.session_state["user_id"] = row[0]
-                    st.session_state["tenant_id"] = row[1]
-                    st.session_state["username"] = row[2]
-                    st.session_state["email"] = row[3]
-                    st.session_state["user_role"] = row[4]
-                    st.session_state["dark_mode"] = bool(row[5])
-                    st.session_state["name"] = row[6]
-                    st.session_state["surname"] = row[7]
-                    st.session_state["user_name_full"] = f"{row[6]} {row[7]}".strip()
-                    st.session_state["user_station_id"] = row[8]
-                    st.session_state["user_region_id"] = row[9]
-                    st.session_state["user_telegram_chat_id"] = row[10]
-                    st.session_state["force_password_change"] = bool(row[11])
-                else:
-                    if "session_token" in st.session_state:
+def get_page_registry():
+    """Returns a mapping of page IDs to their respective render functions."""
+    return {
+        "Dashboard": dashboard.render,
+        "Regions": regions.render,
+        "Stations": stations.render,
+        "Map View": map_view.render,
+        "Employees": employees.render,
+        "AI Reports": ai_reports.render,
+        "AI Alerts": ai_alerts.render,
+        "AI Monitoring": ai_monitoring.render,
+        "Review Center": review_center.render,
+        "CCTV Intelligence": cctv_intelligence.render,
+        "Camera Registry": cctv_cameras.render,
+        "Benchmarking": benchmarking.render,
+        "Integrations": integrations.render,
+        "Audit Log": audit_log.render,
+        "Data Import": admin_data_import.render,
+        "Admin Users": admin_users.render,
+        "Platform Admin": platform_admin.render,
+        "Platform Health": platform_health.render,
+        "Tenant Plan": tenant_plan.render,
+        "Settings": settings.render,
+        "Help": page_help.render,
+    }
+
+
+def main():
+    conn = None
+    try:
+        ensure_runtime_dirs()
+        clear_current_tenant_context()
+        launch_app = str(st.query_params.get("launch_app", "0")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+
+        if "user_id" not in st.session_state and not launch_app:
+            landing_page.render_public_site()
+            st.stop()
+
+        # If the user explicitly launched the application, show the boot sequence first.
+        if "user_id" not in st.session_state and "boot_complete" not in st.session_state:
+            conn = run_boot_sequence()
+        else:
+            conn = get_connection()
+            if should_spawn_embedded_workers():
+                start_background_workers()
+
+        def restore_session():
+            """Checks for an existing session token to keep the user logged in."""
+            token = st.session_state.get("session_token")
+            if token and "user_id" not in st.session_state:
+                session_payload = validate_session_token(token)
+                if session_payload:
+                    uid = session_payload["user_id"]
+                    tenant_id = session_payload["tenant_id"]
+                    scoped_context = TenantContext(tenant_id=tenant_id, user_id=uid)
+                    with tenant_context(scoped_context):
+                        with get_connection() as scoped_conn:
+                            row = scoped_conn.execute(
+                                "SELECT id, tenant_id, username, email, role, dark_mode_enabled, name, surname, station_id, region_id, telegram_chat_id, force_password_change FROM users WHERE id = %s",
+                                (uid,),
+                            ).fetchone()
+                    if row:
+                        st.session_state["user_id"] = row[0]
+                        st.session_state["tenant_id"] = row[1]
+                        st.session_state["username"] = row[2]
+                        st.session_state["email"] = row[3]
+                        st.session_state["user_role"] = row[4]
+                        st.session_state["dark_mode"] = bool(row[5])
+                        st.session_state["name"] = row[6]
+                        st.session_state["surname"] = row[7]
+                        st.session_state["user_name_full"] = f"{row[6]} {row[7]}".strip()
+                        st.session_state["user_station_id"] = row[8]
+                        st.session_state["user_region_id"] = row[9]
+                        st.session_state["user_telegram_chat_id"] = row[10]
+                        st.session_state["force_password_change"] = bool(row[11])
+                    elif "session_token" in st.session_state:
                         del st.session_state["session_token"]
 
-    if "session_token" in st.session_state:
-        restore_session()
+        if "session_token" in st.session_state:
+            restore_session()
 
-    current_tenant_context = None
-    if "user_id" in st.session_state and st.session_state.get("tenant_id"):
-        current_tenant_context = TenantContext(
-            tenant_id=int(st.session_state["tenant_id"]),
-            user_id=st.session_state.get("user_id"),
-            role=st.session_state.get("user_role"),
-            username=st.session_state.get("username"),
-            station_id=st.session_state.get("user_station_id"),
-            region_id=st.session_state.get("user_region_id"),
-        )
-
-    # --- 4. LOGIN INTERFACE ---
-    if "user_id" not in st.session_state:
-        st.markdown(
-            """
-            <style>
-                [data-testid="stAppViewContainer"] .main .block-container {
-                    padding-top: 0.25rem !important;
-                    padding-bottom: 1.5rem !important;
-                    max-width: 1120px !important;
-                }
-            </style>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        left_col, right_col = st.columns([1.45, 0.85], gap="large", vertical_alignment="top")
-        with left_col:
-            st.markdown('<div class="landing-panel landing-brand-panel">', unsafe_allow_html=True)
-            logo_path = Path("assets/GSAI_Horizontal.png")
-            if not logo_path.exists():
-                logo_path = Path("assets/OpusLogo.png")
-            if logo_path.exists():
-                st.image(str(logo_path), width=250)
-            st.markdown(
-                """
-                <div class="landing-hero">
-                    <div class="landing-kicker">Production-ready Multi-Tenant Platform</div>
-                    <h1 class="landing-title">Operational AI for modern fuel retail networks.</h1>
-                    <p class="landing-subtitle">
-                        GentStationAI gives gas-station companies one secure workspace for daily operations, AI-driven reporting,
-                        and an upgrade path to CCTV intelligence without exposing one tenant's data to another.
-                    </p>
-                    <div class="landing-hero-actions">
-                        <a class="landing-button primary" href="#login-access">Login to Workspace</a>
-                        <a class="landing-button secondary" href="#pilot-cta">Start a Pilot</a>
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-            st.markdown(
-                """
-                <div class="landing-stat-strip">
-                    <div class="landing-stat">
-                        <div class="landing-stat-value">1 Platform</div>
-                        <div class="landing-stat-label">Shared codebase, isolated tenant operations, and dedicated production services.</div>
-                    </div>
-                    <div class="landing-stat">
-                        <div class="landing-stat-value">2 Tiers</div>
-                        <div class="landing-stat-label">AI Daily Operations for rollout speed and CCTV Intelligence for advanced sites.</div>
-                    </div>
-                    <div class="landing-stat">
-                        <div class="landing-stat-value">24/7 Flow</div>
-                        <div class="landing-stat-label">Web, workers, scheduler, Redis, Postgres, and reverse proxy as separate services.</div>
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-            st.markdown(
-                """
-                <div class="landing-section">
-                    <h2 class="landing-section-title">The problem</h2>
-                    <p class="landing-section-copy">
-                        Fuel retail teams juggle fragmented station reporting, delayed issue visibility, and manual follow-up across
-                        regions, managers, and field staff. Valuable operational evidence often arrives too late to prevent risk or
-                        coach teams consistently.
-                    </p>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-            st.markdown(
-                """
-                <div class="landing-section">
-                    <h2 class="landing-section-title">Three solution pillars</h2>
-                    <div class="landing-card-grid">
-                        <div class="landing-card">
-                            <div class="landing-card-eyebrow">Pillar 1</div>
-                            <div class="landing-card-title">Daily operational visibility</div>
-                            <p class="landing-card-copy">Bring station submissions, management review, AI scoring, alerts, and follow-up into one operating rhythm.</p>
-                        </div>
-                        <div class="landing-card">
-                            <div class="landing-card-eyebrow">Pillar 2</div>
-                            <div class="landing-card-title">Tenant-safe scale</div>
-                            <p class="landing-card-copy">Run multiple gas-station companies on one platform with tenant isolation, scoped access, and centralized plan controls.</p>
-                        </div>
-                        <div class="landing-card">
-                            <div class="landing-card-eyebrow">Pillar 3</div>
-                            <div class="landing-card-title">Upgrade path to CCTV intelligence</div>
-                            <p class="landing-card-copy">Start with Tier 1 operations today and unlock Tier 2 CCTV workflows only for companies and sites that need them.</p>
-                        </div>
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-            st.markdown(
-                """
-                <div class="landing-section">
-                    <h2 class="landing-section-title">Tier comparison</h2>
-                    <div class="landing-tier-grid">
-                        <div class="landing-tier-card">
-                            <div class="landing-tier-label">Tier 1</div>
-                            <div class="landing-tier-title">AI Daily Operations</div>
-                            <p class="landing-tier-copy">A focused rollout for operational reporting, alerts, summaries, and manager decision support.</p>
-                            <ul class="landing-tier-list">
-                                <li>Telegram-based station intake</li>
-                                <li>AI reports, alerts, and scheduler workflows</li>
-                                <li>Regional and station oversight dashboards</li>
-                                <li>Fast onboarding for pilot networks</li>
-                            </ul>
-                        </div>
-                        <div class="landing-tier-card featured">
-                            <div class="landing-tier-label">Tier 2</div>
-                            <div class="landing-tier-title">CCTV Intelligence</div>
-                            <p class="landing-tier-copy">Adds camera-aware intelligence workflows for operators ready to extend beyond daily submission review.</p>
-                            <ul class="landing-tier-list">
-                                <li>Everything in Tier 1</li>
-                                <li>Tier-gated CCTV routes and future worker pipelines</li>
-                                <li>Camera capacity controls by tenant plan</li>
-                                <li>Designed for advanced site monitoring programs</li>
-                            </ul>
-                        </div>
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-            st.markdown(
-                """
-                <div class="landing-section">
-                    <h2 class="landing-section-title">Benefits for pilot rollouts</h2>
-                    <div class="landing-benefits">
-                        <div class="landing-benefit">
-                            <strong>Faster intervention</strong>
-                            Surface operational risks sooner so managers can coach, escalate, and close loops while the context is still fresh.
-                        </div>
-                        <div class="landing-benefit">
-                            <strong>Cleaner regional oversight</strong>
-                            Give regional leaders a single source of truth instead of scattered messages, spreadsheets, and one-off follow-ups.
-                        </div>
-                        <div class="landing-benefit">
-                            <strong>Lower rollout friction</strong>
-                            Start with the daily-operations tier and expand only where the network proves value.
-                        </div>
-                        <div class="landing-benefit">
-                            <strong>Production deployment path</strong>
-                            Move from pilot to dedicated Ubuntu server deployment with Compose, Postgres, Redis, workers, proxy, and backups.
-                        </div>
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-            st.markdown(
-                """
-                <div class="landing-section" id="pilot-cta">
-                    <div class="landing-footnote">
-                        <p class="landing-footnote-title">Pilot CTA</p>
-                        <p class="landing-footnote-copy">
-                            Start with one tenant, one regional management flow, and a controlled Tier 1 rollout. Expand to more companies,
-                            more stations, and Tier 2 CCTV intelligence only after the operating model is proven.
-                        </p>
-                        <p class="landing-footnote-copy">
-                            Trust &amp; privacy: GentStationAI is designed around tenant isolation, role-based access, and production separation
-                            between web, workers, scheduler, database, cache, and reverse proxy services. No internal runtime health or debug
-                            details are exposed on this public page.
-                        </p>
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-            st.markdown("</div>", unsafe_allow_html=True)
-
-        with right_col:
-            st.markdown('<div id="login-access"></div>', unsafe_allow_html=True)
-            st.markdown('<div class="landing-panel login-form-panel">', unsafe_allow_html=True)
-            st.markdown(
-                """
-                <div class="login-form-header">
-                    <h2 class="login-form-title">Secure workspace login</h2>
-                    <p class="login-form-subtitle">
-                        Authorized tenant users can sign in here to access dashboards, reporting, subscription controls, and station operations.
-                    </p>
-                </div>
-                """,
-                unsafe_allow_html=True,
+        current_tenant_context = None
+        if "user_id" in st.session_state and st.session_state.get("tenant_id"):
+            current_tenant_context = TenantContext(
+                tenant_id=int(st.session_state["tenant_id"]),
+                user_id=st.session_state.get("user_id"),
+                role=st.session_state.get("user_role"),
+                username=st.session_state.get("username"),
+                station_id=st.session_state.get("user_station_id"),
+                region_id=st.session_state.get("user_region_id"),
             )
 
-            with st.form("login_form"):
-                cred = st.text_input("Username or Email")
-                pw = st.text_input("Password", type="password")
-                ack = st.checkbox("I acknowledge the AI usage disclaimer")
+        if "user_id" not in st.session_state:
+            landing_page.render_login_page()
+            st.stop()
 
-                submitted = st.form_submit_button("Login", width="stretch")
+        set_current_tenant_context(current_tenant_context)
+        selected_page = display_sidebar(conn, current_tenant_context)
 
-                if submitted:
-                    if not ack:
-                        st.error("You must acknowledge the disclaimer to log in.")
-                    else:
-                        ok, msg = login_user_streamlit(st, cred, pw)
-                        if ok:
-                            st.rerun()
-                        else:
-                            st.error(msg)
-
-            st.markdown(LOGIN_DISCLAIMER_HTML, unsafe_allow_html=True)
-            if st.button("Forgot Password?", type="secondary", use_container_width=True):
-                st.session_state["show_forgot_pw"] = True
-
-            if st.session_state.get("show_forgot_pw"):
-                with st.form("forgot_pw_form"):
-                    st.subheader("Reset Your Password")
-                    email_to_reset = st.text_input(
-                        "Enter your registered email address"
-                    )
-                    if st.form_submit_button("Send Reset Link", width="stretch"):
-                        if email_to_reset:
-                            with get_connection(platform_access=True) as platform_conn:
-                                send_password_reset_email(platform_conn, email_to_reset)
-                        else:
-                            st.error("Please enter an email address.")
-            st.markdown("</div>", unsafe_allow_html=True)
-
-        st.stop()
-
-    # --- 5. AUTHENTICATED APP SHELL ---
-    set_current_tenant_context(current_tenant_context)
-    selected_page = display_sidebar(conn, current_tenant_context)
-
-    # --- 5.1 FORCE PASSWORD CHANGE OVERRIDE ---
-    if st.session_state.get("force_password_change"):
-        if selected_page != "Settings":
+        if st.session_state.get("force_password_change") and selected_page != "Settings":
             st.warning(
                 "🔒 **Security Requirement:** You must change your temporary password before accessing other features."
             )
             selected_page = "Settings"
 
-    # --- Maintenance Mode Banner ---
-    try:
-        m_row = conn.execute(
-            "SELECT value FROM system_settings WHERE key='maintenance_mode'"
-        ).fetchone()
-        if m_row and m_row[0] == "1":
-            st.warning(
-                "🚨 **MAINTENANCE MODE ACTIVE** - System access is restricted to General Managers. Some features may be unavailable.",
-                icon="⚠️",
-            )
-    except Exception:
-        pass
+        try:
+            m_row = conn.execute(
+                "SELECT value FROM system_settings WHERE key='maintenance_mode'"
+            ).fetchone()
+            if m_row and m_row[0] == "1":
+                st.warning(
+                    "🚨 **MAINTENANCE MODE ACTIVE** - System access is restricted to General Managers. Some features may be unavailable.",
+                    icon="⚠️",
+                )
+        except Exception:
+            pass
 
-    try:
-        schema_state = get_schema_readiness(conn)
-        if not schema_state["is_ready"]:
-            st.warning(
-                "Postgres schema is behind the current application code. Some pages are intentionally limited until migrations are applied."
-            )
-            for msg in schema_state["blockers"] + schema_state["warnings"]:
-                st.caption(msg)
-    except Exception as e:
-        logger.warning("Schema readiness check failed: %s", e)
+        try:
+            schema_state = get_schema_readiness(conn)
+            if not schema_state["is_ready"]:
+                st.warning(
+                    "Postgres schema is behind the current application code. Some pages are intentionally limited until migrations are applied."
+                )
+                for msg in schema_state["blockers"] + schema_state["warnings"]:
+                    st.caption(msg)
+        except Exception as e:
+            logger.warning("Schema readiness check failed: %s", e)
 
-    # Fallback
-    if not selected_page:
-        selected_page = "Dashboard"
+        if not selected_page:
+            selected_page = "Dashboard"
 
-    # --- 6. ROUTING LOGIC ---
-    def get_page_registry():
-        """Returns a mapping of page IDs to their respective render functions."""
-        return {
-            "Dashboard": dashboard.render,
-            "Regions": regions.render,
-            "Stations": stations.render,
-            "Map View": map_view.render,
-            "Employees": employees.render,  # Keep employees for now, will be removed if GM Dashboard is fully integrated
-            "AI Reports": ai_reports.render,
-            "AI Alerts": ai_alerts.render,
-            "AI Monitoring": ai_monitoring.render,
-            "CCTV Intelligence": cctv_intelligence.render,
-            "Audit Log": audit_log.render,
-            "Data Import": admin_data_import.render,
-            "Admin Users": admin_users.render,
-            "Tenant Plan": tenant_plan.render,
-            "Settings": settings.render,
-            "Help": page_help.render,
-        }
+        from core.subscription import FeatureGateError
 
-    try:
-        registry = get_page_registry()
-        user_role = st.session_state.get("user_role")
-        username = st.session_state.get("username")
+        try:
+            registry = get_page_registry()
+            user_role = st.session_state.get("user_role")
+            username = st.session_state.get("username")
 
-        if selected_page in registry:
-            require_page_access(
-                selected_page,
-                current_tenant_context,
-                user_role,
-                username,
-                conn=conn,
-            )
-            with tenant_context(current_tenant_context):
-                conn.close()
-                conn = get_connection()
-                registry[selected_page](conn)
-            st.divider()
+            if selected_page in registry:
+                require_page_access(
+                    selected_page,
+                    current_tenant_context,
+                    user_role,
+                    username,
+                    conn=conn,
+                )
+                with tenant_context(current_tenant_context):
+                    conn.close()
+                    conn = get_connection()
+                    registry[selected_page](conn)
+                st.divider()
+                st.markdown(
+                    f"<div style='text-align: center; opacity: 0.7;'>{FOOTER_DISCLAIMER_TEXT}</div>",
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.error(f"Page '{selected_page}' not found.")
+        except FeatureGateError as e:
             st.markdown(
-                f"<div style='text-align: center; opacity: 0.7;'>{FOOTER_DISCLAIMER_TEXT}</div>",
+                f"""
+                <div style="padding: 2.5rem; border-radius: 20px; background: rgba(11, 94, 215, 0.04); border: 1px solid rgba(11, 94, 215, 0.15); text-align: center; margin: 2rem auto; max-width: 800px;">
+                    <h2 style="color: #0b5ed7; margin-bottom: 1rem;">🎥 CCTV Intelligence Upgrade</h2>
+                    <p style="font-size: 1.15rem; color: #374151; line-height: 1.6;">{str(e)}</p>
+                    <p style="color: #6b7280; margin-bottom: 2rem;">Unlock advanced camera analytics, zone monitoring, and safety automation by upgrading to Tier 2.</p>
+                </div>
+                """,
                 unsafe_allow_html=True,
             )
-        else:
-            st.error(f"Page '{selected_page}' not found.")
-    except TenantContextError as e:
-        st.error(str(e))
-        st.stop()
-    except Exception as e:
-        st.error(f"Error loading page: {e}")
-finally:
-    if conn:
-        conn.close()
+            if st.button("🚀 View Plan & Upgrade Options", type="primary", use_container_width=True):
+                st.session_state.active_page = "Tenant Plan"
+                st.rerun()
+        except TenantContextError as e:
+            st.error(str(e))
+            st.stop()
+        except Exception as e:
+            st.error(f"Error loading page: {e}")
+    finally:
+        if conn:
+            conn.close()
+
+
+if __name__ == "__main__":
+    main()

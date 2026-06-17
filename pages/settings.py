@@ -4,13 +4,25 @@ import json
 import time
 import pandas as pd
 import requests
-from pathlib import Path
+from core.access_control import can_administer_reporting
 from core.activity_logger import log_activity
 from core.database import (
     test_redis_connection,
     DB_HOST,
     get_schema_readiness,
 )
+from core.report_admin import (
+    get_recipient_candidates,
+    get_schedule_user_overrides,
+    list_delivery_attempts,
+    list_report_schedules,
+    replace_schedule_user_overrides,
+    retry_failed_report_attempt,
+    send_test_report,
+    update_report_schedule,
+)
+from core.tenant_context import current_tenant_id
+from core.user_admin import mark_user_password_changed
 from core.video_processor import (
     test_ollama_connection,
     OLLAMA_BASE_URL,
@@ -239,10 +251,11 @@ def render(conn):
                     ).fetchone()
                     if row and verify_password(current_pw, row[0]):
                         conn.execute(
-                            "UPDATE users SET password_hash = %s, force_password_change = FALSE WHERE id = %s",
+                            "UPDATE users SET password_hash = %s WHERE id = %s",
                             (hash_password(new_pw), uid),
                         )
                         conn.commit()
+                        mark_user_password_changed(conn, tenant_id=current_tenant_id(), user_id=uid)
                         log_activity(conn, "PASSWORD_CHANGE", f"User {username} changed password")
                         st.success("Password updated successfully.")
                     else:
@@ -265,8 +278,8 @@ def render(conn):
 
     st.divider()
 
-    runtime_tab, categories_tab, retention_tab = st.tabs(
-        ["AI Runtime", "Station Categories", "Storage & Retention"]
+    runtime_tab, reporting_tab, categories_tab, retention_tab = st.tabs(
+        ["AI Runtime", "Reporting", "Station Categories", "Storage & Retention"]
     )
 
     with runtime_tab:
@@ -391,6 +404,245 @@ def render(conn):
             st.success("Runtime and operational settings updated.")
             time.sleep(0.8)
             st.rerun()
+
+    with reporting_tab:
+        st.markdown("#### Reporting Administration")
+        st.caption(
+            "Configure tenant report schedules, manage recipient overrides, run test sends, and review delivery attempts."
+        )
+        if not can_administer_reporting(user_role):
+            st.info("Reporting administration is available to General Manager users.")
+        else:
+            tenant_id = current_tenant_id()
+            schedules = list_report_schedules(conn, tenant_id)
+            if not schedules:
+                st.caption("No report schedules are available for this tenant yet.")
+            else:
+                selected_schedule_label = st.selectbox(
+                    "Schedule",
+                    options=[
+                        (schedule["schedule_id"], f"{schedule['name']} · {schedule['report_type']} · {schedule['scope_type']}")
+                        for schedule in schedules
+                    ],
+                    format_func=lambda item: item[1],
+                    key="report_schedule_selector",
+                )
+                selected_schedule_id = int(selected_schedule_label[0])
+                schedule = next(item for item in schedules if item["schedule_id"] == selected_schedule_id)
+
+                st.markdown("##### Schedule Configuration")
+                with st.form(f"report_schedule_form_{selected_schedule_id}"):
+                    c1, c2, c3 = st.columns(3)
+                    schedule_enabled = c1.toggle("Enabled", value=schedule["enabled"])
+                    send_time = c2.text_input("Send time", value=schedule["send_time"])
+                    timezone_name = c3.text_input("Timezone", value=schedule["timezone"])
+                    c4, c5, c6 = st.columns(3)
+                    weekly_day = c4.selectbox(
+                        "Weekly day",
+                        options=[None, 0, 1, 2, 3, 4, 5, 6],
+                        index=[None, 0, 1, 2, 3, 4, 5, 6].index(schedule["weekly_day"]) if schedule["weekly_day"] in [None, 0, 1, 2, 3, 4, 5, 6] else 0,
+                        format_func=lambda value: {
+                            None: "Not used",
+                            0: "Monday",
+                            1: "Tuesday",
+                            2: "Wednesday",
+                            3: "Thursday",
+                            4: "Friday",
+                            5: "Saturday",
+                            6: "Sunday",
+                        }[value],
+                    )
+                    monthly_day = c5.number_input(
+                        "Monthly day",
+                        min_value=1,
+                        max_value=31,
+                        value=int(schedule["monthly_day"] or 1),
+                    )
+                    use_last_day = c6.toggle("Use last day", value=schedule["use_last_day"])
+                    channels = st.multiselect(
+                        "Delivery channels",
+                        options=["email", "telegram"],
+                        default=schedule["channels"] or ["email"],
+                    )
+                    default_role_enabled = st.toggle(
+                        "Enable default role recipients",
+                        value=schedule["default_subscription_enabled"],
+                    )
+                    if st.form_submit_button("Save Schedule", type="primary", use_container_width=True):
+                        try:
+                            update_report_schedule(
+                                conn,
+                                tenant_id=tenant_id,
+                                schedule_id=selected_schedule_id,
+                                enabled=schedule_enabled,
+                                send_time=send_time,
+                                timezone=timezone_name,
+                                weekly_day=weekly_day,
+                                monthly_day=int(monthly_day),
+                                use_last_day=use_last_day,
+                                channels=channels or ["email"],
+                                default_subscription_enabled=default_role_enabled,
+                            )
+                            log_activity(
+                                conn,
+                                "REPORT_SCHEDULE_UPDATE",
+                                f"Updated report schedule {selected_schedule_id}: enabled={schedule_enabled}, send_time={send_time}, timezone={timezone_name}, channels={','.join(channels or ['email'])}",
+                            )
+                            st.success("Report schedule updated.")
+                            time.sleep(0.6)
+                            st.rerun()
+                        except Exception as e:
+                            conn.rollback()
+                            st.error(f"Failed to update report schedule: {e}")
+
+                st.markdown("##### Recipient Overrides")
+                overrides = get_schedule_user_overrides(conn, tenant_id, selected_schedule_id)
+                candidates = get_recipient_candidates(
+                    conn,
+                    tenant_id,
+                    recipient_role=schedule["default_recipient_role"],
+                )
+                override_ids = [item["user_id"] for item in overrides]
+                override_map = {
+                    item["user_id"]: f"{item['full_name']} ({item['role']})"
+                    for item in candidates
+                }
+                with st.form(f"report_override_form_{selected_schedule_id}"):
+                    selected_override_ids = st.multiselect(
+                        "Specific recipient overrides",
+                        options=[item["user_id"] for item in candidates],
+                        default=override_ids,
+                        format_func=lambda user_id: override_map.get(user_id, str(user_id)),
+                    )
+                    override_channels = st.multiselect(
+                        "Override channels",
+                        options=["email", "telegram"],
+                        default=schedule["channels"] or ["email"],
+                        key=f"override_channels_{selected_schedule_id}",
+                    )
+                    if st.form_submit_button("Save Recipient Overrides", use_container_width=True):
+                        try:
+                            replace_schedule_user_overrides(
+                                conn,
+                                tenant_id=tenant_id,
+                                schedule_id=selected_schedule_id,
+                                user_ids=[int(user_id) for user_id in selected_override_ids],
+                                channels=override_channels or ["email"],
+                            )
+                            log_activity(
+                                conn,
+                                "REPORT_SUBSCRIPTION_UPDATE",
+                                f"Updated recipient overrides for schedule {selected_schedule_id}: users={selected_override_ids}",
+                            )
+                            st.success("Recipient overrides updated.")
+                            time.sleep(0.6)
+                            st.rerun()
+                        except Exception as e:
+                            conn.rollback()
+                            st.error(f"Failed to update recipient overrides: {e}")
+
+                if overrides:
+                    st.dataframe(
+                        pd.DataFrame(
+                            [
+                                {
+                                    "Recipient": item["full_name"],
+                                    "Role": item["role"],
+                                    "Channels": ", ".join(item["channels"]),
+                                    "Enabled": item["enabled"],
+                                }
+                                for item in overrides
+                            ]
+                        ),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+                else:
+                    st.caption("No user-specific recipient overrides configured for this schedule.")
+
+                st.markdown("##### Test Send")
+                if st.button("Send Test Report Now", key=f"send_test_report_{selected_schedule_id}", type="primary", use_container_width=True):
+                    try:
+                        sent_count = send_test_report(tenant_id=tenant_id, schedule_id=selected_schedule_id)
+                        log_activity(
+                            conn,
+                            "REPORT_TEST_SEND",
+                            f"Triggered manual test send for schedule {selected_schedule_id}; deliveries={sent_count}",
+                        )
+                        st.success(f"Triggered test send. Deliveries processed: {sent_count}.")
+                    except Exception as e:
+                        st.error(f"Failed to send test report: {e}")
+
+            st.divider()
+            st.markdown("##### Delivery Attempts")
+            status_filter = st.selectbox(
+                "Attempt status",
+                options=["all", "failed", "sent", "pending"],
+                key="delivery_attempt_status_filter",
+            )
+            attempts = list_delivery_attempts(
+                conn,
+                tenant_id,
+                status=None if status_filter == "all" else status_filter,
+            )
+            if attempts:
+                st.dataframe(
+                    pd.DataFrame(
+                        [
+                            {
+                                "Attempt ID": item["attempt_id"],
+                                "Schedule": item["schedule_name"],
+                                "Recipient": item["recipient_name"],
+                                "Report": item["report_type"],
+                                "Scope": item["scope_type"],
+                                "Channel": item["channel"],
+                                "Status": item["status"],
+                                "Attempted": item["attempted_at"],
+                                "Delivered": item["delivered_at"],
+                                "Error": item["error_message"],
+                            }
+                            for item in attempts
+                        ]
+                    ),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+                failed_attempts = [item for item in attempts if item["status"] == "failed"]
+                if failed_attempts:
+                    retry_choice = st.selectbox(
+                        "Retry failed attempt",
+                        options=[item["attempt_id"] for item in failed_attempts],
+                        format_func=lambda attempt_id: next(
+                            (
+                                f"#{item['attempt_id']} · {item['recipient_name']} · {item['channel']}"
+                                for item in failed_attempts
+                                if item["attempt_id"] == attempt_id
+                            ),
+                            str(attempt_id),
+                        ),
+                    )
+                    if st.button("Retry Failed Delivery", use_container_width=True):
+                        try:
+                            ok = retry_failed_report_attempt(
+                                tenant_id=tenant_id,
+                                attempt_id=int(retry_choice),
+                            )
+                            if ok:
+                                log_activity(
+                                    conn,
+                                    "REPORT_DELIVERY_RETRY",
+                                    f"Retried failed delivery attempt {int(retry_choice)}",
+                                )
+                                st.success("Retry triggered successfully.")
+                                time.sleep(0.6)
+                                st.rerun()
+                            else:
+                                st.error("Retry could not be performed for that attempt.")
+                        except Exception as e:
+                            st.error(f"Retry failed: {e}")
+            else:
+                st.caption("No delivery attempts found for the selected filter.")
 
     with categories_tab:
         st.markdown("#### Station Categories")
@@ -528,7 +780,7 @@ def render(conn):
     with retention_tab:
         st.markdown("#### Storage & Retention")
         st.caption(
-            "Videos remain on disk only while waiting or processing. Successful jobs clear the media file automatically and keep the AI result in Postgres."
+            "Submission and CCTV evidence media are stored in Postgres. The application no longer depends on persistent local upload directories."
         )
 
         try:
@@ -537,19 +789,26 @@ def render(conn):
             ).fetchone()
             db_size_str = db_size_row[0] if db_size_row else "N/A"
 
-            uploads_path = Path("uploads")
-            uploads_path.mkdir(exist_ok=True)
-            total_bytes = sum(
-                f.stat().st_size for f in uploads_path.rglob("*") if f.is_file()
-            )
+            media_bytes_row = conn.execute(
+                """
+                SELECT COALESCE(SUM(video_size_bytes), 0)
+                FROM submissions
+                WHERE tenant_id = %s
+                """,
+                (current_tenant_id(),),
+            ).fetchone()
+            total_bytes = int(media_bytes_row[0] or 0)
 
             processed_count_row = conn.execute(
-                "SELECT COUNT(*) FROM submissions WHERE processed = 1"
+                "SELECT COUNT(*) FROM submissions WHERE tenant_id = %s AND processed = 1",
+                (current_tenant_id(),),
             ).fetchone()
             processed_count = processed_count_row[0] if processed_count_row else 0
 
             pending_media_row = conn.execute(
-                "SELECT COUNT(*) FROM submissions WHERE video_path IS NOT NULL"
+                "SELECT COUNT(*) FROM submissions WHERE tenant_id = %s AND video_blob IS NOT NULL"
+                ,
+                (current_tenant_id(),),
             ).fetchone()
             pending_media = pending_media_row[0] if pending_media_row else 0
 
@@ -563,25 +822,31 @@ def render(conn):
             st.caption(f"Storage metrics currently unavailable: {e}")
 
         if st.button(
-            "30-Day Uploads Cleanup",
-            help="Delete leftover files in uploads/ that are older than 30 days.",
+            "Clear Processed Media Blobs",
+            help="Remove Postgres-stored submission media for reports that have already been processed.",
             width="stretch",
         ):
             try:
-                uploads_dir = Path("uploads")
-                cutoff = time.time() - (30 * 24 * 3600)
-                deleted_count = 0
-                if uploads_dir.exists():
-                    for f in uploads_dir.rglob("*"):
-                        if f.is_file() and f.stat().st_mtime < cutoff:
-                            f.unlink()
-                            deleted_count += 1
+                deleted_row = conn.execute(
+                    """
+                    UPDATE submissions
+                    SET video_blob = NULL,
+                        video_filename = NULL,
+                        video_mime_type = NULL,
+                        video_size_bytes = NULL,
+                        video_checksum = NULL
+                    WHERE tenant_id = %s AND processed = 1
+                    """,
+                    (current_tenant_id(),),
+                )
+                deleted_count = int(getattr(deleted_row, "rowcount", 0) or 0)
+                conn.commit()
                 log_activity(
                     conn,
                     "DATA_CLEANUP",
-                    f"User {username} performed a 30-day storage cleanup, removing {deleted_count} files.",
+                    f"User {username} cleared {deleted_count} processed submission media blobs from Postgres.",
                 )
-                st.success(f"Cleanup complete. {deleted_count} old files removed.")
+                st.success(f"Cleanup complete. {deleted_count} processed media blobs cleared.")
                 time.sleep(0.8)
                 st.rerun()
             except Exception as e:
